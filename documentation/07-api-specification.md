@@ -605,7 +605,7 @@ GET    /version
 POST   /webhooks/github                    # Stretch
 ```
 
-**38 endpoints.** Every one maps to at least one requirement in [02 — SRS](02-srs.md).
+**39 endpoints** — 35 under `/api/v1` plus 4 system endpoints. Every one maps to at least one requirement in [02 — SRS](02-srs.md).
 
 ---
 
