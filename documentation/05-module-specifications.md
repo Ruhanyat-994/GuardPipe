@@ -315,7 +315,8 @@ flowchart TB
     W --> CC[cicdscan]
     W --> DR[docreview]
     W --> CN[containerscan]
-    PT[pentest] -.->|independent —<br/>no workspace needed| X[ ]
+    ST["scan start"] -.->|"needs no workspace"| PT[pentest]
+    ST --> W
     CS & DS & K8 & CC & DR & CN & PT --> AIE["ai enrichment<br/>(budget-bounded)"]
     AIE --> SCO[scoring]
     SCO --> CL[cleanup]
@@ -426,7 +427,7 @@ Taint is tracked per-variable within a function, and across functions **within o
 | `codescan.misc.debug-enabled` | `DEBUG = True`, `app.run(debug=True)`, stack traces to client | CWE-489 | medium | Core |
 | `codescan.misc.eval-usage` | `eval`, `Function()`, `exec()` on non-literal input | CWE-95 | high | Core |
 
-**Core total: 24 rules.** Stretch: 3 + Tier-3 taint for JS/TS/Java/PHP.
+**Core total: 26 rules.** Stretch: 2 rules + Tier-3 taint for JS/TS/Java/PHP.
 
 ### False-positive controls
 | Control | Mechanism |
@@ -656,7 +657,7 @@ Manifest-level policy analysis only. No cluster connection, no kubeconfig, no li
 | `k8sscan.secrets.literal-in-manifest` | Secret value inline in a manifest or `stringData` | critical | Core |
 | `k8sscan.secrets.env-from-secret-all` | `envFrom` importing an entire Secret | low | Core |
 
-**Core total: 30 rules.** Stretch: RBAC escalation-path analysis, Helm/Kustomize rendering, CIS control mapping.
+**Core total: 31 rules** (10 RBAC + 15 workload + 6 network/secrets). Stretch: RBAC escalation-path analysis, Helm/Kustomize rendering, CIS control mapping.
 
 ### Pod Security Standards evaluation (FR-K8S-008)
 Each workload is evaluated against the three PSS profiles; the result is the **highest level it satisfies**, reported as an informational finding with the list of controls that blocked a higher level. This is the single most legible output for a demo — one line per workload saying "this pod cannot meet `restricted` because X, Y, Z".
@@ -801,7 +802,7 @@ flowchart TB
     E --> F[Normalise → Findings]
 ```
 
-Each phase emits JSON Lines to stdout and human-readable progress to stderr. Phases are independent: a failed phase does not stop the rest, and partial results are retained (FR-PEN-016 / E3 in [02 §6.3](02-srs.md#63-uc-05--run-a-standalone-authorised-pentest-detailed)).
+Each phase emits JSON Lines to stdout and human-readable progress to stderr. Phases are independent: a failed phase does not stop the rest, and partial results are retained — see exception flow E3 in [02 §6.3](02-srs.md#63-uc-05--run-a-standalone-authorised-pentest-detailed).
 
 ### Phases and checks
 
@@ -949,15 +950,15 @@ Findings are matched across scans by `fingerprint`. This yields, per finding: `f
 
 ## 16. Rule count summary
 
-| Engine | Core rules | Stretch rules | Owner |
+| Engine | Core rules | Stretch | Owner |
 |---|---|---|---|
-| `codescan` | 24 | 3 + Tier-3 taint | M2 |
-| `depscan` | 8 | 3 | M2 |
-| `containerscan` | 18 | 2 | M3 |
-| `k8sscan` | 30 | 3 | M3 |
-| `cicdscan` | 16 | 1 | M4 |
-| `docreview` | 13 | 1 | M4 |
+| `codescan` | 26 | 2 rules + Tier-3 taint for JS/TS/Java/PHP | M2 |
+| `depscan` | 8 | 3 rules | M2 |
+| `containerscan` | 18 | 2 rules | M3 |
+| `k8sscan` | 31 | 1 rule + Helm/Kustomize rendering + CIS mapping | M3 |
+| `cicdscan` | 16 | GitLab CI + Jenkins support | M4 |
+| `docreview` | 13 | 1 rule | M4 |
 | `pentest` | 6 phases / ~35 checks | 2 phases | M6 |
-| **Total** | **109 rules + 35 checks** | **15+** | |
+| **Total** | **112 rules + ~35 pentest checks** | **9 rules + 6 capability items** | |
 
 **If the schedule slips, cut in this order:** `docreview` Stretch → `depscan` Stretch → `containerscan` image phase B language packages → `k8sscan` Stretch → `pentest` phases 5–6 → `codescan` Tier 3. Never cut: the `Engine` interface, finding normalisation, scoring, or the dashboard — those are the product.

@@ -23,7 +23,7 @@
 | Concern | Choice | Why this one |
 |---|---|---|
 | Framework | **React 19** | Team familiarity; largest component ecosystem |
-| Language | **TypeScript (strict)** | The API has 38 endpoints and ~15 enums — types are how the frontend stays correct while the backend moves |
+| Language | **TypeScript (strict)** | The API has 39 endpoints and ~13 enums — types are how the frontend stays correct while the backend moves |
 | Build | **Vite 6** | Instant HMR; the alternative costs minutes per day for three weeks |
 | Routing | **React Router 7** (declarative) | SPA routing; no SSR needed ([ADR-0006](17-adr/0006-react-vite-spa.md)) |
 | Styling | **Tailwind CSS 4** | No CSS file naming debates across six people; design tokens map 1:1 to Tailwind theme values |
