@@ -620,22 +620,31 @@ The SRS is satisfied when every **Core** requirement is implemented, covered by 
 
 ## 9. Requirement summary
 
-| Group | Core | Stretch | Total |
-|---|---|---|---|
-| Identity | 9 | 1 | 10 |
-| Project | 8 | 0 | 8 |
-| Orchestration | 12 | 2 | 14 |
-| Doc review | 8 | 1 | 9 |
-| Code scan | 15 | 3 | 18 |
-| Dependency scan | 8 | 3 | 11 |
-| Container scan | 10 | 2 | 12 |
-| Kubernetes scan | 12 | 3 | 15 |
-| CI/CD scan | 10 | 1 | 11 |
-| Pentest | 13 | 2 | 15 |
-| AI | 13 | 1 | 14 |
-| Scoring | 8 | 0 | 8 |
-| Reporting | 8 | 2 | 10 |
-| UI | 8 | 1 | 9 |
-| **Functional total** | **142** | **22** | **164** |
-| Non-functional | 33 | 0 | 33 |
-| **Grand total** | **175** | **22** | **197** |
+| Group | Prefix | Core | Stretch | Total |
+|---|---|---|---|---|
+| Identity | `FR-IAM` | 9 | 1 | 10 |
+| Project | `FR-PRJ` | 8 | 0 | 8 |
+| Orchestration | `FR-ORC` | 12 | 2 | 14 |
+| Doc review | `FR-DOC` | 8 | 1 | 9 |
+| Code scan | `FR-CODE` | 16 | 2 | 18 |
+| Dependency scan | `FR-DEP` | 8 | 3 | 11 |
+| Container scan | `FR-CNT` | 10 | 2 | 12 |
+| Kubernetes scan | `FR-K8S` | 12 | 3 | 15 |
+| CI/CD scan | `FR-CICD` | 10 | 1 | 11 |
+| Pentest | `FR-PEN` | 13 | 2 | 15 |
+| AI | `FR-AI` | 13 | 1 | 14 |
+| Scoring | `FR-SCR` | 8 | 0 | 8 |
+| Reporting | `FR-RPT` | 8 | 2 | 10 |
+| UI | `FR-UI` | 8 | 1 | 9 |
+| **Functional total** | | **143** | **21** | **164** |
+| Performance | `NFR-PERF` | 6 | 0 | 6 |
+| Security | `NFR-SEC` | 9 | 0 | 9 |
+| Reliability | `NFR-REL` | 6 | 0 | 6 |
+| Usability | `NFR-USE` | 4 | 0 | 4 |
+| Maintainability | `NFR-MNT` | 6 | 0 | 6 |
+| Portability | `NFR-PRT` | 4 | 0 | 4 |
+| Compliance | `NFR-CMP` | 3 | 0 | 3 |
+| **Non-functional total** | | **38** | **0** | **38** |
+| **Grand total** | | **181** | **21** | **202** |
+
+All non-functional requirements are Core — there is no such thing as a stretch-goal security or reliability property in a security product.
