@@ -1,0 +1,444 @@
+# 09 — UI/UX and Design System
+
+| Field | Value |
+|---|---|
+| **Document** | UI/UX Design and Design System |
+| **Project** | GuardPipe |
+| **Version** | 1.0 |
+| **Status** | Draft |
+| **Tool** | Figma |
+| **Owner** | Member 6 (design) with Member 5 (frontend) |
+| **Last updated** | 2026-07-29 |
+
+### Revision history
+
+| Version | Date | Author | Change |
+|---|---|---|---|
+| 1.0 | 2026-07-29 | Team | Initial design system and screen specification |
+
+> This document is the **specification for the Figma deliverable** and the design contract for the frontend. The Figma file is built from this; the frontend is built from both.
+
+---
+
+## 1. Design principles
+
+| # | Principle | What it means in practice |
+|---|---|---|
+| 1 | **Severity is the primary axis** | Every list, chart, and card sorts and groups by severity first. A user should never hunt for the critical finding |
+| 2 | **Never colour alone** | Severity = colour **+** icon **+** text label, everywhere, without exception (FR-UI-008) |
+| 3 | **Plain language before jargon** | "An attacker could read your database" comes before "CWE-89 SQL Injection" |
+| 4 | **Show the fix, not just the flaw** | Every finding detail leads with remediation, not with blame |
+| 5 | **Honest about uncertainty** | AI content is labelled. Partial scans say so. Low-confidence findings say so |
+| 6 | **Density with breathing room** | This is an analysis tool — users scan hundreds of rows. Compact, but never cramped |
+| 7 | **Calm, not alarming** | A dashboard that screams red at everything gets ignored. Reserve the loudest treatment for genuine criticals |
+
+Principle 7 is the hardest to hold. Security UI defaults to a wall of red; the discipline is to make `critical` visually rare so that when it appears, it lands.
+
+---
+
+## 2. Design tokens
+
+### 2.1 Colour — base palette
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--bg-base` | `#FAFAFA` | `#0B0D10` | App background |
+| `--bg-surface` | `#FFFFFF` | `#14171C` | Cards, panels |
+| `--bg-surface-raised` | `#FFFFFF` | `#1B1F26` | Modals, popovers |
+| `--bg-subtle` | `#F4F5F7` | `#1B1F26` | Table header, hover |
+| `--border-default` | `#E3E5E9` | `#272C34` | Dividers, card borders |
+| `--border-strong` | `#C8CCD4` | `#3A414C` | Input borders |
+| `--text-primary` | `#12141A` | `#F2F4F7` | Headings, body |
+| `--text-secondary` | `#5A6270` | `#A2ABBA` | Labels, metadata |
+| `--text-tertiary` | `#8A93A2` | `#6E7889` | Placeholders, timestamps |
+| `--text-inverse` | `#FFFFFF` | `#0B0D10` | On filled buttons |
+
+### 2.2 Colour — severity (the most important tokens in the system)
+
+| Severity | Token | Light | Dark | Icon | Contrast on surface |
+|---|---|---|---|---|---|
+| Critical | `--sev-critical` | `#B4232A` | `#FF6B72` | `octagon-alert` | 6.9:1 / 7.2:1 |
+| High | `--sev-high` | `#C2410C` | `#FF8B4C` | `triangle-alert` | 5.1:1 / 6.8:1 |
+| Medium | `--sev-medium` | `#A16207` | `#F5B93B` | `alert-circle` | 4.9:1 / 8.4:1 |
+| Low | `--sev-low` | `#1D4ED8` | `#7BA7FF` | `info` | 6.4:1 / 6.6:1 |
+| Informational | `--sev-info` | `#4B5563` | `#9AA5B4` | `circle-dot` | 7.6:1 / 6.1:1 |
+
+Each has a matching `--sev-*-bg` (10% tint) for badge backgrounds and a `--sev-*-border`.
+
+> **Deliberate choice:** high is **orange**, not a second red. The single most common failure in security dashboards is critical and high being indistinguishable at a glance. Distinct hue + distinct icon + text label makes them separable for every user, including monochrome vision.
+
+### 2.3 Colour — semantic
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--accent` | `#2563EB` | `#5B8DEF` | Primary actions, links, focus ring |
+| `--success` | `#15803D` | `#4ADE80` | Pass verdict, fixed findings |
+| `--warning` | `#A16207` | `#F5B93B` | Warn verdict, degraded state |
+| `--danger` | `#B4232A` | `#FF6B72` | Block verdict, destructive actions |
+| `--ai` | `#7C3AED` | `#A78BFA` | AI-generated content marker |
+
+`--ai` purple is used *only* for AI-attributed content — the explanation panel border, the patch banner, the "AI" chip. One colour, one meaning, so users learn instantly which content came from a model (FR-AI-012).
+
+### 2.4 Verdict colours
+
+| Verdict | Token | Meaning |
+|---|---|---|
+| `pass` | `--success` | Safe to ship |
+| `warn` | `--warning` | Ship with awareness |
+| `block` | `--danger` | Do not ship |
+
+### 2.5 Typography
+
+| Token | Family | Size / line-height | Weight | Use |
+|---|---|---|---|---|
+| `--font-sans` | Inter | — | — | All UI |
+| `--font-mono` | JetBrains Mono | — | — | Code, paths, hashes, diffs |
+| `text-display` | sans | 32 / 40 | 600 | Page title |
+| `text-h1` | sans | 24 / 32 | 600 | Section |
+| `text-h2` | sans | 20 / 28 | 600 | Card title |
+| `text-h3` | sans | 16 / 24 | 600 | Subsection |
+| `text-body` | sans | 14 / 22 | 400 | Default |
+| `text-body-sm` | sans | 13 / 20 | 400 | Table cells |
+| `text-caption` | sans | 12 / 16 | 400 | Metadata, timestamps |
+| `text-code` | mono | 13 / 20 | 400 | Snippets, file paths |
+
+**14 px body, not 16.** This is a dense analysis tool; 16 px pushes too little information above the fold in a findings table. 12 px is the floor.
+
+### 2.6 Spacing — 4 px base scale
+
+`space-1` 4 · `space-2` 8 · `space-3` 12 · `space-4` 16 · `space-5` 20 · `space-6` 24 · `space-8` 32 · `space-10` 40 · `space-12` 48 · `space-16` 64
+
+| Context | Value |
+|---|---|
+| Icon ↔ text | `space-2` |
+| Inside a card | `space-6` |
+| Between cards | `space-4` |
+| Between sections | `space-8` |
+| Table cell padding | `space-3` vertical, `space-4` horizontal |
+| Page gutter | `space-8` |
+
+### 2.7 Radius, elevation, motion
+
+| Token | Value | Use |
+|---|---|---|
+| `radius-sm` / `md` / `lg` / `full` | 4 / 8 / 12 / 9999 px | badges / cards, inputs / modals / pills |
+| `shadow-sm` | `0 1px 2px rgb(0 0 0 / .05)` | Cards |
+| `shadow-md` | `0 4px 12px rgb(0 0 0 / .08)` | Dropdowns, popovers |
+| `shadow-lg` | `0 12px 32px rgb(0 0 0 / .12)` | Modals |
+| `duration-fast` / `base` / `slow` | 120 / 200 / 320 ms | Hover / panels / page |
+| `ease-standard` | `cubic-bezier(.2,0,0,1)` | Everything |
+
+All motion is disabled under `prefers-reduced-motion: reduce`.
+
+### 2.8 Layout
+
+| Element | Value |
+|---|---|
+| Sidebar | 240 px expanded, 64 px collapsed |
+| Top bar | 56 px |
+| Content max width | 1440 px, centred |
+| Detail drawer | 480 px |
+| Grid | 12 columns, 24 px gutter |
+
+---
+
+## 3. Figma file structure
+
+**File name:** `GuardPipe — Design System & Screens v1`
+
+| Page | Contents | Owner |
+|---|---|---|
+| `00 · Cover` | Project name, team, version, changelog, link to this document | M6 |
+| `01 · Foundations` | Colour styles, type styles, spacing scale, radius, elevation, icon set — all as **published Figma styles/variables**, not loose rectangles | M6 |
+| `02 · Components` | The component library (§4), each with all variants and states | M6 |
+| `03 · Patterns` | Loading / empty / error / partial state patterns; severity treatment; AI content treatment | M6 |
+| `04 · Wireframes` | Low-fidelity layouts of all 12 screens — **build these first** | M6 |
+| `05 · Screens — Desktop` | High-fidelity, 1440 × 1024 frames | M6 |
+| `06 · Screens — Tablet` | 768 px variants of the 4 primary screens only | M6 |
+| `07 · Prototype` | Clickable flow for the demo path | M6 |
+| `08 · Handoff` | Redlines, token mapping table, component→code name map | M6 + M5 |
+
+### Conventions
+- **Auto Layout on every frame.** A design that cannot resize cannot be built.
+- **Component variants, not duplicated frames.** `Badge/Severity/Critical`, not `badge-critical-copy-3`.
+- **Figma Variables for all tokens**, with light and dark modes — token names match the CSS custom property names in §2 exactly. This is what makes handoff mechanical instead of interpretive.
+- **Naming:** `Category/Component/Variant` — `Button/Primary/Default`, `Table/Row/Hover`.
+- Every screen frame is named for its route: `Screen — Findings Explorer (/scans/:id/findings)`.
+
+---
+
+## 4. Component inventory
+
+### 4.1 Primitives (map to shadcn/ui)
+
+`Button` (primary · secondary · ghost · destructive × default/hover/active/disabled/loading, sm/md/lg) · `Input` · `Textarea` · `Select` · `MultiSelect` · `Checkbox` · `Radio` · `Switch` · `Badge` · `Chip` · `Avatar` · `Tooltip` · `Dialog` · `Drawer` · `DropdownMenu` · `Tabs` · `Accordion` · `Progress` · `Skeleton` · `Toast` · `Breadcrumb` · `Pagination` · `Command` (⌘K search)
+
+### 4.2 Domain components
+
+| Component | Variants / states | Notes |
+|---|---|---|
+| `SeverityBadge` | 5 severities × (sm, md) × (with count, without) | Colour + icon + label. The most-used component in the system |
+| `StatusPill` | open · acknowledged · suppressed · fixed · false_positive | Neutral colours — status is not severity |
+| `EngineIcon` | 7 engines | Consistent glyph per engine, used in tables, filters, and the pipeline |
+| `RiskGauge` | 0–100 arc, verdict band, delta arrow, 3 sizes | Hero element of the dashboard |
+| `SupplyChainPipeline` | 7 stages × (succeeded / failed / skipped / running / not_run) | The signature visual (FR-UI-004) |
+| `StageCard` | Per-engine card: status, worst severity, count, duration | Clickable → filters findings |
+| `FindingRow` | default · hover · selected · suppressed (dimmed) | Virtualised list row |
+| `CodeBlock` | With line numbers, highlighted range, copy button | Shiki-rendered |
+| `PatchDiff` | unified · split; verified · unverified badge | Always carries the AI banner |
+| `AiPanel` | loading · content · unavailable · budget-exhausted | Purple left border, "AI-generated" chip |
+| `CvssChip` | score + severity colour, vector on hover | |
+| `CweChip` / `CveChip` | Links to MITRE / NVD | |
+| `TrendChart` | Line, score over time, verdict bands | Recharts |
+| `SeverityDonut` | 5-segment distribution with a centre total | Recharts |
+| `EmptyState` | icon + title + description + action | 6 written variants |
+| `ErrorState` | message + retry + `request_id` | |
+| `PartialResultBanner` | names the failed/skipped engines | The state people forget |
+
+---
+
+## 5. Screen specifications
+
+### Screen inventory
+
+| # | Screen | Route | Priority |
+|---|---|---|---|
+| 1 | Login | `/login` | P0 |
+| 2 | Register | `/register` | P1 |
+| 3 | Projects list | `/projects` | P0 |
+| 4 | Project dashboard | `/projects/:id` | **P0 — hero screen** |
+| 5 | New Scan wizard | `/projects/:id/scans/new` | P0 |
+| 6 | Scan progress | `/scans/:id` (running) | P0 |
+| 7 | Scan results | `/scans/:id` (completed) | P0 |
+| 8 | Findings explorer | `/scans/:id/findings` | **P0 — hero screen** |
+| 9 | Finding detail | `/scans/:id/findings/:fid` | **P0 — hero screen** |
+| 10 | Pentest targets | `/projects/:id/targets` | P1 |
+| 11 | Rules catalogue | `/rules` | P2 |
+| 12 | Settings | `/settings` | P2 |
+
+**Design order: 4 → 8 → 9 → 6 → 5 → 3 → the rest.** The three hero screens carry the entire demo; if only three screens reach high fidelity, these are the three.
+
+---
+
+### 5.1 Screen 4 — Project dashboard (hero)
+
+**Purpose:** answer "can this ship?" in under five seconds.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ☰  GuardPipe          Payments API              [Run Scan ▾]   👤 Nadia  │
+├────────┬─────────────────────────────────────────────────────────────────┤
+│        │  Payments API                          Last scan 4 min ago      │
+│ Proj.  │  github.com/acme/payments-api · main · a3f9c21                  │
+│ Scans  │                                                                 │
+│ Find.  │  ┌──────────────┐  ┌─────────────────────────────────────────┐ │
+│ Targ.  │  │              │  │ ▲2 Critical  ▲9 High  ●21 Med  ●14 Low  │ │
+│ Rules  │  │   ◕  68      │  │                                          │ │
+│        │  │   BLOCK      │  │      [ severity donut chart ]            │ │
+│ ─────  │  │   ▼ 6 ↓      │  │                                          │ │
+│ Sett.  │  └──────────────┘  └─────────────────────────────────────────┘ │
+│        │                                                                 │
+│        │  Supply Chain                                                   │
+│        │  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐        │
+│        │  │Docs│──│Code│──│Deps│──│Cont│──│ K8s│──│CICD│──│Pent│        │
+│        │  │ ⚠  │  │ ▲18│  │ ▲11│  │ ⊘  │  │ ▲14│  │ ▲6 │  │ –  │        │
+│        │  │fail│  │high│  │crit│  │skip│  │crit│  │high│  │n/r │        │
+│        │  └────┘  └────┘  └────┘  └────┘  └────┘  └────┘  └────┘        │
+│        │                                                                 │
+│        │  ⚠ Document review failed: AI service unavailable.  [Retry]     │
+│        │                                                                 │
+│        │  ┌─ Top findings ─────────────┐ ┌─ Risk trend ────────────────┐│
+│        │  │ ▲ Hardcoded AWS key     🔴 │ │      ╲                       ││
+│        │  │ ▲ cluster-admin binding 🔴 │ │  74 ──╲── 68                 ││
+│        │  │ ▲ SQL injection         🟠 │ │        ╲                     ││
+│        │  │                [View all →]│ │  [last 20 scans]             ││
+│        │  └────────────────────────────┘ └──────────────────────────────┘│
+└────────┴─────────────────────────────────────────────────────────────────┘
+```
+
+| Element | Detail |
+|---|---|
+| Risk gauge | 0–100 arc, verdict word, delta vs previous scan with direction arrow |
+| Severity summary | Counts + donut; every count clickable → filtered findings |
+| Supply chain pipeline | 7 stages; colour = worst severity; icon = job status; click → findings filtered by engine |
+| Partial banner | Present whenever any job is `failed` — never hidden |
+| Top findings | 5 highest-severity open findings |
+| Trend | Last 20 scans, with verdict bands as background |
+| States | loading (skeleton) · empty ("No scans yet" + CTA) · error · partial |
+
+### 5.2 Screen 8 — Findings explorer (hero)
+
+**Purpose:** find the finding that matters among hundreds.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ← Scan 7d3f… · Payments API · completed 10:23           [Export ▾]       │
+├──────────────────────────────────────────────────────────────────────────┤
+│ 🔍 search…    Severity ▾  Engine ▾  Status ▾  CWE ▾     53 findings      │
+│ ⌫ critical ×  high ×  codescan ×  open ×               [Clear all]       │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Sev ▾ │ Finding                        │ Engine │ Location      │ Age    │
+├───────┼────────────────────────────────┼────────┼───────────────┼────────┤
+│ 🔴 CRT│ Hardcoded AWS access key       │ code   │ config/aws.go │ 4d  ›  │
+│ 🔴 CRT│ ClusterRoleBinding cluster-admin│ k8s   │ rbac.yaml     │ 4d  ›  │
+│ 🟠 HGH│ SQL query by string concat     │ code   │ db/user.go:42 │ 4d  ›  │
+│ 🟠 HGH│ lodash 4.17.15 — CVE-2021-23337│ deps   │ package.json  │ 12d ›  │
+│ 🟡 MED│ Missing Content-Security-Policy│ pent   │ :443 /        │ 1d  ›  │
+│ ⬜ SUP│ ~~Weak hash MD5~~ (suppressed) │ code   │ util/etag.go  │ 9d  ›  │
+├──────────────────────────────────────────────────────────────────────────┤
+│                    ‹ 1  [2]  3 ›            25 per page ▾                │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+| Element | Detail |
+|---|---|
+| Filters | Severity, engine, status, CWE multiselect + free text. **All reflected in the URL** |
+| Active filter chips | Individually removable, with "Clear all" |
+| Table | Virtualised, sticky header, sortable by severity/age/engine |
+| Row | Severity badge (colour+icon+text), title, engine icon, location (monospace), age, chevron |
+| Suppressed rows | Dimmed with strikethrough title — visible but visually de-emphasised (FR-SCR-007) |
+| Bulk selection | Checkbox column → bulk triage (P1) |
+| Row click | Opens the detail drawer; deep link still works as a full page |
+| Empty | "No findings match these filters" + Clear all |
+
+### 5.3 Screen 9 — Finding detail (hero)
+
+**Purpose:** understand and fix, in that order.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 🟠 HIGH · confidence: high            [Acknowledge] [Suppress] [× Close] │
+│ SQL query built by string concatenation                                  │
+│ codescan.injection.sql-string-concat                                     │
+│ CWE-89 · A03:2021 · open · first seen 4 days ago (3 scans)               │
+├──────────────────────────────────────────────────────────────────────────┤
+│ WHAT THIS MEANS                                                          │
+│ User-controlled input reaches a SQL query that is assembled by joining    │
+│ strings together. An attacker can change the meaning of the query and     │
+│ read or modify data they should not have access to.                      │
+├──────────────────────────────────────────────────────────────────────────┤
+│ WHERE                          internal/db/user.go:42–44                  │
+│  39 │ func GetUser(name string) (*User, error) {                          │
+│  40 │     db := conn()                                                    │
+│  41 │                                                                     │
+│▶ 42 │     q := "SELECT * FROM users WHERE name = '" + name + "'"          │
+│▶ 43 │     row := db.QueryRow(q)                                           │
+│  44 │     return scanUser(row)                                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│ HOW TO FIX                                                               │
+│ Use a parameterised query. Pass `name` as a bound argument rather than    │
+│ concatenating it into the SQL string.                                     │
+├──────────────────────────────────────────────────────────────────────────┤
+│ ┃ 🤖 AI SUGGESTED PATCH        ✓ verified    [Copy] [Download .patch]    │
+│ ┃ ⓘ AI-generated — review before applying                                │
+│ ┃  - q := "SELECT * FROM users WHERE name = '" + name + "'"              │
+│ ┃  - row := db.QueryRow(q)                                               │
+│ ┃  + row := db.QueryRow("SELECT * FROM users WHERE name = $1", name)     │
+├──────────────────────────────────────────────────────────────────────────┤
+│ ▸ References   ▸ History (3 scans)   ▸ Rule details                      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**The section order is the design decision.** Plain-language impact → exact location → deterministic fix → AI patch. A developer who reads only the first two sections still knows what to do. The AI patch is an accelerator, visually separated by the purple rail and never presented as authoritative.
+
+The purple left rail (`--ai`), the robot glyph, and the "review before applying" line are all mandatory on AI content (FR-AI-012).
+
+### 5.4 Screen 6 — Scan progress
+
+Live view, polling every 2 s. Seven engine cards, each showing status, an indeterminate or determinate progress bar, elapsed time, and a running finding count. Findings appear as they stream in — the scan is not a black box for four minutes. Cancel button with confirmation. `aria-live="polite"` on the status region.
+
+### 5.5 Screen 5 — New Scan wizard
+
+Three steps: **Target** (repository or pentest target) → **Engines** (all selected by default, individually toggleable, each with a one-line description) → **Review** (summary + estimated duration + Start). For a pentest, an additional mandatory attestation step with the full authorisation text and an explicit checkbox — the Start button is disabled until it is checked (NFR-CMP-001).
+
+### 5.6 Screen 3 — Projects list
+
+Card grid. Each card: name, repository, last scan time, risk score chip, verdict pill, severity mini-bar. Empty state: illustration + "Create your first project". Primary action top-right.
+
+### 5.7 Screen 10 — Pentest targets
+
+Target list with status pills (`awaiting_attestation` · `attested` · `blocked` · `revoked`). Adding a target shows inline validation results, including the resolved IPs and any block reason in plain language ("This resolves to a private address and cannot be tested"). The attestation dialog shows the full authorisation statement with the user's name and the target — deliberately weighty, because it is a legal record.
+
+### 5.8 Screens 1, 2, 11, 12
+
+Standard patterns: centred auth card with the product mark; rules catalogue as a filterable table with an expandable detail row; settings as a tabbed form (Profile · Security · Preferences).
+
+---
+
+## 6. Interaction patterns
+
+| Pattern | Specification |
+|---|---|
+| Loading | Skeletons that match the final layout. Spinners only inside buttons |
+| Optimistic triage | Status changes apply instantly and roll back visibly on failure |
+| Destructive confirmation | Delete project / cancel scan require a modal naming the exact object (NFR-USE-004) |
+| Toasts | Success 4 s auto-dismiss, top-right; errors persist until dismissed |
+| Deep linking | Every filtered view and every finding has a shareable URL |
+| Keyboard | `⌘K` command palette · `/` search · `j`/`k` row navigation · `Esc` close · `?` shortcuts |
+| Long lists | Virtualised, sticky header, page-size selector |
+| Copy actions | Every code block, path, hash, and diff has a copy button with a confirmation tick |
+
+---
+
+## 7. Content and voice
+
+| Rule | Bad | Good |
+|---|---|---|
+| Impact before taxonomy | "CWE-89 detected" | "An attacker could read your database" |
+| Actionable errors | "Error 500" | "The scan could not reach the repository. Check the access token." |
+| Empty states offer an action | "No data" | "No scans yet — run your first scan to see findings" |
+| No blame | "You made a mistake" | "This query is built by string concatenation" |
+| Numbers with meaning | "68" | "68 / 100 — Block" |
+| Honest AI attribution | (unlabelled) | "AI-generated — review before applying" |
+
+**Severity labels are always spelled out** — `CRITICAL`, `HIGH`, never `C`/`H`, and never a bare coloured dot.
+
+---
+
+## 8. Accessibility checklist (design-side)
+
+- [ ] Every colour pair verified ≥ 4.5:1 (text) / ≥ 3:1 (UI, large text)
+- [ ] Every severity treatment carries an icon and a text label
+- [ ] Focus states designed for every interactive component (2 px `--accent` ring, 2 px offset)
+- [ ] Touch/click targets ≥ 44 × 44 px
+- [ ] No information conveyed by colour, position, or shape alone
+- [ ] Charts have accessible text equivalents specified
+- [ ] Designs verified under a deuteranopia and a protanopia filter
+- [ ] Reduced-motion variants specified for all animated elements
+- [ ] Dark mode contrast verified independently — not assumed from light mode
+
+---
+
+## 9. Handoff to code
+
+| Design artefact | Code artefact |
+|---|---|
+| Figma Variable `sev/critical` | CSS `--sev-critical` → Tailwind `text-severity-critical` |
+| Component `Badge/Severity/Critical` | `<SeverityBadge severity="critical" />` |
+| Frame `Screen — Findings Explorer` | `pages/FindingsExplorerPage.tsx` |
+| Pattern `State/Empty/NoFindings` | `<EmptyState variant="no-findings" />` |
+
+**Process**
+1. M6 publishes Foundations (page `01`) → M5 encodes tokens in `globals.css`. **This happens in Sprint 0, before any screen is designed** — it unblocks all frontend work.
+2. M6 designs wireframes for all 12 screens → team review → hi-fi for the three hero screens.
+3. M5 builds against wireframes; hi-fi refines styling, not structure.
+4. Handoff page carries redlines and the token map. Anything ambiguous is resolved in the doc, not in Figma comments.
+
+**Rule:** if the design and this document disagree, this document wins and Figma gets updated. One source of truth, and it is the one under version control.
+
+---
+
+## 10. Design deliverable checklist
+
+- [ ] Figma file created with all 9 pages
+- [ ] All tokens published as Figma Variables with light + dark modes
+- [ ] All primitives with full variant coverage
+- [ ] All 17 domain components
+- [ ] 12 wireframes
+- [ ] 3 hero screens in high fidelity (desktop)
+- [ ] 4 primary screens at tablet width
+- [ ] Loading / empty / error / partial patterns for every data view
+- [ ] Clickable prototype covering the demo path
+- [ ] Accessibility checklist (§8) complete
+- [ ] Handoff page with the token map
+- [ ] Figma link added to [README](README.md) and the project charter
