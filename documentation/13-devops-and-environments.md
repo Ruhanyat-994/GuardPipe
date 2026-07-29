@@ -80,7 +80,7 @@ flowchart TB
 
 | Stage | Base | Purpose |
 |---|---|---|
-| `builder` | `golang:1.23-alpine` | `go mod download` (cached layer), then `CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=…"` |
+| `builder` | `golang:1.25-alpine` | `go mod download` (cached layer), then `CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=…"` |
 | `runtime` | `gcr.io/distroless/static-debian12:nonroot` | Copy the single static binary + migrations + embedded scripts |
 
 Result: ~25 MB image, non-root, no shell, no package manager. A distroless runtime means a container-escape attempt has essentially nothing to work with — and it also means our own image passes our own `containerscan` rules, which is the point.
