@@ -1,3 +1,25 @@
+# Secrets — never commit real values
+.env
+.env.local
+!.env.example
+
+# Go
+/guardpipe
+*.exe
+*.test
+coverage.out
+coverage.html
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
 # Claude Code — local assistant config and generated docs, not part of the project
 .claude/
 CLAUDE.md
@@ -5,3 +27,4 @@ CLAUDE.md
 *.claude.md
 claude.local.md
 BUILD_GUIDE.md
+DEMO-LAPTOP-SETUP.md
