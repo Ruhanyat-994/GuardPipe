@@ -1,0 +1,39 @@
+# GuardPipe — code ownership
+# Owners are auto-requested as reviewers on matching paths.
+# Replace the @memberN placeholders with real GitHub usernames once assigned
+# (see documentation/01-project-charter.md §7 and documentation/14-github-workflow.md §2).
+
+*                                   @member1
+
+/internal/modules/identity/         @member1
+/internal/modules/project/          @member1
+/internal/modules/orchestrator/     @member1
+/internal/modules/scoring/          @member1
+/internal/store/                    @member1
+/internal/store/migrations/         @member1 @member2      # schema: two reviewers
+
+/internal/engines/codescan/         @member2
+/internal/engines/depscan/          @member2
+/internal/adapters/osv/             @member2
+
+/internal/engines/containerscan/    @member3
+/internal/engines/k8sscan/          @member3
+
+/internal/engines/docreview/        @member4
+/internal/engines/cicdscan/         @member4
+/internal/adapters/gemini/          @member4 @member1      # AI: two reviewers
+
+/internal/engines/pentest/          @member6 @member1      # pentest: two reviewers
+/internal/adapters/sandbox/         @member6 @member1      # sandbox: two reviewers
+
+/frontend/                          @member5
+/internal/modules/reporting/        @member5 @member1
+
+/deploy/                            @member6
+/.github/                           @member6 @member1
+/Makefile                           @member6
+
+/documentation/                     @member1
+/documentation/02-srs.md            @member1 @member5      # SRS: two reviewers
+/documentation/06-database-design.md @member1 @member2     # schema doc: two reviewers
+/documentation/07-api-specification.md @member1 @member5   # API contract: two reviewers
