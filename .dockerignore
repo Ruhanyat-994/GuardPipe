@@ -1,0 +1,10 @@
+.git
+.github
+.claude
+documentation
+frontend
+testdata
+*.md
+.env
+.env.*
+!.env.example
