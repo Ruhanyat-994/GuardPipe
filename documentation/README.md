@@ -49,6 +49,7 @@ If you are new to the team, read in this order. Total time ≈ 90 minutes.
 | 16 | [16 — Project Plan](16-project-plan.md) | everyone | 12 min |
 | 17 | [17 — Architecture Decision Records](17-adr/README.md) | curious / challenging a decision | varies |
 | 18 | [18 — Glossary](18-glossary.md) | reference | — |
+| 19 | [19 — Client Journey & Pricing Model](19-client-journey-and-pricing-model.md) | everyone — especially non-technical reviewers | 12 min |
 
 **Minimum viable onboarding (30 min):** 01 → 03 → 14 → your module section in 05.
 
@@ -76,6 +77,7 @@ If you are new to the team, read in this order. Total time ≈ 90 minutes.
 | 16 — Project Plan | 1.0 | Draft | Team Lead |
 | 17 — ADRs | 1.0 | Accepted | Backend Lead |
 | 18 — Glossary | 1.0 | Draft | All |
+| 19 — Client Journey & Pricing Model | 1.0 | Draft | Team Lead |
 
 `Draft` → `Reviewed` → `Approved`. A document becomes **Approved** when it has been merged to `main` after review by at least two team members.
 

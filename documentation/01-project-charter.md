@@ -168,7 +168,7 @@ The project is complete when **all** of the following hold:
 - [ ] The dashboard shows a unified 0–100 risk score with a per-engine breakdown.
 - [ ] The system detects seeded vulnerabilities in the intentionally-vulnerable fixture repository (golden tests pass).
 - [ ] CI is green on `main`: lint, test, build, and GuardPipe scanning its own repository.
-- [ ] All 18 documents in this folder are `Approved`.
+- [ ] All 19 documents in this folder are `Approved`.
 - [ ] The 10-minute demo script runs end-to-end without manual database edits.
 
 ---

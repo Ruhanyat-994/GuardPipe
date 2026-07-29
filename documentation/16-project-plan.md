@@ -179,7 +179,7 @@ gantt
 | 3.6 | Accessibility pass: keyboard, contrast, colour-blind, axe | M5+M6 | 1 |
 | 3.7 | Error/empty/loading/partial state review across every view | M5 | 1 |
 | 3.8 | Self-scan clean; fix anything GuardPipe finds in GuardPipe | all | 1 |
-| 3.9 | Finalise all 18 documents to `Approved` | M1 | 2 |
+| 3.9 | Finalise all 19 documents to `Approved` | M1 | 2 |
 | 3.10 | Manual UAT checklist ([15 §8](15-testing-strategy.md#8-manual-testing)) | M6 | 1 |
 | 3.11 | Tag `v0.4.0` | M1 | — |
 
