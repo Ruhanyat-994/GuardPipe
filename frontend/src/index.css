@@ -33,3 +33,27 @@ body {
 *::after {
   box-sizing: border-box;
 }
+
+/* HeroGlow (public site only, documentation/09-ui-ux-design-system.md
+   §2.9/§5.9). The drift animation is covered by the global
+   prefers-reduced-motion rule above — no separate override needed here. */
+@keyframes hero-glow-drift {
+  0%,
+  100% {
+    transform: translate(-8%, -8%) scale(1);
+  }
+  50% {
+    transform: translate(8%, 4%) scale(1.15);
+  }
+}
+
+.hero-glow-blob {
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(circle at 30% 30%, var(--glow-1) 0%, transparent 45%),
+    radial-gradient(circle at 70% 60%, var(--glow-2) 0%, transparent 50%);
+  filter: blur(60px);
+  opacity: 0.55;
+  animation: hero-glow-drift 18s ease-in-out infinite;
+}
