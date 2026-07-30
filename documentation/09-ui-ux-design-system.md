@@ -4,17 +4,18 @@
 |---|---|
 | **Document** | UI/UX Design and Design System |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Tool** | Figma |
 | **Owner** | Member 6 (design) with Member 5 (frontend) |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-07-31 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial design system and screen specification |
+| 1.1 | 2026-07-31 | Team | Added the public site (Landing, Blog, Guides) as a second, distinct surface alongside the authenticated app — direction adapted from tridentsecurity.io — plus the severity stat-tile treatment for the dashboard (§5.1), adapted from Tenable/SecurityCenter-style scanner dashboards |
 
 > This document is the **specification for the Figma deliverable** and the design contract for the frontend. The Figma file is built from this; the frontend is built from both.
 
@@ -33,6 +34,10 @@
 | 7 | **Calm, not alarming** | A dashboard that screams red at everything gets ignored. Reserve the loudest treatment for genuine criticals |
 
 Principle 7 is the hardest to hold. Security UI defaults to a wall of red; the discipline is to make `critical` visually rare so that when it appears, it lands.
+
+**One deliberate exception:** the five severity stat tiles at the top of the project dashboard (§5.1) are solid, fully-saturated severity-colour blocks — the Tenable/SecurityCenter-style "scannable from across the room" treatment. This is the single loud moment in the product, chosen because it is the literal answer to "can this ship?" Everything below that fold (badges, borders, table rows) returns to the restrained colour-as-accent treatment principle 7 describes.
+
+**Two surfaces, two voices.** Everything above applies to the **authenticated product** (the dashboard and everything under it). The **public site** — Landing, Blog, Guides, described in §5.9 — is a separate marketing/education surface with its own typographic voice (serif display type, a darker hero, motion) and does not use the severity system at all. A visitor reading a guide article should not see it dressed as a security tool's cockpit; a user triaging findings should never see marketing chrome. Keep the two visually distinct on purpose.
 
 ---
 
@@ -140,6 +145,24 @@ All motion is disabled under `prefers-reduced-motion: reduce`.
 | Detail drawer | 480 px |
 | Grid | 12 columns, 24 px gutter |
 
+### 2.9 Public-site tokens (Landing, Blog, Guides only — never used inside the authenticated app)
+
+The public site borrows the base palette and spacing scale above but adds its own display type and background treatment. These tokens live in a separate `public.css` layer, not `globals.css`, so they can never leak into product screens by accident.
+
+| Token | Value | Use |
+|---|---|---|
+| `--font-display-serif` | Fraunces (fallback: Georgia, serif) | Hero and section headlines on Landing/Blog/Guides only |
+| `--public-bg-hero` | `#05070C` | Landing hero background — deliberately darker than `--bg-base` dark (`#0B0D10`) so the marketing surface can read as its own brand moment |
+| `--glow-1` / `--glow-2` | `#3B5BFF` / `#1E1B4B` | Radial gradient stops for the animated hero glow |
+| `--public-accent-critical` | `#B4232A` | The single small red accent dot used sparingly in hero copy (e.g. a live-status pulse) — same hex as `--sev-critical` but **not** wired to any severity meaning here, it is purely decorative |
+| `text-display-hero` | serif, 56 / 64, 500 | Landing hero headline |
+| `text-display-section` | serif, 40 / 48, 500 | Blog/Guides section headlines |
+| `--motion-glow-duration` | 18s, `linear`, infinite loop | Hero background animation |
+
+**Motion rule:** under `prefers-reduced-motion: reduce`, the glow animation is replaced with its static midpoint frame — never fully removed, since the gradient is also the background's visual weight, but never animated for a user who asked not to see it. This is the same rule as §2.7, applied to a second surface.
+
+**Why a separate serif at all:** principle 3 ("plain language before jargon") and the density goal in principle 6 are product-UI concerns — a findings table needs to show hundreds of rows, a landing page needs to sell an idea in one screen. Borrowing Trident's editorial serif-over-sans pairing for the public site only, while keeping Inter everywhere the product itself renders data, keeps both jobs honest instead of compromising one for the other.
+
 ---
 
 ## 3. Figma file structure
@@ -157,6 +180,7 @@ All motion is disabled under `prefers-reduced-motion: reduce`.
 | `06 · Screens — Tablet` | 768 px variants of the 4 primary screens only | M6 |
 | `07 · Prototype` | Clickable flow for the demo path | M6 |
 | `08 · Handoff` | Redlines, token mapping table, component→code name map | M6 + M5 |
+| `09 · Public Site` | Landing, Blog index/post, Guides index/detail — high-fidelity, own moodboard section (§5.9) | M6 |
 
 ### Conventions
 - **Auto Layout on every frame.** A design that cannot resize cannot be built.
@@ -178,6 +202,7 @@ All motion is disabled under `prefers-reduced-motion: reduce`.
 | Component | Variants / states | Notes |
 |---|---|---|
 | `SeverityBadge` | 5 severities × (sm, md) × (with count, without) | Colour + icon + label. The most-used component in the system |
+| `SeverityStatTile` | 5 severities, each a solid colour block, big number + label, small trend-delta chip in the top-right corner | The one "loud colour" exception (principle 7) — modelled on Tenable/SecurityCenter-style headline counts. Used only in the dashboard's top row (§5.1) |
 | `StatusPill` | open · acknowledged · suppressed · fixed · false_positive | Neutral colours — status is not severity |
 | `EngineIcon` | 7 engines | Consistent glyph per engine, used in tables, filters, and the pipeline |
 | `RiskGauge` | 0–100 arc, verdict band, delta arrow, 3 sizes | Hero element of the dashboard |
@@ -194,6 +219,19 @@ All motion is disabled under `prefers-reduced-motion: reduce`.
 | `EmptyState` | icon + title + description + action | 6 written variants |
 | `ErrorState` | message + retry + `request_id` | |
 | `PartialResultBanner` | names the failed/skipped engines | The state people forget |
+
+### 4.3 Public-site components (Landing, Blog, Guides — §5.9)
+
+These use §2.9's tokens and never appear inside the authenticated app.
+
+| Component | Variants / states | Notes |
+|---|---|---|
+| `PublicNav` | default · scrolled (condensed) | Floating pill nav, sticky; logo + Guides + Blog + primary CTA |
+| `HeroGlow` | animated · static (reduced-motion) | Absolutely-positioned animated gradient behind hero copy |
+| `MarketingCard` | with-media · text-only | The dual-column feature cards on the Landing page |
+| `BlogCard` / `GuideCard` | default · featured (larger, first item) | Eyebrow category label + serif title + one-line description + meta |
+| `GuideSidebar` | default · active-section highlighted | Sticky in-page section nav for a guide's steps |
+| `MarketingCtaBand` | default | Full-width closing call-to-action band with one button |
 
 ---
 
@@ -215,8 +253,13 @@ All motion is disabled under `prefers-reduced-motion: reduce`.
 | 10 | Pentest targets | `/projects/:id/targets` | P1 |
 | 11 | Rules catalogue | `/rules` | P2 |
 | 12 | Settings | `/settings` | P2 |
+| 13 | Landing | `/` | **P1 — public, first thing anyone sees** |
+| 14 | Blog index | `/blog` | P1 |
+| 15 | Blog post | `/blog/:slug` | P1 |
+| 16 | Guides index | `/guides` | P1 |
+| 17 | Guide detail | `/guides/:slug` | P1 |
 
-**Design order: 4 → 8 → 9 → 6 → 5 → 3 → the rest.** The three hero screens carry the entire demo; if only three screens reach high fidelity, these are the three.
+**Design order: 4 → 8 → 9 → 6 → 5 → 3 → the rest.** The three hero screens carry the entire demo; if only three screens reach high fidelity, these are the three. Screens 13–17 (the public site, §5.9) are ranked P1 rather than P0 because they don't gate the scanning flow — but do them early anyway if a demo/checkpoint deadline is close, since a landing page is the single highest-leverage thing to show someone in the first ten seconds of a demo.
 
 ---
 
@@ -259,7 +302,8 @@ All motion is disabled under `prefers-reduced-motion: reduce`.
 | Element | Detail |
 |---|---|
 | Risk gauge | 0–100 arc, verdict word, delta vs previous scan with direction arrow |
-| Severity summary | Counts + donut; every count clickable → filtered findings |
+| Severity stat tiles | Five `SeverityStatTile` blocks (critical/high/medium/low/info) above the donut — big number, label, small delta chip (e.g. "-18") in the corner showing the change since the previous scan. Modelled directly on the Tenable/SecurityCenter reference: scannable at a glance, no need to read the donut to know if there's a critical |
+| Severity summary | Donut alongside the tiles for proportion at a glance; every tile and every donut segment is clickable → filtered findings |
 | Supply chain pipeline | 7 stages; colour = worst severity; icon = job status; click → findings filtered by engine |
 | Partial banner | Present whenever any job is `failed` — never hidden |
 | Top findings | 5 highest-severity open findings |
@@ -363,6 +407,60 @@ Target list with status pills (`awaiting_attestation` · `attested` · `blocked`
 
 Standard patterns: centred auth card with the product mark; rules catalogue as a filterable table with an expandable detail row; settings as a tabbed form (Profile · Security · Preferences).
 
+### 5.9 Screens 13–17 — Public site: Landing, Blog, Guides
+
+**Purpose:** get someone from "what is this" to "I trust this enough to sign up" in one scroll, and give existing users a place to learn the product that isn't a tooltip. This surface sits entirely outside the authenticated app shell — its own nav, its own layout, no sidebar, no severity system (§1).
+
+**Direction:** adapted from tridentsecurity.io — a dark hero with an animated blue gradient glow behind a serif display headline, a floating pill-shaped nav, then alternating light sections of paired text-and-visual cards, closing on a call-to-action band. Adapted, not copied: GuardPipe keeps a single blue accent (`--accent`, already in the palette) rather than introducing Trident's red, reduces the "juggling" motion to a slow-looping gradient (§2.9, `prefers-reduced-motion`-safe), and replaces Trident's stock-photo footer band with a plain gradient band — GuardPipe has no photography budget or asset, and a fabricated stock photo would be a worse choice than an honest gradient.
+
+**Screen 13 — Landing (`/`)**
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│   ψ GuardPipe        Guides   Blog              [Sign in]  [Get Started] │  ← floating pill nav, sticky
+├──────────────────────────────────────────────────────────────────────────┤
+│                         (animated blue gradient glow)                    │
+│                    One score for your whole supply chain.                │  ← serif, text-display-hero
+│         Seven SDLC stages, one explainable 0–100 risk verdict,           │  ← sans, text-body
+│              AI-authored fixes. Built to be attacked and survive it.     │
+│                          [ Get Started free ]                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Docs → Code → Deps → Containers → K8s → CI/CD → Pentest   (icon strip)  │  ← the 7 engines, mirrors Trident's logo row
+├──────────────────────────────────────────────────────────────────────────┤
+│  ┌─ One score, not seven reports ──────┐  ┌─ Every finding, explained ─┐ │
+│  │ [ RiskGauge + pipeline mock ]        │  │ [ finding detail mock ]     │ │
+│  └───────────────────────────────────────┘  └─────────────────────────┘ │
+│  ┌─ Sandboxed by default ──────────────┐                                 │
+│  │ Pentest runs in a no-network,        │                                 │
+│  │ read-only, non-root container.       │                                 │
+│  └───────────────────────────────────────┘                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│                (gradient CTA band) See your risk before it ships.        │
+│                          [ Get Started free ]                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Product        Guides         Blog          Legal                        │  ← footer nav columns
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+| Element | Detail |
+|---|---|
+| Nav | `PublicNav`, floating, condenses on scroll; unauthenticated → "Sign in" + "Get Started"; authenticated → "Dashboard" instead |
+| Hero | `HeroGlow` background, serif headline, one-sentence sans subhead, single primary CTA — no secondary CTA competing for attention |
+| Engine strip | The 7 `EngineIcon`s already built for the product, reused here — GuardPipe's actual differentiators standing in for Trident's cloud-provider logo row |
+| Feature cards | 3 `MarketingCard`s, each pairing one sentence of claim with a small real (or realistic mock) screenshot of the actual product — a security buyer trusts a real UI over an illustration |
+| CTA band | `MarketingCtaBand`, gradient not photo |
+| Footer | Nav columns + legal, dark background |
+
+**Screen 14 — Blog index (`/blog`)** — card grid using `BlogCard`. Purpose: "how to use this stuff," written as short, practical posts, not a general security-research blog (that's out of scope for a 4-week project) — e.g. *"Reading your first risk score," "Connecting a private repository," "What 'partial scan' means and when to trust it."* Suggested categories: **Getting Started · Engine Deep Dives · Release Notes**. Eyebrow label uses `--accent`, never a severity colour — this is content, not a finding.
+
+**Screen 15 — Blog post (`/blog/:slug`)** — eyebrow, serif H1, byline + date + read time, prose body capped at ~68 characters per line for readability, `CodeBlock` for any snippets, closing CTA band linking back to Guides or Sign up.
+
+**Screen 16 — Guides index (`/guides`)** — 3-column `GuideCard` grid, one card per major workflow area (mirrors Trident's 3-up "AI penetration testing / Cloud attack path analysis / Continuous penetration testing" layout): e.g. **Running your first scan · Reading your risk score and verdict · Connecting a repository and pentest target**. This is the promoted, permanent version of the in-product help content — the guide someone reads *before* they've logged in, to decide whether to.
+
+**Screen 17 — Guide detail (`/guides/:slug`)** — two-column docs layout: `GuideSidebar` (sticky, lists the guide's own sections) + prose content. Serif for the guide title only, sans for everything else — a guide is closer to documentation than to marketing copy, so it reads calmer than the Landing page despite sharing its nav and footer.
+
+**Content is static.** Blog posts and guides are Markdown/MDX files bundled into the frontend build (e.g. via Vite's raw/glob import or a small MDX plugin) — no CMS, no new backend module, no database table. This keeps the public site inside the zero-budget, 4-week constraint: it is presentation, not a new feature surface for the backend to serve.
+
 ---
 
 ## 6. Interaction patterns
@@ -430,12 +528,12 @@ Standard patterns: centred auth card with the product mark; rules catalogue as a
 
 ## 10. Design deliverable checklist
 
-- [ ] Figma file created with all 9 pages
-- [ ] All tokens published as Figma Variables with light + dark modes
+- [ ] Figma file created with all 10 pages (including `09 · Public Site`)
+- [ ] All tokens published as Figma Variables with light + dark modes, plus the public-site-only tokens (§2.9) in their own variable collection
 - [ ] All primitives with full variant coverage
-- [ ] All 17 domain components
-- [ ] 12 wireframes
-- [ ] 3 hero screens in high fidelity (desktop)
+- [ ] All 24 domain components (18 product + 6 public-site, §4.2–4.3)
+- [ ] 17 wireframes (12 product screens + 5 public-site screens)
+- [ ] 3 hero screens in high fidelity (desktop) — plus the Landing page in high fidelity, since it is what a demo audience or a checkpoint reviewer sees first
 - [ ] 4 primary screens at tablet width
 - [ ] Loading / empty / error / partial patterns for every data view
 - [ ] Clickable prototype covering the demo path

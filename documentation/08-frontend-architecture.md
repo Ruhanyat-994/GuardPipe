@@ -263,10 +263,14 @@ Zod schemas validate API responses **in development and test only** (stripped in
 ## 5. Routing
 
 ```
+/                                           public — Landing page
+/blog                                       public — Blog index
+/blog/:slug                                 public — Blog post
+/guides                                     public — Guides index
+/guides/:slug                               public — Guide detail
 /login                                      public
 /register                                   public
-/                                           → /projects
-/projects                                   Projects list
+/projects                                   Projects list (redirect target after login)
 /projects/:projectId                        Project dashboard
 /projects/:projectId/scans                  Scan history
 /projects/:projectId/scans/new              New Scan wizard
@@ -279,7 +283,7 @@ Zod schemas validate API responses **in development and test only** (stripped in
 *                                           404
 ```
 
-Protected routes sit under a `<RequireAuth>` layout that redirects to `/login?returnTo=<path>` when unauthenticated.
+Protected routes sit under a `<RequireAuth>` layout that redirects to `/login?returnTo=<path>` when unauthenticated. `/`, `/blog*`, and `/guides*` sit outside that layout entirely — they render the public site shell (own nav/footer, no sidebar) and are reachable whether or not the visitor is signed in; see [09 §5.9](09-ui-ux-design-system.md#59-screens-1317--public-site-landing-blog-guides). An authenticated user hitting `/` still sees the marketing Landing page, not an auto-redirect — the app itself lives at `/projects` and up.
 
 **Filter state lives in the URL**, not component state:
 `/scans/7d3f/findings?severity=critical,high&engine=codescan&status=open&page=2`
