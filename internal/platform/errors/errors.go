@@ -18,6 +18,7 @@ const (
 	KindValidation   Kind = "validation"
 	KindUnauthorized Kind = "unauthorized"
 	KindForbidden    Kind = "forbidden"
+	KindRateLimited  Kind = "rate_limited"
 	KindExternal     Kind = "external"
 	KindInternal     Kind = "internal"
 )
@@ -37,6 +38,8 @@ func StatusFor(k Kind) int {
 		return http.StatusUnauthorized
 	case KindForbidden:
 		return http.StatusForbidden
+	case KindRateLimited:
+		return http.StatusTooManyRequests
 	case KindExternal:
 		return http.StatusBadGateway
 	case KindInternal:
@@ -65,6 +68,9 @@ type Error struct {
 	Detail string
 	Fields []FieldError
 	Err    error
+	// RetryAfter is seconds until the caller may retry — only meaningful
+	// when Kind is KindRateLimited.
+	RetryAfter int
 }
 
 func (e *Error) Error() string {
@@ -108,6 +114,15 @@ func Unauthorized(code, detail string) *Error {
 // the resource exists.
 func Forbidden(code, detail string) *Error {
 	return &Error{Kind: KindForbidden, Code: code, Title: "Forbidden", Detail: detail}
+}
+
+// RateLimited reports that the caller exceeded a rate limit. retryAfter is
+// the number of seconds the transport layer should put in a `Retry-After`
+// header (documentation/07-api-specification.md §1.6) — it isn't part of
+// the RFC 9457 body itself, so it's carried on the error for the middleware
+// to read, not serialised by ToProblemDetails.
+func RateLimited(code, detail string, retryAfterSeconds int) *Error {
+	return &Error{Kind: KindRateLimited, Code: code, Title: "Too many requests", Detail: detail, RetryAfter: retryAfterSeconds}
 }
 
 // External reports a failure in a call to a system GuardPipe does not
