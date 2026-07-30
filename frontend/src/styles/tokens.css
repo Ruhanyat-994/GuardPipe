@@ -1,0 +1,166 @@
+/*
+ * Design tokens from documentation/09-ui-ux-design-system.md §2.
+ *
+ * Colours that change between light and dark live as plain CSS custom
+ * properties on :root / .dark first, then get re-exposed under a distinct
+ * `--color-*` name inside `@theme` so Tailwind utilities (bg-accent,
+ * text-sev-critical, ...) resolve to whichever mode is active — one source
+ * of truth, no duplicated palette. Tokens with no light/dark variant
+ * (radius, shadow, motion, type scale) are declared directly in `@theme`.
+ *
+ * The app always decides light/dark explicitly (a `.dark` class on <html>,
+ * per documentation/08-frontend-architecture.md) rather than relying on
+ * `prefers-color-scheme` alone, so a signed-in user's preference can be
+ * saved later without fighting the OS setting.
+ */
+
+:root {
+  /* 2.1 Colour — base palette (light) */
+  --bg-base: #fafafa;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-subtle: #f4f5f7;
+  --border-default: #e3e5e9;
+  --border-strong: #c8ccd4;
+  --text-primary: #12141a;
+  --text-secondary: #5a6270;
+  --text-tertiary: #8a93a2;
+  --text-inverse: #ffffff;
+
+  /* 2.2 Colour — severity (light) */
+  --sev-critical: #b4232a;
+  --sev-critical-bg: rgb(180 35 42 / 0.1);
+  --sev-critical-border: rgb(180 35 42 / 0.3);
+  --sev-high: #c2410c;
+  --sev-high-bg: rgb(194 65 12 / 0.1);
+  --sev-high-border: rgb(194 65 12 / 0.3);
+  --sev-medium: #a16207;
+  --sev-medium-bg: rgb(161 98 7 / 0.1);
+  --sev-medium-border: rgb(161 98 7 / 0.3);
+  --sev-low: #1d4ed8;
+  --sev-low-bg: rgb(29 78 216 / 0.1);
+  --sev-low-border: rgb(29 78 216 / 0.3);
+  --sev-info: #4b5563;
+  --sev-info-bg: rgb(75 85 99 / 0.1);
+  --sev-info-border: rgb(75 85 99 / 0.3);
+
+  /* 2.3 Colour — semantic (light) */
+  --accent: #2563eb;
+  --success: #15803d;
+  --warning: #a16207;
+  --danger: #b4232a;
+  --ai: #7c3aed;
+}
+
+.dark {
+  --bg-base: #0b0d10;
+  --bg-surface: #14171c;
+  --bg-surface-raised: #1b1f26;
+  --bg-subtle: #1b1f26;
+  --border-default: #272c34;
+  --border-strong: #3a414c;
+  --text-primary: #f2f4f7;
+  --text-secondary: #a2abba;
+  --text-tertiary: #6e7889;
+  --text-inverse: #0b0d10;
+
+  --sev-critical: #ff6b72;
+  --sev-critical-bg: rgb(255 107 114 / 0.15);
+  --sev-critical-border: rgb(255 107 114 / 0.35);
+  --sev-high: #ff8b4c;
+  --sev-high-bg: rgb(255 139 76 / 0.15);
+  --sev-high-border: rgb(255 139 76 / 0.35);
+  --sev-medium: #f5b93b;
+  --sev-medium-bg: rgb(245 185 59 / 0.15);
+  --sev-medium-border: rgb(245 185 59 / 0.35);
+  --sev-low: #7ba7ff;
+  --sev-low-bg: rgb(123 167 255 / 0.15);
+  --sev-low-border: rgb(123 167 255 / 0.35);
+  --sev-info: #9aa5b4;
+  --sev-info-bg: rgb(154 165 180 / 0.15);
+  --sev-info-border: rgb(154 165 180 / 0.35);
+
+  --accent: #5b8def;
+  --success: #4ade80;
+  --warning: #f5b93b;
+  --danger: #ff6b72;
+  --ai: #a78bfa;
+}
+
+@theme {
+  /* 2.5 Typography */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  --text-display: 32px;
+  --text-display--line-height: 40px;
+  --text-display--font-weight: 600;
+  --text-h1: 24px;
+  --text-h1--line-height: 32px;
+  --text-h1--font-weight: 600;
+  --text-h2: 20px;
+  --text-h2--line-height: 28px;
+  --text-h2--font-weight: 600;
+  --text-h3: 16px;
+  --text-h3--line-height: 24px;
+  --text-h3--font-weight: 600;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-body-sm: 13px;
+  --text-body-sm--line-height: 20px;
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-code: 13px;
+  --text-code--line-height: 20px;
+
+  /* 2.7 Radius, elevation, motion — no light/dark variant, so these are
+     declared once, directly, with no indirection needed. */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.08);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.12);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Colours — re-exposed from the plain vars above under a distinct
+     `--color-*` name, so both light and dark values are picked up
+     automatically when `.dark` is toggled, without duplicating the
+     palette here. */
+  --color-bg-base: var(--bg-base);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-surface-raised: var(--bg-surface-raised);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-inverse: var(--text-inverse);
+
+  --color-sev-critical: var(--sev-critical);
+  --color-sev-critical-bg: var(--sev-critical-bg);
+  --color-sev-critical-border: var(--sev-critical-border);
+  --color-sev-high: var(--sev-high);
+  --color-sev-high-bg: var(--sev-high-bg);
+  --color-sev-high-border: var(--sev-high-border);
+  --color-sev-medium: var(--sev-medium);
+  --color-sev-medium-bg: var(--sev-medium-bg);
+  --color-sev-medium-border: var(--sev-medium-border);
+  --color-sev-low: var(--sev-low);
+  --color-sev-low-bg: var(--sev-low-bg);
+  --color-sev-low-border: var(--sev-low-border);
+  --color-sev-info: var(--sev-info);
+  --color-sev-info-bg: var(--sev-info-bg);
+  --color-sev-info-border: var(--sev-info-border);
+
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-ai: var(--ai);
+}
