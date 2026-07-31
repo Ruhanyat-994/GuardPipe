@@ -11,17 +11,20 @@
       // post-mount React effect. Mirrors src/stores/themeStore.ts's own logic —
       // that store re-applies the same result once it loads, so the two can
       // never disagree.
-      (function () {
+      ;(function () {
         try {
-          var stored = localStorage.getItem('guardpipe-theme');
-          var mode = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
-          var dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          if (dark) document.documentElement.classList.add('dark');
+          var stored = localStorage.getItem('guardpipe-theme')
+          var mode =
+            stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
+          var dark =
+            mode === 'dark' ||
+            (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.classList.add('dark')
         } catch (e) {
           // localStorage/matchMedia unavailable (privacy mode, old browser) —
           // fall back to the default light theme rather than blocking boot.
         }
-      })();
+      })()
     </script>
   </head>
   <body>
