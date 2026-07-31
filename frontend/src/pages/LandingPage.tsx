@@ -1,10 +1,27 @@
 import { Link } from 'react-router-dom'
+import {
+  FileText,
+  Code2,
+  Package,
+  Container as ContainerIcon,
+  Boxes,
+  Workflow,
+  ShieldAlert,
+} from 'lucide-react'
 import { HeroGlow } from '../components/HeroGlow'
 import { PublicNav } from '../components/PublicNav'
 import { PublicFooter } from '../components/PublicFooter'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
 
-const ENGINE_STAGES = ['Docs', 'Code', 'Deps', 'Containers', 'K8s', 'CI/CD', 'Pentest']
+const ENGINE_STAGES = [
+  { label: 'Docs', icon: FileText },
+  { label: 'Code', icon: Code2 },
+  { label: 'Deps', icon: Package },
+  { label: 'Containers', icon: ContainerIcon },
+  { label: 'K8s', icon: Boxes },
+  { label: 'CI/CD', icon: Workflow },
+  { label: 'Pentest', icon: ShieldAlert },
+]
 
 /**
  * documentation/09-ui-ux-design-system.md §5.9, Screen 13. Direction
@@ -40,13 +57,25 @@ export function LandingPage() {
           </Link>
         </div>
 
-        <div className="relative border-t border-white/10 px-8 py-6">
-          <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-x-8 gap-y-2 text-body-sm text-white/60">
+        <div className="relative border-t border-white/10 px-8 py-10">
+          <div className="mx-auto flex max-w-4xl items-start justify-center overflow-x-auto">
             {ENGINE_STAGES.map((stage, i) => (
-              <span key={stage} className="flex items-center gap-8">
-                {stage}
-                {i < ENGINE_STAGES.length - 1 && <span aria-hidden="true">→</span>}
-              </span>
+              <div key={stage.label} className="flex items-start">
+                <div className="flex w-16 flex-col items-center gap-2 sm:w-20">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/5">
+                    <stage.icon className="h-5 w-5 text-white/80" aria-hidden="true" />
+                  </div>
+                  <span className="text-caption whitespace-nowrap text-white/60">
+                    {stage.label}
+                  </span>
+                </div>
+                {i < ENGINE_STAGES.length - 1 && (
+                  <div
+                    className="mt-[22px] h-px w-4 shrink-0 bg-white/15 sm:w-8"
+                    aria-hidden="true"
+                  />
+                )}
+              </div>
             ))}
           </div>
         </div>
