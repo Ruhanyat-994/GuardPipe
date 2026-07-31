@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | UI/UX Design and Design System |
 | **Project** | GuardPipe |
-| **Version** | 1.4 |
+| **Version** | 1.6 |
 | **Status** | Draft |
 | **Tool** | Figma |
 | **Owner** | Member 6 (design) with Member 5 (frontend) |
@@ -19,6 +19,8 @@
 | 1.2 | 2026-07-31 | Team | **Specification only — not yet built** (see `BUILD_GUIDE.md` Phase 9). Adopted a Jira-inspired direction for the authenticated app's *chrome* (§4.4): dark top bar, collapsible icon+label sidebar, per-project tab bar, right-anchored overlay panels for global search/notifications/user menu, neutral stat cards alongside the existing severity tiles. Added §2.10, the light/dark/system theme-mode requirement, surfaced through the new `UserMenu` → `Theme` control exactly as Jira does it. The Phase 3 sidebar/dashboard chrome already shipped is a functional placeholder against this spec, not the final design — routes and nav items stay, styling and a few new chrome pieces (tab bar, search overlay, notifications, context menus, theme switcher) do not exist in code yet |
 | 1.3 | 2026-07-31 | Team | **Implemented in code**, pulled forward from Phase 9 (the design work in v1.2 landed the same day, at the user's explicit request, ahead of Phases 4–8's backend work — see `PROGRESS-LOG.md`). All 9 §4.4 components built (`TopBar`, `SidebarNav`, `ProjectTabBar`, `UserMenu`, `ThemeSubmenu`, `NotificationPanel`, `GlobalSearch`, `ContextMenu`, `MetricCard`), §2.10's light/dark/system theme switcher working end to end with no flash-of-wrong-theme, and the `ContextMenu`/`ProjectSettingsPage` "Archive project" action wired to the `project.Service.Archive` endpoint that had been backend-ready with no UI since Phase 3. `GlobalSearch` and `NotificationPanel` ship intentionally scoped down from the full spec — see the deviations noted inline in §4.4 |
 | 1.4 | 2026-07-31 | Team | **Implemented in code.** User feedback: the projects list/creation screens read as empty and generic, missing the "actual small logo" polish GitHub's own UI has. Added §4.5 (provider brand marks — `GitHubMark`, a real inline GitHub logomark used everywhere a GitHub repository is shown, replacing the generic folder icon; explicitly **not** adding a non-functional GitLab/Bitbucket option since only GitHub is implemented) and §4.6 (progressive-disclosure step badges + a `.animate-reveal` transition for `ProjectCreatePage`'s later sections). Enriched the Screen 3 project cards (§5.6) with a real per-card `ContextMenu`, default branch, and relative creation time, and the repository-attach result card with a real outbound link to the repository plus branch/visibility badges |
+| 1.5 | 2026-07-31 | Team | **Implemented in code.** User feedback with a reference screenshot: Login/Register "looked weird," redesigned as a split-screen (§5.8) — direction adapted from Aikido's login, fixed-white form panel + fixed-dark info panel (`AuthShell`, `AuthSidePanel`), same layout as the reference but a real email/password form instead of OAuth buttons (not built) and real GuardPipe claims instead of fabricated trust badges/customer logos (none exist). New tokens: `--color-auth-panel-bg`/`-fg`/`-fg-secondary` plus a `.auth-panel-light` class that locally re-pins every theme-relative token to its light value within the panel, so `Input`/`Button` render consistently regardless of the visitor's theme preference — the same mechanism `.dark` uses, scoped down instead of applied to `<html>` |
+| 1.6 | 2026-07-31 | Team | **Implemented in code.** User supplied GuardPipe's actual logo artwork (a shield containing a run/checkpoint/stop pipeline graphic) with instructions to set it as the brand mark everywhere, background removed. Added §4.7. Background removal done programmatically (border flood-fill through connected near-white pixels, not a blanket colour-key, so the logo's own white line-art survived) since no image-editing tool was available in this session. Replaced the Vite-scaffold placeholder favicon (still in place since Phase 0) with real favicons generated from the new mark. Wired the new `Logo` component into `AppShell`, `AuthShell`, and `PublicNav` |
 
 > This document is the **specification for the Figma deliverable** and the design contract for the frontend. The Figma file is built from this; the frontend is built from both.
 
@@ -288,6 +290,14 @@ Pattern for any form where later fields only make sense once an earlier step is 
 - **Reveal transition** — newly-shown sections fade and slide up slightly (`.animate-reveal`, `index.css`, `--duration-slow`/`--ease-standard` from §2.7) rather than snapping into existence. Automatically covered by the existing global `prefers-reduced-motion` rule — no separate reduced-motion variant needed, same as `HeroGlow`'s drift animation.
 - This is the "special effects... buttons that mean something with the project" feedback in practice: motion and step state exist to communicate *progress through a real process*, not decoration. A button whose loading/success/disabled state doesn't map to anything real is exactly what this pattern avoids.
 
+### 4.7 Brand mark (built)
+
+`components/Logo.tsx` — the shield ("guard") containing a connected run → checkpoint → decision → stop pipeline graphic ("pipe"), user-supplied artwork. Source was a raster PNG on a near-white background; background removed programmatically (flood-fill from the canvas border through connected near-white pixels only — not a blanket colour-key, which would have also erased the white pipeline line-art *inside* the shield — plus a short feather pass on the boundary ring to avoid a hard/jagged edge), then trimmed to its bounding box and re-encoded at a UI-appropriate resolution. Transparent PNG (`src/assets/logo.png`), `object-contain`-safe sizing via height only.
+
+**Paired with the "GuardPipe" wordmark at every call site** (`AppShell` top bar, `AuthShell`, `PublicNav`) — this is the icon half of a lockup, not a standalone logo-with-text asset. Also supplies the favicon (`public/logo-{32,180,512}.png`, replacing the default Vite-scaffold placeholder that was still in place) — `index.html` references all three sizes (standard favicon, Apple touch icon, and a large PNG for anywhere a high-res app icon gets pulled).
+
+**Recoloured to match `--accent`** (was the source artwork's original green) — a vectorised hue rotation in HSV space (shift every pixel's hue by the delta between the artwork's dominant green and `--accent`'s hue, leaving saturation/value untouched) rather than a flat colour swap, so the shield's existing gradient/shading survives instead of flattening into one solid blue. The dark inner panel and white line-art are low-saturation, so the rotation leaves them essentially unaffected — only the green regions (the shield body and the small icon-fill accents) actually move.
+
 ---
 
 ## 5. Screen specifications
@@ -467,9 +477,14 @@ Still not on the cards: last scan time, risk score chip, verdict pill, severity 
 
 Target list with status pills (`awaiting_attestation` · `attested` · `blocked` · `revoked`). Adding a target shows inline validation results, including the resolved IPs and any block reason in plain language ("This resolves to a private address and cannot be tested"). The attestation dialog shows the full authorisation statement with the user's name and the target — deliberately weighty, because it is a legal record.
 
-### 5.8 Screens 1, 2, 11, 12
+### 5.8 Screens 1, 2 — Login and Register (built, rev 1.5)
 
-Standard patterns: centred auth card with the product mark; rules catalogue as a filterable table with an expandable detail row; settings as a tabbed form (Profile · Security · Preferences).
+**Direction adapted from Aikido's split-screen login.** Replaces the earlier single-dark-hero-with-floating-nav treatment. Two fixed panels, side by side, present regardless of the app's own light/dark theme mode (§2.10) — the same "brand moment, not a themed surface" rule as the Landing hero (§2.9):
+
+- **Left panel** (`AuthShell`, `--color-auth-panel-bg`/`-fg`/`-fg-secondary`, always white/dark-text) — a small logo linking home top-left (no full `PublicNav`; a focused auth screen shouldn't compete for attention with Guides/Blog mid-signup), then a centred column: a small accent pill above the headline ("Welcome back" / "Get started free"), a serif headline, one line of subtext, the real form, and a link to the other auth screen below. `Input`/`Button` render correctly regardless of the visitor's theme preference via `.auth-panel-light` — a local re-pin of every theme-relative token to its light value, scoped to this panel only (the same mechanism `.dark` itself uses, just applied locally instead of to `<html>`), so a signed-out visitor in Dark mode never sees a dark input box floating on a fixed-white panel.
+- **Right panel** (`AuthSidePanel`, `lg:` and up only) — `HeroGlow` background + three real GuardPipe claims as bordered info cards, reusing the exact copy already on the Landing page's feature cards (repository/target scanning, sandboxed execution, one explainable score). **Not included, on purpose:** Aikido's OAuth-provider buttons (GitHub/GitLab/Bitbucket — GuardPipe has no OAuth, FR-IAM-010 is a documented Stretch goal, not built) and its trust badges ("Trusted by…" customer logos, SOC 2, ISO 27001 — GuardPipe has no customers and no compliance certification; fabricating either would be exactly the kind of dishonest UI this document argues against everywhere else, §4.4/§4.5). The centre column is a real email/password form instead of provider buttons — same layout, honest content.
+
+Rules catalogue (Screen 11) and Settings (Screen 12) are unspecified beyond the original note: rules as a filterable table with an expandable detail row, settings as a tabbed form (Profile · Security · Preferences) — neither is built yet.
 
 ### 5.9 Screens 13–17 — Public site: Landing, Blog, Guides
 
