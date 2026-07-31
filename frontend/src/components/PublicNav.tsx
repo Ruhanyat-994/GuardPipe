@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { Logo } from './Logo'
 import { useAuthStore } from '../stores/authStore'
 
 /**
@@ -12,7 +13,8 @@ export function PublicNav() {
 
   return (
     <header className="sticky top-4 z-10 mx-auto flex w-full max-w-3xl items-center justify-between rounded-full border border-border-default bg-bg-surface/90 px-6 py-3 shadow-md backdrop-blur relative">
-      <Link to="/" className="text-h3 font-semibold text-text-primary">
+      <Link to="/" className="flex items-center gap-2 text-h3 font-semibold text-text-primary">
+        <Logo className="h-6 w-auto" />
         GuardPipe
       </Link>
 

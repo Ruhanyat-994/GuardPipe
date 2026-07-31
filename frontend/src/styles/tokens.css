@@ -87,6 +87,32 @@
   --ai: #a78bfa;
 }
 
+/* Re-pins every theme-relative token above to its light-mode value, scoped
+ * to AuthShell's fixed-white form panel (documentation/09-ui-ux-design-system.md
+ * §5.8/Aikido-adapted auth screens) — the same mechanism `.dark` itself
+ * uses, just applied locally. Without this, `Input`/`Button` (which read
+ * `--bg-surface`/`--text-primary`/etc.) would render their dark-mode
+ * colours on a panel that's deliberately always white, an inconsistent
+ * dark-box-on-a-white-panel look whenever a signed-out visitor's OS or
+ * saved preference is Dark. */
+.auth-panel-light {
+  --bg-base: #fafafa;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-subtle: #f4f5f7;
+  --border-default: #e3e5e9;
+  --border-strong: #c8ccd4;
+  --text-primary: #12141a;
+  --text-secondary: #5a6270;
+  --text-tertiary: #8a93a2;
+  --text-inverse: #ffffff;
+  --accent: #2563eb;
+  --success: #15803d;
+  --warning: #a16207;
+  --danger: #b4232a;
+  --ai: #7c3aed;
+}
+
 @theme {
   /* Chrome — TopBar/overlay-panel colours that stay constant regardless of
      the app's own light/dark mode (documentation/09-ui-ux-design-system.md
@@ -120,6 +146,20 @@
      on --accent right now"), so on a background that's dark in every mode
      it went dark-on-dark once dark mode shipped. This token doesn't move. */
   --color-public-fg: #ffffff;
+
+  /* Auth screens (Login/Register) — direction adapted from Aikido's
+   * split-screen login: a fixed white form panel + a fixed dark info
+   * panel, on every visit, regardless of the app's own theme mode — the
+   * same "brand moment, not a themed surface" reasoning as the hero
+   * above. `--color-auth-panel-fg` is deliberately a constant (not
+   * `--text-primary`) for the exact reason `--color-public-fg` exists:
+   * pairing a fixed-white panel with a theme-relative text colour is
+   * what caused the dark-mode-illegible-headline bug earlier — this
+   * avoids repeating it on a fixed-white panel instead of a fixed-dark
+   * one. */
+  --color-auth-panel-bg: #ffffff;
+  --color-auth-panel-fg: #12141a;
+  --color-auth-panel-fg-secondary: #5a6270;
 
   --text-display: 32px;
   --text-display--line-height: 40px;

@@ -1,6 +1,6 @@
-# golangci-lint config (v1 schema — the action below is pinned to a v1.x
-# release, see documentation/04-backend-architecture.md's note on pinning
-# Gin for the same "don't let @latest silently change behaviour" reason).
+# golangci-lint config — v2 schema (required: golangci-lint-action@v7 only
+# supports golangci-lint v2, not v1 — see .github/workflows/ci.yml's
+# pinned `version:`).
 #
 # errcheck.exclude-functions: (*gin.Context).Error's return value is the
 # same *gin.Error already appended to c.Errors — it is never nil (Gin
@@ -10,7 +10,18 @@
 # (documentation/04-backend-architecture.md §4.1) — checking the return
 # value here is not idiomatic Gin usage, not a real bug, and without this
 # exclusion errcheck flags essentially every handler in the codebase.
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - (*github.com/gin-gonic/gin.Context).Error
+version: "2"
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*github.com/gin-gonic/gin.Context).Error
+        # Deferred Close() on a short-lived migration-only DB handle and an
+        # HTTP response body — the standard, widely-recommended errcheck
+        # exclusion for this pattern (a Close() error here is not
+        # actionable at the defer site). Kept as two precise entries
+        # rather than a blanket io.Closer exclusion, so a future Close()
+        # that genuinely needs its error checked (e.g. flush-on-close for
+        # a file writer) isn't silently swallowed by this rule.
+        - (*database/sql.DB).Close
+        - (io.ReadCloser).Close
