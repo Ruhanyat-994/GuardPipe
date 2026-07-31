@@ -26,7 +26,7 @@ func seedOrgAndUser(t *testing.T, pool *pgxpool.Pool) (orgID, userID uuid.UUID) 
 	t.Helper()
 	ctx := context.Background()
 
-	orgID, err := repo.NewOrganizationRepo(pool).EnsureDefault(ctx, "Test Org")
+	orgID, err := repo.NewOrganizationRepo(pool).Create(ctx, "Test Org")
 	require.NoError(t, err)
 
 	user := &identity.User{

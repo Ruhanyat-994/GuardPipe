@@ -80,12 +80,6 @@ func run() error {
 	}
 	defer db.Close()
 
-	orgID, err := repo.NewOrganizationRepo(db.Pool).EnsureDefault(ctx, "Default Organization")
-	if err != nil {
-		return fmt.Errorf("ensure default organisation: %w", err)
-	}
-	log.Info("organisation ready", "org_id", orgID)
-
 	identitySvc := identity.NewService(
 		repo.NewUserRepo(db.Pool),
 		repo.NewOrganizationRepo(db.Pool),

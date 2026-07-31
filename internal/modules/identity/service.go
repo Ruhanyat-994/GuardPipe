@@ -54,12 +54,12 @@ type UserRepository interface {
 	RecordSuccessfulLogin(ctx context.Context, id uuid.UUID, loginAt time.Time) error
 }
 
-// OrganizationRepository — single-organisation model for this release
-// (documentation/06-database-design.md §4.1). The sole organisation is
-// created once at startup (see cmd/guardpipe/main.go), not per-registration,
-// so Register never has to resolve a create-race.
+// OrganizationRepository — each registration creates its own organisation
+// (documentation/06-database-design.md §4.1); GuardPipe is multi-tenant, not
+// one shared workspace. See PROGRESS-LOG.md for why the earlier
+// single-shared-organisation model (GetSole/EnsureDefault) was replaced.
 type OrganizationRepository interface {
-	GetSole(ctx context.Context) (uuid.UUID, error)
+	Create(ctx context.Context, name string) (uuid.UUID, error)
 }
 
 // RefreshTokenRepository is defined by this package; implementation in
@@ -120,19 +120,15 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		return nil, apperrors.Internal(fmt.Errorf("hash password: %w", err))
 	}
 
-	orgID, err := s.orgs.GetSole(ctx)
+	// Every registration gets its own new organisation — GuardPipe is
+	// multi-tenant, each account is its own isolated workspace, not a seat
+	// in one shared company workspace. The registrant is that organisation's
+	// only member, so they're always its admin (documentation/05-module-specifications.md
+	// §3, roles table — "admin" is "founding/only member of this org," not
+	// "first person to ever use the product").
+	orgID, err := s.orgs.Create(ctx, orgNameFor(displayName))
 	if err != nil {
-		return nil, apperrors.Internal(fmt.Errorf("resolve organisation: %w", err))
-	}
-	userCount, err := s.users.CountAll(ctx)
-	if err != nil {
-		return nil, apperrors.Internal(fmt.Errorf("count users: %w", err))
-	}
-	// The first user in the organisation is its admin; everyone after joins
-	// as a member (documentation/05-module-specifications.md §3, roles table).
-	role := domain.RoleMember
-	if userCount == 0 {
-		role = domain.RoleAdmin
+		return nil, apperrors.Internal(fmt.Errorf("create organisation: %w", err))
 	}
 
 	user := &User{
@@ -141,7 +137,7 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		Email:        email,
 		DisplayName:  displayName,
 		PasswordHash: passwordHash,
-		Role:         role,
+		Role:         domain.RoleAdmin,
 	}
 	if err := s.users.Create(ctx, user); err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("create user: %w", err))
@@ -322,6 +318,14 @@ func hashRefreshToken(raw string) string {
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// orgNameFor derives a default organisation name at registration time — the
+// register form only collects email/display name/password (no separate "org
+// name" field, keeping signup a single step), so this is a reasonable
+// starting name the user can rename later once account settings exist.
+func orgNameFor(displayName string) string {
+	return displayName + "'s Organization"
 }
 
 func errInvalidCredentials() error {

@@ -90,9 +90,20 @@ func (f *fakeUserRepo) RecordSuccessfulLogin(_ context.Context, id uuid.UUID, lo
 	return nil
 }
 
-type fakeOrgRepo struct{ orgID uuid.UUID }
+// fakeOrgRepo mimics the real repo: every Create call makes a brand-new
+// organisation id, exactly like real registrations each getting their own
+// isolated org (no shared "sole" organisation any more).
+type fakeOrgRepo struct {
+	mu      sync.Mutex
+	created []string // names, for assertions that care
+}
 
-func (f *fakeOrgRepo) GetSole(_ context.Context) (uuid.UUID, error) { return f.orgID, nil }
+func (f *fakeOrgRepo) Create(_ context.Context, name string) (uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, name)
+	return id.New(), nil
+}
 
 type fakeTokenRepo struct {
 	mu     sync.Mutex
@@ -153,7 +164,7 @@ func newTestService(t *testing.T) (identity.Service, *fakeUserRepo, *fakeTokenRe
 	t.Helper()
 	orgID := id.New()
 	users := newFakeUserRepo(orgID)
-	orgs := &fakeOrgRepo{orgID: orgID}
+	orgs := &fakeOrgRepo{}
 	tokens := newFakeTokenRepo()
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
 	svc := identity.NewService(users, orgs, tokens, issuer, 15*time.Minute, 7*24*time.Hour)
@@ -171,7 +182,7 @@ func appErrCode(t *testing.T, err error) string {
 
 // --- Register ---
 
-func TestRegister_FirstUserBecomesAdmin(t *testing.T) {
+func TestRegister_NewUserBecomesAdminOfItsOwnOrganization(t *testing.T) {
 	svc, _, _ := newTestService(t)
 
 	user, err := svc.Register(context.Background(), identity.RegisterInput{
@@ -180,18 +191,25 @@ func TestRegister_FirstUserBecomesAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
+	// Every registrant is the admin of their own brand-new organisation —
+	// there's no "first user overall" special case any more (see the
+	// multi-tenancy fix in PROGRESS-LOG.md).
 	if user.Role != domain.RoleAdmin {
-		t.Errorf("first user's role = %q, want %q", user.Role, domain.RoleAdmin)
+		t.Errorf("registrant's role = %q, want %q", user.Role, domain.RoleAdmin)
+	}
+	if user.OrgID == uuid.Nil {
+		t.Error("registrant has no organisation assigned")
 	}
 }
 
-func TestRegister_SecondUserBecomesMember(t *testing.T) {
+func TestRegister_TwoUsersGetSeparateIsolatedOrganizations(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.Register(ctx, identity.RegisterInput{
+	first, err := svc.Register(ctx, identity.RegisterInput{
 		Email: "first@example.com", DisplayName: "First", Password: "correct-horse-battery",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("first Register() error = %v", err)
 	}
 
@@ -201,8 +219,17 @@ func TestRegister_SecondUserBecomesMember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Register() error = %v", err)
 	}
-	if second.Role != domain.RoleMember {
-		t.Errorf("second user's role = %q, want %q", second.Role, domain.RoleMember)
+
+	// This is the regression test for the cross-account data leak: two
+	// separate registrations must land in two separate organisations, not
+	// share one — otherwise every project/scan/finding query scoped by
+	// actor.OrgID (internal/modules/project/service.go) would show one
+	// account's data to the other.
+	if first.OrgID == second.OrgID {
+		t.Fatalf("two independent registrations share an organisation (%v) — this is the cross-account leak bug, not expected behaviour", first.OrgID)
+	}
+	if second.Role != domain.RoleAdmin {
+		t.Errorf("second user's role = %q, want %q (admin of their own new org, not a member of the first user's org)", second.Role, domain.RoleAdmin)
 	}
 }
 
@@ -469,7 +496,7 @@ func TestVerify_ValidAccessTokenRoundTrips(t *testing.T) {
 
 func TestVerify_ExpiredTokenReturnsTokenExpiredCode(t *testing.T) {
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), -1*time.Minute) // already expired
-	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{orgID: id.New()}, newFakeTokenRepo(), issuer, -1*time.Minute, time.Hour)
+	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, -1*time.Minute, time.Hour)
 
 	token, err := issuer.Issue(id.New(), id.New(), domain.RoleMember)
 	if err != nil {
