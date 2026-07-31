@@ -4,16 +4,17 @@
 |---|---|
 | **Document** | Project Charter |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-01 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial charter |
+| 1.1 | 2026-08-01 | Team | §5.2 out-of-scope row reworded — basic multi-tenancy (one isolated organisation per account) is now built, narrowing what's actually excluded to billing/SSO/multi-member organisations |
 
 ---
 
@@ -92,7 +93,7 @@ Requirements → Design Docs → Code → Dependencies → Container → Kuberne
 | Compliance report generation (SOC 2, ISO 27001) | Needs auditable evidence chains; not demonstrable at this scale |
 | Multi-cloud IaC (Terraform, Helm, Ansible, CloudFormation) | Kubernetes YAML only for now |
 | Live Kubernetes cluster connection | Manifest analysis only — no kubeconfig ingestion |
-| Multi-tenant SaaS billing, SSO, org hierarchy | Single-organisation model is sufficient |
+| Multi-tenant SaaS billing, SSO, org hierarchy (inviting a second member into an organisation) | Basic data isolation (one organisation per account) is built; billing, SSO, and multi-member organisations are not |
 | Autonomous exploitation in `pentest` | Deliberate safety boundary — see [12 — Security & Threat Model](12-security-and-threat-model.md) |
 
 ### 5.3 Future product vision (documented, not built)

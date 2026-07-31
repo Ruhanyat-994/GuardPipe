@@ -4,17 +4,18 @@
 |---|---|
 | **Document** | Security Design and Threat Model |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Method** | STRIDE · OWASP ASVS 4.0 |
 | **Owner** | Member 6 (with all) |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-01 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial threat model |
+| 1.1 | 2026-08-01 | Team | §11 risk #5 reworded after fixing the cross-account data leak it described — every account registering into one shared organisation was letting every user see every other user's projects. Fixed by giving each registration its own organisation (`internal/modules/identity/service.go`); the accepted-risk item is now narrower (an organisation can't yet gain a *second* member), not "no isolation at all" |
 
 ---
 
@@ -329,7 +330,7 @@ Permissions-Policy: geolocation=(), camera=(), microphone=()
 | 2 | Prompt injection cannot be fully prevented | No known technique achieves it | Blast radius contained: AI cannot affect severity, score, or verdict |
 | 3 | Source code is sent to Google | Required for the AI features | Disclosed in-product; disable switch provided |
 | 4 | No secret scanning of full git history by default | Performance | Optional deep-history mode (Stretch) |
-| 5 | Single-organisation model, no true multi-tenancy | Out of scope | Row-level security if it ever becomes multi-tenant |
+| 5 | An organisation can't yet gain a second member (no invite flow) — each account is its own single-member organisation | Out of scope | Invite flow + role assignment within an existing organisation |
 | 6 | HTTP in the local Compose deployment | Local only | TLS termination is required for any non-local deployment |
 | 7 | JWT secret is a single symmetric key | Adequate at this scale | Asymmetric signing with rotation |
 
