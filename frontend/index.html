@@ -5,6 +5,24 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GuardPipe</title>
+    <script>
+      // No flash of the wrong theme on load (documentation/09-ui-ux-design-system.md
+      // §2.10): resolve and apply the theme class before first paint, not in a
+      // post-mount React effect. Mirrors src/stores/themeStore.ts's own logic —
+      // that store re-applies the same result once it loads, so the two can
+      // never disagree.
+      (function () {
+        try {
+          var stored = localStorage.getItem('guardpipe-theme');
+          var mode = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+          var dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) document.documentElement.classList.add('dark');
+        } catch (e) {
+          // localStorage/matchMedia unavailable (privacy mode, old browser) —
+          // fall back to the default light theme rather than blocking boot.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

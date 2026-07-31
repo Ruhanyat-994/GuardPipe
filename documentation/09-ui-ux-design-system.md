@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | UI/UX Design and Design System |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.3 |
 | **Status** | Draft |
 | **Tool** | Figma |
 | **Owner** | Member 6 (design) with Member 5 (frontend) |
@@ -16,6 +16,8 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial design system and screen specification |
 | 1.1 | 2026-07-31 | Team | Added the public site (Landing, Blog, Guides) as a second, distinct surface alongside the authenticated app — direction adapted from tridentsecurity.io — plus the severity stat-tile treatment for the dashboard (§5.1), adapted from Tenable/SecurityCenter-style scanner dashboards |
+| 1.2 | 2026-07-31 | Team | **Specification only — not yet built** (see `BUILD_GUIDE.md` Phase 9). Adopted a Jira-inspired direction for the authenticated app's *chrome* (§4.4): dark top bar, collapsible icon+label sidebar, per-project tab bar, right-anchored overlay panels for global search/notifications/user menu, neutral stat cards alongside the existing severity tiles. Added §2.10, the light/dark/system theme-mode requirement, surfaced through the new `UserMenu` → `Theme` control exactly as Jira does it. The Phase 3 sidebar/dashboard chrome already shipped is a functional placeholder against this spec, not the final design — routes and nav items stay, styling and a few new chrome pieces (tab bar, search overlay, notifications, context menus, theme switcher) do not exist in code yet |
+| 1.3 | 2026-07-31 | Team | **Implemented in code**, pulled forward from Phase 9 (the design work in v1.2 landed the same day, at the user's explicit request, ahead of Phases 4–8's backend work — see `PROGRESS-LOG.md`). All 9 §4.4 components built (`TopBar`, `SidebarNav`, `ProjectTabBar`, `UserMenu`, `ThemeSubmenu`, `NotificationPanel`, `GlobalSearch`, `ContextMenu`, `MetricCard`), §2.10's light/dark/system theme switcher working end to end with no flash-of-wrong-theme, and the `ContextMenu`/`ProjectSettingsPage` "Archive project" action wired to the `project.Service.Archive` endpoint that had been backend-ready with no UI since Phase 3. `GlobalSearch` and `NotificationPanel` ship intentionally scoped down from the full spec — see the deviations noted inline in §4.4 |
 
 > This document is the **specification for the Figma deliverable** and the design contract for the frontend. The Figma file is built from this; the frontend is built from both.
 
@@ -32,8 +34,11 @@
 | 5 | **Honest about uncertainty** | AI content is labelled. Partial scans say so. Low-confidence findings say so |
 | 6 | **Density with breathing room** | This is an analysis tool — users scan hundreds of rows. Compact, but never cramped |
 | 7 | **Calm, not alarming** | A dashboard that screams red at everything gets ignored. Reserve the loudest treatment for genuine criticals |
+| 8 | **Familiar chrome, novel content** | The app's *navigation shell* — top bar, sidebar, tabs, menus, search, notifications — should feel like software people already know how to drive. Save the novelty budget for the parts that are actually GuardPipe's (severity treatment, the pipeline, the AI patch panel), not for reinventing a settings dropdown |
 
 Principle 7 is the hardest to hold. Security UI defaults to a wall of red; the discipline is to make `critical` visually rare so that when it appears, it lands.
+
+**Principle 8, concretely:** the authenticated app's chrome follows Jira's own product patterns — dark top bar, light collapsible sidebar with icon+label groups, a per-project tab bar, right-anchored overlay panels for search/notifications/the user menu, neutral (non-severity-coloured) stat cards for metrics that aren't severity counts. Full specification in §4.4 and the updated §5.1 wireframe. This is a **chrome/interaction-pattern** borrowing, not a content one: GuardPipe keeps its own navigation vocabulary (Projects/Scans/Findings/Targets/Rules), its own accent colour, and the severity system from principles 1–2 untouched — only *how the shell around that content behaves* changes. **Built** — see rev 1.3 and §4.4.
 
 **One deliberate exception:** the five severity stat tiles at the top of the project dashboard (§5.1) are solid, fully-saturated severity-colour blocks — the Tenable/SecurityCenter-style "scannable from across the room" treatment. This is the single loud moment in the product, chosen because it is the literal answer to "can this ship?" Everything below that fold (badges, borders, table rows) returns to the restrained colour-as-accent treatment principle 7 describes.
 
@@ -140,7 +145,8 @@ All motion is disabled under `prefers-reduced-motion: reduce`.
 | Element | Value |
 |---|---|
 | Sidebar | 240 px expanded, 64 px collapsed |
-| Top bar | 56 px |
+| Top bar | 48 px, **always the dark/inverse chrome colour**, independent of the app's own light/dark theme mode (§2.10) — Jira-style constant landmark |
+| Project tab bar | 44 px, sits directly below the top bar once inside a project (§4.4 `ProjectTabBar`) |
 | Content max width | 1440 px, centred |
 | Detail drawer | 480 px |
 | Grid | 12 columns, 24 px gutter |
@@ -162,6 +168,23 @@ The public site borrows the base palette and spacing scale above but adds its ow
 **Motion rule:** under `prefers-reduced-motion: reduce`, the glow animation is replaced with its static midpoint frame — never fully removed, since the gradient is also the background's visual weight, but never animated for a user who asked not to see it. This is the same rule as §2.7, applied to a second surface.
 
 **Why a separate serif at all:** principle 3 ("plain language before jargon") and the density goal in principle 6 are product-UI concerns — a findings table needs to show hundreds of rows, a landing page needs to sell an idea in one screen. Borrowing Trident's editorial serif-over-sans pairing for the public site only, while keeping Inter everywhere the product itself renders data, keeps both jobs honest instead of compromising one for the other.
+
+### 2.10 Theme modes — light / dark / system
+
+**Built (rev 1.3).** Every colour token in §2.1–§2.4 already ships a light and a dark value; the switcher and the system-follows behaviour now exist too (`stores/themeStore.ts`, an inline boot script in `index.html`, `UserMenu`'s `ThemeSubmenu`). Three modes, not two — a binary light/dark toggle silently drops the option most users actually want:
+
+| Mode | Behaviour |
+|---|---|
+| **Light** | Forces the light column of every token |
+| **Dark** | Forces the dark column |
+| **System** (default) | Follows the OS/browser `prefers-color-scheme` media query **live** — changing the OS theme while GuardPipe is open updates the app immediately, no reload |
+
+- **Reachable from `UserMenu` → `Theme`** (§4.4), a three-option radio-style submenu — exactly Jira's own pattern (avatar menu → `Theme` → `Light` / `Dark` / `System`), not a single sun/moon toggle button in the top bar.
+- An explicit user choice (Light or Dark) is **persisted** (e.g. `localStorage` now; a real `identity`/account-settings field once one exists) and overrides `prefers-color-scheme` until the user picks System again or clears it.
+- **No flash of the wrong theme on load.** The mode must be resolved and the theme class/attribute applied *before first paint* — an inline script in `index.html`, not a post-mount `useEffect` — the same discipline already required for `prefers-reduced-motion` (§2.7).
+- "System" is not a fourth visual design — it always resolves to the existing light or dark token set at runtime. Nothing new to design per component; the new work is the switcher UI, the persistence, and the no-flash boot logic.
+- Applies to the **entire product**: the authenticated app and the public site (§2.9) alike. The public site's hero (§2.9) is deliberately dark regardless of mode (it's a fixed brand moment, not a themed surface); its lighter sections below the hero do respond to the mode switch.
+- §8's "dark mode contrast verified independently" checklist item extends to: verify there is no flash-of-wrong-theme on a hard reload, in all three modes, in at least one Chromium and one non-Chromium browser.
 
 ---
 
@@ -233,6 +256,22 @@ These use §2.9's tokens and never appear inside the authenticated app.
 | `GuideSidebar` | default · active-section highlighted | Sticky in-page section nav for a guide's steps |
 | `MarketingCtaBand` | default | Full-width closing call-to-action band with one button |
 
+### 4.4 Authenticated app shell components — Jira-inspired (built)
+
+**Status: built in code (rev 1.3), pulled forward from Phase 9 — see `PROGRESS-LOG.md`.** Direction: Atlassian/Jira's own product chrome — dark top bar, light collapsible sidebar, tab-based per-project sub-navigation, dense neutral stat/card grids, right-anchored overlay panels for search/notifications/menus. **Adapted, not copied** (principle 8, §1): GuardPipe keeps its own navigation vocabulary (Projects/Scans/Findings/Targets/Rules — never Jira's Spaces/Boards/Backlog), its own single accent blue (§2.3), and drops anything tied to Jira's own product model GuardPipe has no equivalent of (multi-space switching, a premium-trial upsell pill, a standalone "Ask Rovo"-style AI-chat entry point — GuardPipe's AI surfaces live inside finding detail, §5.3, not as a global chat affordance). These components **replace the visual styling** of the Phase 3 `AppShell` sidebar; the navigation items, routes, and `RequireAuth` wrapping already built in Phase 3 did not change.
+
+| Component | Variants / states | Notes |
+|---|---|---|
+| `TopBar` | default · search-focused (expanded) | Fixed, 48 px (§2.8), always the dark/inverse chrome colour regardless of the app's own theme mode (§2.10) — a constant landmark, exactly like Jira's black bar surviving both its light and dark modes. Houses, left to right: sidebar-collapse toggle, wordmark, `GlobalSearch`, a context-dependent primary action ("+ New Project" / "+ New Scan"), notification bell (`NotificationPanel` trigger), help icon (links to `/guides`), `UserMenu` trigger. **Built** — `components/AppShell.tsx` |
+| `SidebarNav` | expanded (240 px) · collapsed (64 px, icon-only, native `title` tooltip) | Icon + label rows in two groups separated by a divider: primary (Projects · Scans · Findings · Targets · Rules) then secondary (Settings) — grouping unchanged from Phase 3, styling upgraded to match Jira's icon weight/spacing/hover treatment. **Built** |
+| `ProjectTabBar` | default | Sits directly below `TopBar` (§2.8, 44 px), above page content, once inside a project: breadcrumb ("Projects") + project name + `ContextMenu` trigger, then an underlined tab row (Overview · Scans · Findings · Targets · Settings). Active tab = `--accent` text + 2 px underline + filled icon. **Built** — `components/project/ProjectTabBar.tsx`, wraps a new `ProjectLayout` nested-route layout (`pages/ProjectLayout.tsx`) |
+| `UserMenu` | closed · open | Avatar trigger (colour-coded circle, initials) opens a panel: identity header (avatar, display name, email) → divider → `Profile` · `Account settings` · **`ThemeSubmenu`** (§2.10) → divider → `Log out`. **Built** — `Profile`/`Account settings` both currently route to the `/settings` placeholder (no dedicated profile screen exists yet) |
+| `ThemeSubmenu` | Light · Dark · System (single-select, one always checked) | The concrete UI for §2.10 — an inline-expanding nested list off `UserMenu` → `Theme` (not a separate flyout, to avoid nested-overlay dismiss complexity), not a top-bar toggle button. **Built** |
+| `NotificationPanel` | empty | Slide-in panel anchored under the bell icon. **Built, intentionally scoped down**: ships as a permanent, honest empty state ("You're all caught up") rather than the full populated/grouped-by-date/unread-toggle spec above — there is no notification-producing backend yet (that needs the orchestrator, Phase 6, plus a notifications table that doesn't exist). The populated states remain the target once that data source exists |
+| `GlobalSearch` | collapsed (pill, in `TopBar`) · expanded (overlay) | **Built, intentionally scoped down**: a real, working client-side filter over the caller's own projects (fetched once, filtered by name as you type), not the full interpreted-query/filter-chip/quick-category spec above — there is no cross-entity (findings/rules) search backend yet. Chosen over a fabricated "AI-interpreted query" row, which would have been dishonest sample content |
+| `ContextMenu` | per-object: project (scan · finding once those exist) | Right-aligned `···` trigger → grouped list: primary actions first, then a divider, then destructive actions in `--danger` at the bottom. **Built** — `Archive project` is the first real use, calling `project.Service.Archive`, which had been backend-ready with no frontend control since Phase 3. Confirmation is `window.confirm` for now, not a styled `Dialog` (§4.1's `Dialog` primitive isn't built yet) |
+| `MetricCard` | default | Neutral `--bg-surface` stat card: number + label + optional info-icon tooltip, **no** colour coding. Distinct from `SeverityStatTile` (§4.2), which stays the one deliberate loud-colour exception for severity counts specifically (principle 7). **Built** — component exists (`components/ui/MetricCard.tsx`); not yet placed on a real screen, since every current count (projects, targets) reads fine as plain text at today's scale — first real usage will likely be the dashboard once Phase 6/8 give it non-severity metrics worth a card |
+
 ---
 
 ## 5. Screen specifications
@@ -267,19 +306,24 @@ These use §2.9's tokens and never appear inside the authenticated app.
 
 **Purpose:** answer "can this ship?" in under five seconds.
 
+**Chrome status (rev 1.3): built.** The wireframe below is what's actually in code now — the Jira-inspired `TopBar`/`ProjectTabBar` chrome from §4.4, replacing Phase 3's plain light placeholder header. The content below the tab row (risk gauge, severity tiles, pipeline, findings, trend) is unchanged by this revision — it is still Phase 2/3's hardcoded sample-data preview, only the chrome around it is new.
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ ☰  GuardPipe          Payments API              [Run Scan ▾]   👤 Nadia  │
+│▓▓ ☰  GuardPipe      🔍 Search…              [+ New Scan]  🔔  ?  👤 ▓▓▓▓▓│  ← TopBar (dark, always)
 ├────────┬─────────────────────────────────────────────────────────────────┤
-│        │  Payments API                          Last scan 4 min ago      │
-│ Proj.  │  github.com/acme/payments-api · main · a3f9c21                  │
-│ Scans  │                                                                 │
-│ Find.  │  ┌──────────────┐  ┌─────────────────────────────────────────┐ │
-│ Targ.  │  │              │  │ ▲2 Critical  ▲9 High  ●21 Med  ●14 Low  │ │
-│ Rules  │  │   ◕  68      │  │                                          │ │
+│        │ Projects › Payments API                                 ···  ⤢ │  ← ProjectTabBar: breadcrumb + ContextMenu
+│ Proj.  │ Overview   Scans   Findings   Targets   Settings                │  ← underlined tabs, Overview active
+│ Scans  │─────────────────────────────────────────────────────────────────│
+│ Find.  │  Payments API                          Last scan 4 min ago      │
+│ Targ.  │  github.com/acme/payments-api · main · a3f9c21                  │
+│ Rules  │                                                                 │
+│ ─────  │  ┌──────────────┐  ┌─────────────────────────────────────────┐ │
+│ Sett.  │  │              │  │ ▲2 Critical  ▲9 High  ●21 Med  ●14 Low  │ │
+│        │  │   ◕  68      │  │                                          │ │
 │        │  │   BLOCK      │  │      [ severity donut chart ]            │ │
-│ ─────  │  │   ▼ 6 ↓      │  │                                          │ │
-│ Sett.  │  └──────────────┘  └─────────────────────────────────────────┘ │
+│        │  │   ▼ 6 ↓      │  │                                          │ │
+│        │  └──────────────┘  └─────────────────────────────────────────┘ │
 │        │                                                                 │
 │        │  Supply Chain                                                   │
 │        │  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐        │
@@ -301,6 +345,8 @@ These use §2.9's tokens and never appear inside the authenticated app.
 
 | Element | Detail |
 |---|---|
+| `TopBar` | §4.4 — dark chrome, search, `+ New Scan`, notifications, `UserMenu`. **Built** |
+| `ProjectTabBar` | §4.4 — breadcrumb, `ContextMenu` (`···`, includes `Archive project`, backend-ready since Phase 3), tab row. **Built** |
 | Risk gauge | 0–100 arc, verdict word, delta vs previous scan with direction arrow |
 | Severity stat tiles | Five `SeverityStatTile` blocks (critical/high/medium/low/info) above the donut — big number, label, small delta chip (e.g. "-18") in the corner showing the change since the previous scan. Modelled directly on the Tenable/SecurityCenter reference: scannable at a glance, no need to read the donut to know if there's a critical |
 | Severity summary | Donut alongside the tiles for proportion at a glance; every tile and every donut segment is clickable → filtered findings |
@@ -397,7 +443,7 @@ Three steps: **Target** (repository or pentest target) → **Engines** (all sele
 
 ### 5.6 Screen 3 — Projects list
 
-Card grid. Each card: name, repository, last scan time, risk score chip, verdict pill, severity mini-bar. Empty state: illustration + "Create your first project". Primary action top-right.
+Card grid: name, status pill, repository (owner/name, private badge), credential status. Empty state: illustration + "Create your first project". Primary action top-right (now the `TopBar`'s "+ New Project", not an in-page button). Wrapped in the same `TopBar`/`SidebarNav` chrome as every other authenticated screen (§4.4) — **built**. Not yet added to the cards: last scan time, risk score chip, verdict pill, severity mini-bar, and a per-card `ContextMenu` — all blocked on scan data that doesn't exist until Phase 6, so the cards show what's real today rather than a mocked score.
 
 ### 5.7 Screen 10 — Pentest targets
 
@@ -504,6 +550,8 @@ Standard patterns: centred auth card with the product mark; rules catalogue as a
 - [ ] Designs verified under a deuteranopia and a protanopia filter
 - [ ] Reduced-motion variants specified for all animated elements
 - [ ] Dark mode contrast verified independently — not assumed from light mode
+- [ ] Theme mode (§2.10): Light, Dark, and System all verified with no flash-of-wrong-theme on a hard reload, in at least one Chromium and one non-Chromium browser
+- [ ] `TopBar`/`SidebarNav`/`ProjectTabBar`/overlay panels (§4.4) all keyboard-navigable — a mouse-only chrome spec is not accessible chrome
 
 ---
 
@@ -532,6 +580,8 @@ Standard patterns: centred auth card with the product mark; rules catalogue as a
 - [ ] All tokens published as Figma Variables with light + dark modes, plus the public-site-only tokens (§2.9) in their own variable collection
 - [ ] All primitives with full variant coverage
 - [ ] All 24 domain components (18 product + 6 public-site, §4.2–4.3)
+- [ ] All 9 Jira-inspired app-shell components (§4.4: `TopBar`, `SidebarNav`, `ProjectTabBar`, `UserMenu`, `ThemeSubmenu`, `NotificationPanel`, `GlobalSearch`, `ContextMenu`, `MetricCard`) — **built in code (rev 1.3), not yet in Figma** — code shipped ahead of the design file this time; back-fill the Figma components from the shipped UI rather than the other way around
+- [ ] Theme-mode switcher (§2.10) designed for all three states and specified for the no-flash boot behaviour — **built in code, not yet in Figma**
 - [ ] 17 wireframes (12 product screens + 5 public-site screens)
 - [ ] 3 hero screens in high fidelity (desktop) — plus the Landing page in high fidelity, since it is what a demo audience or a checkpoint reviewer sees first
 - [ ] 4 primary screens at tablet width
