@@ -66,7 +66,7 @@ func TestUserRepo_CreateAndGet_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	orgRepo := repo.NewOrganizationRepo(pool)
-	orgID, err := orgRepo.EnsureDefault(ctx, "Test Org")
+	orgID, err := orgRepo.Create(ctx, "Test Org")
 	require.NoError(t, err)
 
 	users := repo.NewUserRepo(pool)
@@ -104,7 +104,7 @@ func TestUserRepo_GetByEmail_NotFoundIsTypedError(t *testing.T) {
 func TestUserRepo_SetFailedLoginAndRecordSuccessfulLogin(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
-	orgID, err := repo.NewOrganizationRepo(pool).EnsureDefault(ctx, "Test Org")
+	orgID, err := repo.NewOrganizationRepo(pool).Create(ctx, "Test Org")
 	require.NoError(t, err)
 
 	users := repo.NewUserRepo(pool)
@@ -130,24 +130,28 @@ func TestUserRepo_SetFailedLoginAndRecordSuccessfulLogin(t *testing.T) {
 	require.NotNil(t, got.LastLoginAt)
 }
 
-func TestOrganizationRepo_EnsureDefault_IsIdempotent(t *testing.T) {
+func TestOrganizationRepo_Create_MakesDistinctOrganizations(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 	orgs := repo.NewOrganizationRepo(pool)
 
-	first, err := orgs.EnsureDefault(ctx, "Default Organization")
+	// This is the regression test for the cross-account data leak: two
+	// registrations must never land in the same organisation, so Create
+	// must never return an existing row for the same name — unlike the old
+	// EnsureDefault, which deliberately reused one shared organisation.
+	first, err := orgs.Create(ctx, "Nadia's Organization")
 	require.NoError(t, err)
 
-	second, err := orgs.EnsureDefault(ctx, "Default Organization")
+	second, err := orgs.Create(ctx, "Nadia's Organization")
 	require.NoError(t, err)
 
-	require.Equal(t, first, second, "EnsureDefault must not create a second organisation")
+	require.NotEqual(t, first, second, "Create must make a new organisation every call, even with the same name — GuardPipe is multi-tenant, not one shared workspace")
 }
 
 func TestRefreshTokenRepo_CreateConsumeAndRevokeFamily(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
-	orgID, err := repo.NewOrganizationRepo(pool).EnsureDefault(ctx, "Test Org")
+	orgID, err := repo.NewOrganizationRepo(pool).Create(ctx, "Test Org")
 	require.NoError(t, err)
 	users := repo.NewUserRepo(pool)
 	user := &identity.User{
