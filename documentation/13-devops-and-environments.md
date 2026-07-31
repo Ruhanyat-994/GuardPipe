@@ -4,16 +4,17 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-01 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial DevOps design |
+| 1.1 | 2026-08-01 | Team | §5.6 adds `GUARDPIPE_GEMINI_API_KEYS` (comma-separated key pool with automatic rotation on quota errors), kept alongside the existing singular `GUARDPIPE_GEMINI_API_KEY` as a one-key alias — added to solve real quota-exhaustion friction during the team's own free-tier testing, planned for `BUILD_GUIDE.md` Phase 4, not yet built |
 
 ---
 
@@ -165,7 +166,8 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `GUARDPIPE_AI_ENABLED` | `true` | no | Master switch — `false` disables all AI features cleanly |
-| `GUARDPIPE_GEMINI_API_KEY` | — | if AI enabled | |
+| `GUARDPIPE_GEMINI_API_KEY` | — | if AI enabled and `_KEYS` unset | Single-key form, kept working as a one-key alias |
+| `GUARDPIPE_GEMINI_API_KEYS` | — | if AI enabled and `_KEY` unset | Comma-separated key pool (`BUILD_GUIDE.md` Phase 4) — `adapters/gemini` rotates to the next key on a 429/`RESOURCE_EXHAUSTED` response instead of failing. Prefer this over the singular form once more than one key exists; see `BUILD_GUIDE.md`'s Phase-4 note on why keys should come from **separate** Google Cloud projects to actually add quota |
 | `GUARDPIPE_GEMINI_MODEL_FAST` | `gemini-2.5-flash` | no | |
 | `GUARDPIPE_GEMINI_MODEL_SMART` | `gemini-2.5-pro` | no | |
 | `GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN` | `100000` | no | |
