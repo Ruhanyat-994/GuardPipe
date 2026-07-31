@@ -88,6 +88,18 @@
 }
 
 @theme {
+  /* Chrome — TopBar/overlay-panel colours that stay constant regardless of
+     the app's own light/dark mode (documentation/09-ui-ux-design-system.md
+     §2.8: "always the dark/inverse chrome colour"). Values match the dark
+     column of §2.1 so the chrome always reads as the existing "dark mode"
+     look, never a third palette. */
+  --color-chrome-bg: #0b0d10;
+  --color-chrome-surface: #14171c;
+  --color-chrome-border: #272c34;
+  --color-chrome-text: #f2f4f7;
+  --color-chrome-text-secondary: #a2abba;
+  --color-chrome-hover: #1b1f26;
+
   /* 2.5 Typography */
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
