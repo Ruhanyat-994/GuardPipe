@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | UI/UX Design and Design System |
 | **Project** | GuardPipe |
-| **Version** | 1.6 |
+| **Version** | 1.7 |
 | **Status** | Draft |
 | **Tool** | Figma |
 | **Owner** | Member 6 (design) with Member 5 (frontend) |
@@ -21,6 +21,7 @@
 | 1.4 | 2026-07-31 | Team | **Implemented in code.** User feedback: the projects list/creation screens read as empty and generic, missing the "actual small logo" polish GitHub's own UI has. Added §4.5 (provider brand marks — `GitHubMark`, a real inline GitHub logomark used everywhere a GitHub repository is shown, replacing the generic folder icon; explicitly **not** adding a non-functional GitLab/Bitbucket option since only GitHub is implemented) and §4.6 (progressive-disclosure step badges + a `.animate-reveal` transition for `ProjectCreatePage`'s later sections). Enriched the Screen 3 project cards (§5.6) with a real per-card `ContextMenu`, default branch, and relative creation time, and the repository-attach result card with a real outbound link to the repository plus branch/visibility badges |
 | 1.5 | 2026-07-31 | Team | **Implemented in code.** User feedback with a reference screenshot: Login/Register "looked weird," redesigned as a split-screen (§5.8) — direction adapted from Aikido's login, fixed-white form panel + fixed-dark info panel (`AuthShell`, `AuthSidePanel`), same layout as the reference but a real email/password form instead of OAuth buttons (not built) and real GuardPipe claims instead of fabricated trust badges/customer logos (none exist). New tokens: `--color-auth-panel-bg`/`-fg`/`-fg-secondary` plus a `.auth-panel-light` class that locally re-pins every theme-relative token to its light value within the panel, so `Input`/`Button` render consistently regardless of the visitor's theme preference — the same mechanism `.dark` uses, scoped down instead of applied to `<html>` |
 | 1.6 | 2026-07-31 | Team | **Implemented in code.** User supplied GuardPipe's actual logo artwork (a shield containing a run/checkpoint/stop pipeline graphic) with instructions to set it as the brand mark everywhere, background removed. Added §4.7. Background removal done programmatically (border flood-fill through connected near-white pixels, not a blanket colour-key, so the logo's own white line-art survived) since no image-editing tool was available in this session. Replaced the Vite-scaffold placeholder favicon (still in place since Phase 0) with real favicons generated from the new mark. Wired the new `Logo` component into `AppShell`, `AuthShell`, and `PublicNav` |
+| 1.7 | 2026-08-01 | Team | **Specification only — not yet built** (lands with `BUILD_GUIDE.md` Phase 6, the first phase with a real orchestrator + real scan progress to visualise). Two additions, both driven by user feedback while reviewing the build plan ahead of Phases 4 onward: (1) §4.8, formalising `SupplyChainPipeline`/`StageCard` (§4.2, FR-UI-004) from a flat row of status cards into a **live DAG-style execution graph** — direction referenced: GitHub Actions' own workflow-run graph (connected, animated nodes, not a static list) — rendered directly from the orchestrator's already-documented Execution DAG (`documentation/05-module-specifications.md` §5) and driven by the already-specified `GET /scans/{id}/progress` polling endpoint (`documentation/07-api-specification.md` §5), so this is a frontend-only addition with **no backend/API changes required**. Screen 6 (§5.4) rewritten to match. (2) §4.5 extended from GitHub-only to cover every external system a finding or engine can be attributed to (OSV.dev, Gemini, Docker, Kubernetes) — same "show the real logomark, not a generic icon" rule, now applied engine-by-engine as each one lands in its own build phase (Phases 6–12, see `BUILD_GUIDE.md`) |
 
 > This document is the **specification for the Figma deliverable** and the design contract for the frontend. The Figma file is built from this; the frontend is built from both.
 
@@ -232,8 +233,8 @@ The public site borrows the base palette and spacing scale above but adds its ow
 | `StatusPill` | open · acknowledged · suppressed · fixed · false_positive | Neutral colours — status is not severity |
 | `EngineIcon` | 7 engines | Consistent glyph per engine, used in tables, filters, and the pipeline |
 | `RiskGauge` | 0–100 arc, verdict band, delta arrow, 3 sizes | Hero element of the dashboard |
-| `SupplyChainPipeline` | 7 stages × (succeeded / failed / skipped / running / not_run) | The signature visual (FR-UI-004) |
-| `StageCard` | Per-engine card: status, worst severity, count, duration | Clickable → filters findings |
+| `SupplyChainPipeline` | 7 stages × (succeeded / failed / skipped / running / not_run) | The signature visual (FR-UI-004). **Live graph form specified in §4.8** (Phase 6) |
+| `StageCard` | Per-engine node: status, worst severity, count, duration, provider brand mark if applicable (§4.5) | One node of `SupplyChainPipeline` (§4.8). Clickable → filters findings |
 | `FindingRow` | default · hover · selected · suppressed (dimmed) | Virtualised list row |
 | `CodeBlock` | With line numbers, highlighted range, copy button | Shiki-rendered |
 | `PatchDiff` | unified · split; verified · unverified badge | Always carries the AI banner |
@@ -273,14 +274,19 @@ These use §2.9's tokens and never appear inside the authenticated app.
 | `NotificationPanel` | empty | Slide-in panel anchored under the bell icon. **Built, intentionally scoped down**: ships as a permanent, honest empty state ("You're all caught up") rather than the full populated/grouped-by-date/unread-toggle spec above — there is no notification-producing backend yet (that needs the orchestrator, Phase 6, plus a notifications table that doesn't exist). The populated states remain the target once that data source exists |
 | `GlobalSearch` | collapsed (pill, in `TopBar`) · expanded (overlay) | **Built, intentionally scoped down**: a real, working client-side filter over the caller's own projects (fetched once, filtered by name as you type), not the full interpreted-query/filter-chip/quick-category spec above — there is no cross-entity (findings/rules) search backend yet. Chosen over a fabricated "AI-interpreted query" row, which would have been dishonest sample content |
 | `ContextMenu` | per-object: project (scan · finding once those exist) | Right-aligned `···` trigger → grouped list: primary actions first, then a divider, then destructive actions in `--danger` at the bottom. **Built** — `Archive project` is the first real use, calling `project.Service.Archive`, which had been backend-ready with no frontend control since Phase 3, and now appears both inside a project (`ProjectTabBar`) and per-card on the projects list (§5.6). Confirmation is `window.confirm` for now, not a styled `Dialog` (§4.1's `Dialog` primitive isn't built yet) |
-| `MetricCard` | default | Neutral `--bg-surface` stat card: number + label + optional info-icon tooltip, **no** colour coding. Distinct from `SeverityStatTile` (§4.2), which stays the one deliberate loud-colour exception for severity counts specifically (principle 7). **Built** — component exists (`components/ui/MetricCard.tsx`); not yet placed on a real screen, since every current count (projects, targets) reads fine as plain text at today's scale — first real usage will likely be the dashboard once Phase 6/8 give it non-severity metrics worth a card |
+| `MetricCard` | default | Neutral `--bg-surface` stat card: number + label + optional info-icon tooltip, **no** colour coding. Distinct from `SeverityStatTile` (§4.2), which stays the one deliberate loud-colour exception for severity counts specifically (principle 7). **Built** — component exists (`components/ui/MetricCard.tsx`); not yet placed on a real screen, since every current count (projects, targets) reads fine as plain text at today's scale — first real usage will likely be the dashboard once Phase 6/13 give it non-severity metrics worth a card |
 
-### 4.5 Provider brand marks (built)
+### 4.5 Provider and tool brand marks (GitHub built; others planned Phases 6–12)
 
-**Rule:** anywhere the UI shows "this repository/resource lives on X," it shows X's real logomark — never a generic folder/link icon standing in for a specific brand. A generic icon says "there is a repository here"; a brand mark says "there is a *GitHub* repository here," which is the more useful and more trustworthy signal (this was explicit user feedback: "GitHub itself [is] a very designed [product] ... you need to follow that").
+**Rule:** anywhere the UI shows "this repository/finding/engine involves external system X," it shows X's real logomark — never a generic folder/link/gear icon standing in for a specific brand. A generic icon says "something external is here"; a brand mark says "this is *GitHub*/*Docker*/*Kubernetes*/*OSV*," which is the more useful and more trustworthy signal (this was explicit user feedback: "GitHub itself [is] a very designed [product] ... you need to follow that" — and, on reviewing the build plan, "whenever you are using external things like GitHub, add a logo of GitHub around it ... if you are using OSV, add a logo of OSV there").
 
-- **`GitHubMark`** (`components/icons/GitHubMark.tsx`) — GitHub's own Octicons `mark-github` glyph, inline SVG, `fill="currentColor"` so it never needs its own light/dark colour handling. Used: the repository field on every project card (§5.6), the repository-URL input's leading icon, and the attached-repository result card (`RepositoryAttachForm`, used by both `ProjectCreatePage` and `ProjectSettingsPage`) — the attached card links out to the real repository URL (`target="_blank"`), not a dead link.
-- **Only GitHub exists today.** `repositories.provider` is schema-extensible (`documentation/06-database-design.md` §4.5: `CHECK (provider IN ('github'))`, "extensible without a type migration") but `adapters/github` is the only implemented provider. **Do not add a GitLab/Bitbucket option to any picker until a second provider is actually implemented on the backend** — a provider selector that only functions for one of its options is exactly the kind of fake-functionality the rest of this document argues against (see `GlobalSearch`/`NotificationPanel` in §4.4). When a second provider lands, its own brand mark gets the same treatment as `GitHubMark` — same component shape, new SVG.
+- **`GitHubMark`** (`components/icons/GitHubMark.tsx`, **built**) — GitHub's own Octicons `mark-github` glyph, inline SVG, `fill="currentColor"` so it never needs its own light/dark colour handling. Used: the repository field on every project card (§5.6), the repository-URL input's leading icon, and the attached-repository result card (`RepositoryAttachForm`) — the attached card links out to the real repository URL (`target="_blank"`), not a dead link. Reused (not a new icon) for `cicdscan` findings and its `SupplyChainPipeline` node (§4.8), since GitHub Actions is part of the GitHub product.
+- **`OsvMark`** (planned, Phase 6, alongside `depscan`) — OSV.dev's own mark, on any finding whose evidence includes an OSV advisory ID, and on the `depscan` node in `SupplyChainPipeline`.
+- **`GeminiMark`** (planned, Phase 11, alongside `docreview` — first engine where AI review is the *entire* output, not an enrichment) — shown on the `docreview` node, and reused everywhere `AiPanel` (§4.2) already carries its "AI-generated" chip, so the chip is backed by the real provider mark rather than a generic sparkle icon.
+- **`DockerMark`** (planned, Phase 8, alongside `containerscan`) — shown on the `containerscan` node and on container/image-layer findings, since that engine's Phase B image analysis (`documentation/05-module-specifications.md` §8) runs through `adapters/dockerx`/`adapters/sandbox`.
+- **`KubernetesMark`** (planned, Phase 9, alongside `k8sscan`) — shown on the `k8sscan` node and on manifest-policy findings.
+- **`codescan` gets no external brand mark** — it's GuardPipe's own SAST, no external tool involved (`documentation/05-module-specifications.md` §6: "No external SAST binary or service"). Its `EngineIcon` (§4.2) is the only glyph it needs; adding a fake brand mark here would be exactly the dishonest-UI pattern this section exists to avoid.
+- **Provider is schema-extensible but implementation-gated.** `repositories.provider` (`documentation/06-database-design.md` §4.5: `CHECK (provider IN ('github'))`, "extensible without a type migration") is the one case this applies to today — **do not add a GitLab/Bitbucket option to any picker until a second VCS provider is actually implemented on the backend**, same reasoning as `GlobalSearch`/`NotificationPanel` in §4.4. The engine-tool marks above (`OsvMark`/`GeminiMark`/`DockerMark`/`KubernetesMark`) aren't provider-*choices* the same way — each is tied 1:1 to an engine that either exists or doesn't, so "planned" here just means "ships in that engine's own phase," not "gated behind a future decision."
 
 ### 4.6 Progressive disclosure and reveal motion (built)
 
@@ -297,6 +303,42 @@ Pattern for any form where later fields only make sense once an earlier step is 
 **Paired with the "GuardPipe" wordmark at every call site** (`AppShell` top bar, `AuthShell`, `PublicNav`) — this is the icon half of a lockup, not a standalone logo-with-text asset. Also supplies the favicon (`public/logo-{32,180,512}.png`, replacing the default Vite-scaffold placeholder that was still in place) — `index.html` references all three sizes (standard favicon, Apple touch icon, and a large PNG for anywhere a high-res app icon gets pulled).
 
 **Recoloured to match `--accent`** (was the source artwork's original green) — a vectorised hue rotation in HSV space (shift every pixel's hue by the delta between the artwork's dominant green and `--accent`'s hue, leaving saturation/value untouched) rather than a flat colour swap, so the shield's existing gradient/shading survives instead of flattening into one solid blue. The dark inner panel and white line-art are low-saturation, so the rotation leaves them essentially unaffected — only the green regions (the shield body and the small icon-fill accents) actually move.
+
+### 4.8 Live scan execution graph (planned, Phase 6)
+
+**What it's for:** the moment a user clicks "Start scan," the product goes from "static forms" to "something is actually happening" — and that has to be visible, not a spinner. Direction referenced: **GitHub Actions' own workflow-run graph** — a small set of connected nodes, edges showing what depends on what, each node animating from queued → running → a terminal state live as it happens. Not copied outright: GitHub Actions' graph is a generic job-DAG renderer for arbitrary user-defined workflows; GuardPipe's version is purpose-built for exactly one fixed shape, so it can be simpler and more opinionated than a general-purpose graph library.
+
+**The shape is not invented for this component — it's the orchestrator's own Execution DAG**, already specified in `documentation/05-module-specifications.md` §5 and reproduced here so frontend and backend stay provably in sync:
+
+```mermaid
+flowchart TB
+    W["workspace prep"] --> CS[codescan]
+    W --> DS[depscan]
+    W --> K8[k8sscan]
+    W --> CC[cicdscan]
+    W --> DR[docreview]
+    W --> CN[containerscan]
+    ST["scan start"] -.->|"needs no workspace"| PT[pentest]
+    ST --> W
+    CS & DS & K8 & CC & DR & CN & PT --> AIE["ai enrichment"]
+    AIE --> SCO[scoring]
+    SCO --> CL[cleanup]
+```
+
+Rendered as: a `workspace prep` node, fanning out to six parallel engine nodes (running concurrently up to the worker-pool size, exactly as the backend actually executes them — the graph must never *imply* an order the orchestrator doesn't have), a seventh `pentest` node branching independently straight off scan start (it needs no workspace, so it must visually **not** wait on `workspace prep` — this is the one place the graph actively teaches the user something true and non-obvious about how the scan works), all seven converging into `ai enrichment` → `scoring`. `cleanup` is not shown as a user-facing node (internal housekeeping, nothing to report).
+
+**Per-node states**, reusing `StageCard`'s existing status vocabulary and `PipelineStage`'s existing colour map (§4.2, `not_run`/`skipped`/`running`/plus the 4 severity colours for a terminal succeeded state, `--danger` for failed) — no new colour tokens needed:
+- `not_run` (queued, greyed, no animation)
+- `running` (accent-coloured pulse/glow on the node and its incoming edge — the "something is happening right now" cue)
+- `succeeded` (worst severity found, or a neutral success tone if zero findings — never invent a colour that implies a finding that isn't there)
+- `failed` (`--danger`, per FR-ORC-006/NFR-REL-001 a failed *job* never fails the whole *scan* — the graph keeps animating the rest)
+- `skipped` (neutral, with the `Applicable()` reason as a tooltip, e.g. "no Kubernetes manifests found" — a skip is explicitly not styled like a failure, `documentation/03-architecture-overview.md` §6.3)
+
+Each engine node also carries that engine's icon (`EngineIcon`, §4.2) plus, where one exists, the relevant external-tool brand mark from §4.5 (`depscan`→`OsvMark`, `containerscan`→`DockerMark`, `k8sscan`→`KubernetesMark`, `docreview`→`GeminiMark`, `cicdscan`→`GitHubMark`) — this is what makes the graph read as "GuardPipe talking to real tools," not an abstract diagram.
+
+**Data source — no backend changes required.** Driven entirely by the already-specified `GET /scans/{id}/progress` (`documentation/07-api-specification.md` §5), polled every 2 s (FR-UI-002) exactly as Screen 6 already required before this revision — the graph is a richer *rendering* of data the API was always going to return, not a new data requirement. If the **Stretch** SSE endpoint (`GET /scans/{id}/events`) is ever built, the same graph subscribes to it instead for smoother per-node transitions with no other change to the component's shape.
+
+**Where it appears:** replaces the flat "seven engine cards" description in Screen 6 (§5.4) as the primary view of a running scan. The Overview tab's dashboard (§5.1) keeps its own simpler condensed strip (`PipelineStage` row, already built in Phase 2 as sample data) for a glanceable summary — the full graph is specifically the *live, currently-running* view, reached from the project's Scans tab.
 
 ---
 
@@ -461,7 +503,7 @@ The purple left rail (`--ai`), the robot glyph, and the "review before applying"
 
 ### 5.4 Screen 6 — Scan progress
 
-Live view, polling every 2 s. Seven engine cards, each showing status, an indeterminate or determinate progress bar, elapsed time, and a running finding count. Findings appear as they stream in — the scan is not a black box for four minutes. Cancel button with confirmation. `aria-live="polite"` on the status region.
+Live view, polling every 2 s (unchanged). **The seven-cards layout is superseded by `SupplyChainPipeline`'s live graph form (§4.8, planned Phase 6)** — same underlying data (status, progress, elapsed time, running finding count per engine), rendered as the connected execution graph instead of a flat card row, so the workspace-prep → parallel-engines → ai-enrichment → scoring shape is visible, not just a list. Findings appear as they stream in — the scan is not a black box for four minutes. Cancel button with confirmation. `aria-live="polite"` on the status region (a graph layout needs this even more than a card row did, since node position alone conveys nothing to a screen reader).
 
 ### 5.5 Screen 5 — New Scan wizard
 

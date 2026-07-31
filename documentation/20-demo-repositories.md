@@ -4,16 +4,17 @@
 |---|---|
 | **Document** | Demo Repositories |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Owner** | Team Lead |
-| **Last updated** | 2026-07-31 |
+| **Last updated** | 2026-08-01 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-31 | Team | Initial plan for the two live demo repositories |
+| 1.1 | 2026-08-01 | Team | Updated Phase cross-references after `BUILD_GUIDE.md` split its single "remaining six engines" phase into six individual phases (7–12) and renumbered scoring/reporting and hardening to 13/14 — content only, no change to what's actually planted or when relative to each engine landing |
 
 ---
 
@@ -70,19 +71,19 @@ Where it's convenient, the demo repositories may **reuse the same planted issues
 
 The repos need to **exist** starting in Phase 3, so they can be attached to a project and prove the GitHub-attachment flow works end to end — that part doesn't depend on any engine being built yet, since attaching a repo is just metadata + a clone, no scanning happens.
 
-Full content, however, tracks the engine build-out in [`BUILD_GUIDE.md`](../BUILD_GUIDE.md) Phase 7: there's no point planting a Kubernetes manifest issue before `k8sscan` exists to find it. Practical order:
+Full content, however, tracks the engine build-out in [`BUILD_GUIDE.md`](../BUILD_GUIDE.md) Phases 7–12 (one phase per remaining engine, split out from a single bundled phase — see that file's note at the top of its Phase 7 section): there's no point planting a Kubernetes manifest issue before `k8sscan` exists to find it. Practical order:
 
 1. **Phase 3** — both repos exist on GitHub with a minimal, real-looking scaffold (a small app, a `Dockerfile`, a basic k8s manifest, a CI workflow) so they can be attached as projects.
 2. **Phase 6** (`depscan`, the first engine) — plant the dependency-related issues so the first end-to-end scan has something real to find.
-3. **Phase 7** (remaining six engines) — plant each engine's issue in the demo repo in the same window the engine's rule lands, same discipline as the golden fixtures ("plant the fixture case in the same PR").
-4. **Phase 9** (hardening/demo prep) — final pass to confirm the vulnerable repo produces a `block` verdict and the clean repo a `pass` verdict, since that contrast is the actual demo.
+3. **Phases 7–12** (one engine each: `codescan`, `containerscan`, `k8sscan`, `cicdscan`, `docreview`, `pentest`) — plant each engine's issue in the demo repo in the same phase the engine's rule lands, same discipline as the golden fixtures ("plant the fixture case in the same PR").
+4. **Phase 14** (hardening/demo prep) — final pass to confirm the vulnerable repo produces a `block` verdict and the clean repo a `pass` verdict, since that contrast is the actual demo.
 
 ## 6. Caution — the pentest engine
 
-`pentest` only runs against a target that passes the ownership-attestation gate in [12 — Security & Threat Model](12-security-and-threat-model.md) (DNS-resolve, reject RFC1918/loopback/metadata addresses, explicit ownership attestation). If `guardpipe-demo-vulnerable` is ever actually deployed somewhere for the pentest engine to probe, that deployment is owned by the team and the attestation step must be honoured for real — this repo does not get an exemption from that gate just because it's a demo fixture. Until Phase 7's `pentest` engine exists, this repo has no live deployment and the point is moot.
+`pentest` only runs against a target that passes the ownership-attestation gate in [12 — Security & Threat Model](12-security-and-threat-model.md) (DNS-resolve, reject RFC1918/loopback/metadata addresses, explicit ownership attestation). If `guardpipe-demo-vulnerable` is ever actually deployed somewhere for the pentest engine to probe, that deployment is owned by the team and the attestation step must be honoured for real — this repo does not get an exemption from that gate just because it's a demo fixture. Until Phase 12's `pentest` engine exists, this repo has no live deployment and the point is moot.
 
 ## 7. Cross-references
 
 - [15 — Testing Strategy](15-testing-strategy.md) §5 — the golden fixtures these demo repos are deliberately *not* replacing.
 - [12 — Security & Threat Model](12-security-and-threat-model.md) — pentest target validation and ownership attestation.
-- [`BUILD_GUIDE.md`](../BUILD_GUIDE.md) — Phase 3 (repos must exist and be attachable), Phase 6/7 (content lands as engines are built), Phase 9 (final verdict check).
+- [`BUILD_GUIDE.md`](../BUILD_GUIDE.md) — Phase 3 (repos must exist and be attachable), Phase 6 and Phases 7–12 (content lands as engines are built), Phase 14 (final verdict check).
