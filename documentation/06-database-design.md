@@ -268,6 +268,7 @@ Separate from `repositories` so credential rows can carry stricter access contro
 | `nonce` | `BYTEA` | NOT NULL | 12 bytes, unique per row |
 | `hint` | `TEXT` | NOT NULL | masked display value, e.g. `ghp_••••3f9a` |
 | `created_by` | `UUID` | FK → `users(id)` | |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | NOT NULL | added per this document's own §"Conventions to follow everywhere"; `PUT .../credential`'s response (07-api-specification.md §3) returns `updated_at`, and "rotate" overwriting the row (not inserting a new one) means nothing else here could supply it |
 
 **Constraint:** `UNIQUE (project_id, kind)`.
 **Rule:** no query in the codebase may `SELECT ciphertext` outside `project`'s credential repository. This is a review checklist item.

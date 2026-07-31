@@ -13,14 +13,15 @@ import "net/http"
 type Kind string
 
 const (
-	KindNotFound     Kind = "not_found"
-	KindConflict     Kind = "conflict"
-	KindValidation   Kind = "validation"
-	KindUnauthorized Kind = "unauthorized"
-	KindForbidden    Kind = "forbidden"
-	KindRateLimited  Kind = "rate_limited"
-	KindExternal     Kind = "external"
-	KindInternal     Kind = "internal"
+	KindNotFound      Kind = "not_found"
+	KindConflict      Kind = "conflict"
+	KindValidation    Kind = "validation"
+	KindUnauthorized  Kind = "unauthorized"
+	KindForbidden     Kind = "forbidden"
+	KindRateLimited   Kind = "rate_limited"
+	KindExternal      Kind = "external"
+	KindInternal      Kind = "internal"
+	KindUnprocessable Kind = "unprocessable"
 )
 
 // StatusFor maps a Kind to its HTTP status code. This lives in
@@ -44,6 +45,8 @@ func StatusFor(k Kind) int {
 		return http.StatusBadGateway
 	case KindInternal:
 		return http.StatusInternalServerError
+	case KindUnprocessable:
+		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError
 	}
@@ -130,6 +133,17 @@ func RateLimited(code, detail string, retryAfterSeconds int) *Error {
 // cause, kept for logging.
 func External(code, detail string, err error) *Error {
 	return &Error{Kind: KindExternal, Code: code, Title: "Upstream service error", Detail: detail, Err: err}
+}
+
+// Unprocessable reports a semantically invalid request — the JSON was
+// well-formed and every field individually valid, but the request as a
+// whole can't be honoured (documentation/07-api-specification.md §1.2,
+// status 422): a pentest target that resolves to a blocked address range,
+// or a private repository attached with no credential. Distinct from
+// Validation (400, field-shape problems caught before any business logic
+// runs) and Conflict (409, a state clash) — this is a semantic rejection.
+func Unprocessable(code, detail string) *Error {
+	return &Error{Kind: KindUnprocessable, Code: code, Title: "Unprocessable", Detail: detail}
 }
 
 // Internal wraps an unexpected error. Its Detail is deliberately generic and
