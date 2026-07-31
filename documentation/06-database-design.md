@@ -4,17 +4,18 @@
 |---|---|
 | **Document** | Database Design |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Engine** | PostgreSQL 16 · Redis 7 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-01 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial schema design |
+| 1.1 | 2026-08-01 | Team | §4.1/§13 corrected — description text only, no schema/DDL change — after fixing a real cross-account data leak caused by the previously-described single-shared-organisation model. **Needs its second reviewer per this doc's own change-control rule (§ above)**, since this file requires two approvals and only one person made this edit |
 
 > **Change control:** this is a shared contract across all six developers. Any schema change requires **two approvals** and follows the protocol in §12.
 
@@ -181,7 +182,7 @@ CREATE TYPE patch_status     AS ENUM ('verified', 'unverified', 'not_applicable'
 ## 4. Table specifications
 
 ### 4.1 `organizations`
-Single-organisation model for this release; the table exists so multi-tenancy is a data change, not a schema rewrite.
+Each registration creates its own row here — GuardPipe is multi-tenant at the data-isolation level (one organisation per account, every query scoped by `org_id`). What's still out of scope is *organisation membership beyond the founding account*: there's no invite flow, so an organisation can't yet gain a second member, and enterprise features (SSO, billing, org hierarchy — `documentation/01-project-charter.md` §5.2) aren't built. Originally shipped as a single shared organisation for the whole deployment; changed after that model caused a real cross-account data-visibility bug (every account saw every other account's projects) — see `PROGRESS-LOG.md`.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
@@ -690,8 +691,7 @@ Tool: **goose** ([ADR-0009](17-adr/0009-goose-migrations.md)). Files: `internal/
 
 | Seed | Purpose |
 |---|---|
-| `organizations` — one default organisation | Single-tenant model needs a row |
-| `users` — one `admin` (credentials from env, development only) | First login |
+| `users` — one `admin` (credentials from env, development only) | First login — its organisation is created alongside it at registration, not seeded separately (no default/shared organisation is seeded any more) |
 | `rules` — all rules, synced from the code registry at every startup | Referential integrity for `findings.rule_id`; upsert by ID so new rules appear automatically |
 | Demo project + vulnerable fixture repository reference | Demo-day setup with no manual clicking |
 
