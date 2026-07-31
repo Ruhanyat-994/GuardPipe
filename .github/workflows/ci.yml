@@ -26,10 +26,13 @@ jobs:
       - uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7.0.1
         with:
           # Pinned, not `latest` — same reasoning CLAUDE.md documents for
-          # pinning Gin itself: `latest` silently changing (golangci-lint
-          # v2's default linter set/config schema differ from v1's) must
-          # not be able to turn CI red without a deliberate version bump.
-          version: v1.64.8
+          # pinning Gin itself: `latest` silently changing must not be
+          # able to turn CI red without a deliberate version bump. Must be
+          # a v2.x release — golangci-lint-action@v7 dropped v1 support
+          # entirely (learned the hard way: pinning v1.64.8 here failed
+          # with "golangci-lint v1 is not supported by golangci-lint-action
+          # v7"). .golangci.yml is written in the v2 config schema to match.
+          version: v2.12.2
 
   lint-frontend:
     runs-on: ubuntu-latest
