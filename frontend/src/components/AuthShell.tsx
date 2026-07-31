@@ -9,7 +9,7 @@ import { PublicNav } from './PublicNav'
  */
 export function AuthShell({ children }: { children: ReactNode }) {
   return (
-    <div className="relative flex min-h-screen flex-col overflow-hidden text-text-inverse">
+    <div className="relative flex min-h-screen flex-col overflow-hidden text-public-fg">
       <HeroGlow />
       <div className="relative px-4 pt-6">
         <PublicNav />
