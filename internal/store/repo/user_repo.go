@@ -66,6 +66,21 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*identity.User, e
 	return r.scanOne(ctx, q, id)
 }
 
+// GetDisplayName satisfies project.UserDisplayNameLookup — `project` needs
+// only this one field from `identity`'s tables, for a target attestation's
+// "attested_by" (documentation/07-api-specification.md §4).
+func (r *UserRepo) GetDisplayName(ctx context.Context, id uuid.UUID) (string, error) {
+	const q = `SELECT display_name FROM users WHERE id = $1`
+	var name string
+	if err := r.db.QueryRow(ctx, q, id).Scan(&name); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", apperrors.NotFound("identity.user_not_found", "no such user")
+		}
+		return "", fmt.Errorf("repo: get display name: %w", err)
+	}
+	return name, nil
+}
+
 func (r *UserRepo) scanOne(ctx context.Context, q string, arg any) (*identity.User, error) {
 	var u identity.User
 	var role string

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,7 +19,10 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver, used only to run goose migrations
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/config"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/logger"
 	"github.com/Ruhanyat-994/GuardPipe/internal/store"
@@ -91,6 +95,22 @@ func run() error {
 		cfg.Security.RefreshTokenTTL,
 	)
 
+	githubClient := github.NewClient(cfg.External.GitHubAPIURL, nil)
+	vcsSvc := vcs.NewService(githubClient, github.ShallowClone, cfg.Scanning.MaxRepoMB)
+	projectSvc := project.NewService(
+		repo.NewProjectRepo(db.Pool),
+		repo.NewRepositoryRepo(db.Pool),
+		repo.NewCredentialRepo(db.Pool),
+		repo.NewTargetRepo(db.Pool),
+		repo.NewAttestationRepo(db.Pool),
+		repo.NewUserRepo(db.Pool),
+		vcsSvc,
+		net.DefaultResolver,
+		cfg.Security.EncryptionKeyRaw,
+		cfg.Pentest.AllowPrivateTargets,
+		cfg.Pentest.Allowlist,
+	)
+
 	if cfg.Core.Role == config.RoleWorker {
 		// The worker pool doesn't exist yet — it lands in Phase 6 with the
 		// first engine. A worker-role process today has nothing to claim,
@@ -104,6 +124,7 @@ func run() error {
 		Logger:          log,
 		CORSOrigins:     cfg.Security.CORSOrigins,
 		IdentitySvc:     identitySvc,
+		ProjectSvc:      projectSvc,
 		HealthDB:        db,
 		Version:         version,
 		CommitSHA:       commitSHA,

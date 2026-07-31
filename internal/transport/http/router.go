@@ -8,10 +8,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/handler"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/middleware"
+)
+
+// Role tiers for RBAC (documentation/07-api-specification.md §3-4's "Role"
+// column): higher roles can do everything a lower one can, so each tier
+// lists itself and everything above it.
+var (
+	viewerAndAbove = []domain.Role{domain.RoleViewer, domain.RoleMember, domain.RoleAdmin}
+	memberAndAbove = []domain.Role{domain.RoleMember, domain.RoleAdmin}
+	adminOnly      = []domain.Role{domain.RoleAdmin}
 )
 
 // RouterConfig is everything NewRouter needs — assembled once in
@@ -21,6 +32,7 @@ type RouterConfig struct {
 	CORSOrigins []string
 
 	IdentitySvc identity.Service
+	ProjectSvc  project.Service
 	HealthDB    handler.Pinger
 
 	Version   string
@@ -71,6 +83,27 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		auth.POST("/refresh", authH.Refresh) // cookie-authenticated, not bearer — no Auth middleware
 		auth.POST("/logout", requireAuth, authH.Logout)
 		auth.GET("/me", requireAuth, authH.Me)
+	}
+
+	projectH := handler.NewProjectHandler(cfg.ProjectSvc, v)
+	projects := api.Group("/projects", requireAuth)
+	{
+		projects.GET("", middleware.RBAC(viewerAndAbove...), projectH.List)
+		projects.POST("", middleware.RBAC(memberAndAbove...), projectH.Create)
+		projects.GET("/:id", middleware.RBAC(viewerAndAbove...), projectH.Get)
+		projects.PATCH("/:id", middleware.RBAC(memberAndAbove...), projectH.Update)
+		projects.DELETE("/:id", middleware.RBAC(adminOnly...), projectH.Archive)
+		projects.POST("/:id/repository", middleware.RBAC(memberAndAbove...), projectH.AttachRepository)
+		projects.PUT("/:id/credential", middleware.RBAC(memberAndAbove...), projectH.SetCredential)
+		projects.DELETE("/:id/credential", middleware.RBAC(memberAndAbove...), projectH.RemoveCredential)
+		projects.GET("/:id/targets", middleware.RBAC(viewerAndAbove...), projectH.ListTargets)
+		projects.POST("/:id/targets", middleware.RBAC(memberAndAbove...), projectH.RegisterTarget)
+	}
+
+	targets := api.Group("/targets", requireAuth)
+	{
+		targets.POST("/:id/attest", middleware.RBAC(memberAndAbove...), projectH.AttestTarget)
+		targets.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.RevokeTarget)
 	}
 
 	return r
