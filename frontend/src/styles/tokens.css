@@ -114,6 +114,12 @@
   --public-bg-hero: #05070c;
   --glow-1: #3b5bff;
   --glow-2: #1e1b4b;
+  /* Text colour for the public site's always-dark surfaces (hero, CTA
+     band). Deliberately a constant, NOT `--text-inverse` — that token is
+     relative to the app's own light/dark mode (it means "whatever reads
+     on --accent right now"), so on a background that's dark in every mode
+     it went dark-on-dark once dark mode shipped. This token doesn't move. */
+  --color-public-fg: #ffffff;
 
   --text-display: 32px;
   --text-display--line-height: 40px;

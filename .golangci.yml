@@ -1,0 +1,16 @@
+# golangci-lint config (v1 schema — the action below is pinned to a v1.x
+# release, see documentation/04-backend-architecture.md's note on pinning
+# Gin for the same "don't let @latest silently change behaviour" reason).
+#
+# errcheck.exclude-functions: (*gin.Context).Error's return value is the
+# same *gin.Error already appended to c.Errors — it is never nil (Gin
+# panics if you pass it a nil error) and carries no failure signal of its
+# own to check. Every handler and middleware in this codebase calls
+# c.Error(err) and lets ErrorMapper render it from c.Errors later
+# (documentation/04-backend-architecture.md §4.1) — checking the return
+# value here is not idiomatic Gin usage, not a real bug, and without this
+# exclusion errcheck flags essentially every handler in the codebase.
+linters-settings:
+  errcheck:
+    exclude-functions:
+      - (*github.com/gin-gonic/gin.Context).Error

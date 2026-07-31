@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { CheckCircle2 } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, CardTitle } from '../components/ui/Card'
 import { Input } from '../components/ui/Input'
@@ -8,15 +8,35 @@ import { RepositoryAttachForm } from '../components/project/RepositoryAttachForm
 import { TargetRegisterForm } from '../components/project/TargetRegisterForm'
 import { ApiError } from '../lib/apiClient'
 import { createProject, type Project } from '../lib/projectsApi'
+import { cn } from '../lib/cn'
+
+/** Numbered step marker (documentation/09-ui-ux-design-system.md §6,
+ * "progressive disclosure") — a filled accent circle with the step number
+ * while pending, a success checkmark once that step is actually done. Steps
+ * 2/3 are optional and skippable, so they stay numbered rather than ever
+ * showing "done". */
+function StepBadge({ n, done }: { n: number; done: boolean }) {
+  return (
+    <span
+      className={cn(
+        'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-caption font-semibold',
+        done ? 'bg-success/10 text-success' : 'bg-accent/10 text-accent',
+      )}
+    >
+      {done ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : n}
+    </span>
+  )
+}
 
 /**
  * documentation/09-ui-ux-design-system.md §5.6 + BUILD_GUIDE.md Phase 3:
  * "Project creation form + repository/pentest-target attachment UI (PAT
- * input must never echo back or log the token)." Three stages on one page:
- * project details, then (once the project exists) an optional repository
- * attach and an optional pentest-target registration — both are safe to
- * skip and finish later from the project's own Settings/Targets tabs
- * (`ProjectSettingsPage`, `ProjectTargetsPage`).
+ * input must never echo back or log the token)." Three numbered stages on
+ * one page: project details, then (once the project exists) an optional
+ * repository attach and an optional pentest-target registration — both
+ * reveal with a short transition and are safe to skip and finish later
+ * from the project's own Settings/Targets tabs (`ProjectSettingsPage`,
+ * `ProjectTargetsPage`).
  */
 export function ProjectCreatePage() {
   const navigate = useNavigate()
@@ -54,7 +74,10 @@ export function ProjectCreatePage() {
       </p>
 
       <Card>
-        <CardTitle>Project details</CardTitle>
+        <div className="flex items-center gap-2">
+          <StepBadge n={1} done={!!project} />
+          <CardTitle className="text-h3">Project details</CardTitle>
+        </div>
         <form onSubmit={handleCreate} className="mt-4 flex flex-col gap-4">
           <div>
             <label htmlFor="name" className="mb-1 block text-body-sm text-text-secondary">
@@ -94,28 +117,30 @@ export function ProjectCreatePage() {
               Create project
             </Button>
           )}
-          {project && (
-            <p className="flex items-center gap-1.5 text-body-sm text-success">
-              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-              Project created.
-            </p>
-          )}
         </form>
       </Card>
 
       {project && (
-        <div className="mt-4">
+        <div className="animate-reveal mt-4">
+          <div className="mb-2 flex items-center gap-2">
+            <StepBadge n={2} done={false} />
+            <span className="text-body-sm font-medium text-text-secondary">Step 2</span>
+          </div>
           <RepositoryAttachForm projectId={project.id} />
         </div>
       )}
       {project && (
-        <div className="mt-4">
+        <div className="animate-reveal mt-4">
+          <div className="mb-2 flex items-center gap-2">
+            <StepBadge n={3} done={false} />
+            <span className="text-body-sm font-medium text-text-secondary">Step 3</span>
+          </div>
           <TargetRegisterForm projectId={project.id} />
         </div>
       )}
 
       {project && (
-        <div className="mt-6 flex items-center justify-between">
+        <div className="animate-reveal mt-6 flex items-center justify-between">
           <Link to="/projects" className="text-body-sm text-text-secondary underline">
             Back to projects
           </Link>

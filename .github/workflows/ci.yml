@@ -25,7 +25,11 @@ jobs:
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7.0.1
         with:
-          version: latest
+          # Pinned, not `latest` — same reasoning CLAUDE.md documents for
+          # pinning Gin itself: `latest` silently changing (golangci-lint
+          # v2's default linter set/config schema differ from v1's) must
+          # not be able to turn CI red without a deliberate version bump.
+          version: v1.64.8
 
   lint-frontend:
     runs-on: ubuntu-latest

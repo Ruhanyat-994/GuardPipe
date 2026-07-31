@@ -35,7 +35,7 @@ const ENGINE_STAGES = [
 export function LandingPage() {
   return (
     <div className="flex min-h-screen flex-col">
-      <div className="relative overflow-hidden text-text-inverse">
+      <div className="relative overflow-hidden text-public-fg">
         <HeroGlow />
         <div className="relative px-4 pt-6">
           <PublicNav />
@@ -106,7 +106,7 @@ export function LandingPage() {
       </section>
 
       <section
-        className="relative overflow-hidden px-8 py-20 text-center text-text-inverse"
+        className="relative overflow-hidden px-8 py-20 text-center text-public-fg"
         style={{ background: 'linear-gradient(135deg, var(--glow-2), var(--glow-1))' }}
       >
         <h2 className="text-display-section" style={{ fontFamily: 'var(--font-display-serif)' }}>
