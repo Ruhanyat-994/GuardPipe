@@ -1,4 +1,3 @@
-import { useNavigate } from 'react-router-dom'
 import {
   FileText,
   Code2,
@@ -24,7 +23,6 @@ import { Card, CardDescription, CardTitle } from '../components/ui/Card'
 import { RiskGauge } from '../components/dashboard/RiskGauge'
 import { SeverityStatTile, type Severity } from '../components/dashboard/SeverityStatTile'
 import { PipelineStage, type StageStatus } from '../components/dashboard/PipelineStage'
-import { useAuthStore } from '../stores/authStore'
 
 /**
  * Hardcoded preview of the real Phase 8 dashboard
@@ -35,6 +33,10 @@ import { useAuthStore } from '../stores/authStore'
  * fixed sample data — there is no project or scan yet (that's Phase 3/6) —
  * so the page says so explicitly rather than letting fake findings pass as
  * real ones.
+ *
+ * Rendered inside AppShell (Phase 3) — the brand/user-menu bar it used to
+ * carry itself now lives in AppShell's shared top bar, so this page starts
+ * straight from its own content.
  */
 
 const SEVERITY_COUNTS: { severity: Severity; count: number; delta: number }[] = [
@@ -83,175 +85,147 @@ const TREND = [
 ]
 
 export function DashboardPage() {
-  const user = useAuthStore((s) => s.user)
-  const logout = useAuthStore((s) => s.logout)
-  const navigate = useNavigate()
-
-  async function handleLogout() {
-    await logout()
-    navigate('/login', { replace: true })
-  }
-
   return (
-    <div className="min-h-screen bg-bg-base">
-      <header
-        className="px-6 py-4 text-text-inverse"
-        style={{ background: 'linear-gradient(135deg, var(--glow-2), var(--glow-1))' }}
-      >
-        <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <span className="text-h3 font-semibold">GuardPipe</span>
-          <div className="flex items-center gap-4 text-body-sm">
-            <span className="text-white/80">
-              {user?.email} · {user?.role}
-            </span>
-            <Button variant="secondary" size="sm" onClick={handleLogout}>
-              Sign out
-            </Button>
-          </div>
+    <main className="mx-auto max-w-6xl px-6 py-8">
+      <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-caption font-semibold text-accent">
+        Preview — sample data. Real scanning lands in later phases.
+      </div>
+
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-h1 text-text-primary">Payments API</h1>
+          <p className="text-body-sm text-text-secondary">
+            github.com/acme/payments-api · main · a3f9c21 · last scan 4 min ago
+          </p>
         </div>
-      </header>
+        <Button disabled>Run Scan</Button>
+      </div>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
-        <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-caption font-semibold text-accent">
-          Preview — sample data. Real scanning lands in later phases.
-        </div>
-
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-h1 text-text-primary">Payments API</h1>
-            <p className="text-body-sm text-text-secondary">
-              github.com/acme/payments-api · main · a3f9c21 · last scan 4 min ago
-            </p>
-          </div>
-          <Button disabled>Run Scan</Button>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[auto_1fr]">
-          <Card className="flex items-center justify-center">
-            <RiskGauge score={68} verdict="block" />
-          </Card>
-
-          <Card>
-            <CardTitle>Current findings</CardTitle>
-            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-              {SEVERITY_COUNTS.map((s) => (
-                <SeverityStatTile
-                  key={s.severity}
-                  severity={s.severity}
-                  count={s.count}
-                  delta={s.delta}
-                />
-              ))}
-            </div>
-
-            <div className="mt-6 flex flex-col items-center gap-4 sm:flex-row">
-              <div className="h-40 w-40 shrink-0">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={SEVERITY_COUNTS}
-                      dataKey="count"
-                      nameKey="severity"
-                      innerRadius={40}
-                      outerRadius={70}
-                      paddingAngle={2}
-                    >
-                      {SEVERITY_COUNTS.map((s) => (
-                        <Cell key={s.severity} fill={DONUT_COLORS[s.severity]} stroke="none" />
-                      ))}
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <ul className="flex flex-col gap-1.5 text-body-sm">
-                {SEVERITY_COUNTS.map((s) => (
-                  <li key={s.severity} className="flex items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full"
-                      style={{ backgroundColor: DONUT_COLORS[s.severity] }}
-                      aria-hidden="true"
-                    />
-                    <span className="capitalize text-text-secondary">{s.severity}</span>
-                    <span className="font-medium text-text-primary">{s.count}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </Card>
-        </div>
-
-        <Card className="mt-6">
-          <CardTitle>Supply chain</CardTitle>
-          <div className="mt-4 flex flex-wrap gap-3">
-            {PIPELINE.map((stage) => (
-              <PipelineStage key={stage.label} {...stage} />
-            ))}
-          </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[auto_1fr]">
+        <Card className="flex items-center justify-center">
+          <RiskGauge score={68} verdict="block" />
         </Card>
 
-        <div className="mt-6 flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-4 py-3 text-body-sm text-text-primary">
-          <span>⚠ Document review failed: AI service unavailable.</span>
-          <Button variant="secondary" size="sm" disabled>
-            Retry
-          </Button>
-        </div>
+        <Card>
+          <CardTitle>Current findings</CardTitle>
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {SEVERITY_COUNTS.map((s) => (
+              <SeverityStatTile
+                key={s.severity}
+                severity={s.severity}
+                count={s.count}
+                delta={s.delta}
+              />
+            ))}
+          </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <Card>
-            <div className="flex items-center justify-between">
-              <CardTitle>Top findings</CardTitle>
-              <Button variant="ghost" size="sm" disabled>
-                View all →
-              </Button>
-            </div>
-            <ul className="mt-4 flex flex-col divide-y divide-border-default">
-              {TOP_FINDINGS.map((f) => (
-                <li key={f.title} className="flex items-center gap-3 py-3">
-                  <span
-                    className="rounded-full px-2 py-0.5 text-caption font-semibold text-white uppercase"
-                    style={{ backgroundColor: `var(--sev-${f.severity})` }}
+          <div className="mt-6 flex flex-col items-center gap-4 sm:flex-row">
+            <div className="h-40 w-40 shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={SEVERITY_COUNTS}
+                    dataKey="count"
+                    nameKey="severity"
+                    innerRadius={40}
+                    outerRadius={70}
+                    paddingAngle={2}
                   >
-                    {f.severity}
-                  </span>
-                  <span className="flex-1 text-body-sm text-text-primary">{f.title}</span>
-                  <span className="text-caption text-text-tertiary">{f.engine}</span>
+                    {SEVERITY_COUNTS.map((s) => (
+                      <Cell key={s.severity} fill={DONUT_COLORS[s.severity]} stroke="none" />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <ul className="flex flex-col gap-1.5 text-body-sm">
+              {SEVERITY_COUNTS.map((s) => (
+                <li key={s.severity} className="flex items-center gap-2">
+                  <span
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: DONUT_COLORS[s.severity] }}
+                    aria-hidden="true"
+                  />
+                  <span className="capitalize text-text-secondary">{s.severity}</span>
+                  <span className="font-medium text-text-primary">{s.count}</span>
                 </li>
               ))}
             </ul>
-          </Card>
+          </div>
+        </Card>
+      </div>
 
-          <Card>
-            <CardTitle>Risk trend</CardTitle>
-            <CardDescription className="mt-1">Last {TREND.length} scans</CardDescription>
-            <div className="mt-4 h-48">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={TREND} margin={{ left: -20 }}>
-                  <CartesianGrid stroke="var(--border-default)" vertical={false} />
-                  <XAxis
-                    dataKey="scan"
-                    stroke="var(--text-tertiary)"
-                    fontSize={12}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    domain={[0, 100]}
-                    stroke="var(--text-tertiary)"
-                    fontSize={12}
-                    tickLine={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="score"
-                    stroke="var(--accent)"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: 'var(--accent)' }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </Card>
+      <Card className="mt-6">
+        <CardTitle>Supply chain</CardTitle>
+        <div className="mt-4 flex flex-wrap gap-3">
+          {PIPELINE.map((stage) => (
+            <PipelineStage key={stage.label} {...stage} />
+          ))}
         </div>
-      </main>
-    </div>
+      </Card>
+
+      <div className="mt-6 flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-4 py-3 text-body-sm text-text-primary">
+        <span>⚠ Document review failed: AI service unavailable.</span>
+        <Button variant="secondary" size="sm" disabled>
+          Retry
+        </Button>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card>
+          <div className="flex items-center justify-between">
+            <CardTitle>Top findings</CardTitle>
+            <Button variant="ghost" size="sm" disabled>
+              View all →
+            </Button>
+          </div>
+          <ul className="mt-4 flex flex-col divide-y divide-border-default">
+            {TOP_FINDINGS.map((f) => (
+              <li key={f.title} className="flex items-center gap-3 py-3">
+                <span
+                  className="rounded-full px-2 py-0.5 text-caption font-semibold text-white uppercase"
+                  style={{ backgroundColor: `var(--sev-${f.severity})` }}
+                >
+                  {f.severity}
+                </span>
+                <span className="flex-1 text-body-sm text-text-primary">{f.title}</span>
+                <span className="text-caption text-text-tertiary">{f.engine}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <Card>
+          <CardTitle>Risk trend</CardTitle>
+          <CardDescription className="mt-1">Last {TREND.length} scans</CardDescription>
+          <div className="mt-4 h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={TREND} margin={{ left: -20 }}>
+                <CartesianGrid stroke="var(--border-default)" vertical={false} />
+                <XAxis
+                  dataKey="scan"
+                  stroke="var(--text-tertiary)"
+                  fontSize={12}
+                  tickLine={false}
+                />
+                <YAxis
+                  domain={[0, 100]}
+                  stroke="var(--text-tertiary)"
+                  fontSize={12}
+                  tickLine={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="score"
+                  stroke="var(--accent)"
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: 'var(--accent)' }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+    </main>
   )
 }
