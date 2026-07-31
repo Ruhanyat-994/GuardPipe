@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { AuthShell } from '../components/AuthShell'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
@@ -41,8 +42,17 @@ export function RegisterPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <Card className="w-full max-w-sm">
+    <AuthShell>
+      <div className="mb-6 text-center">
+        <h1 className="text-display-section" style={{ fontFamily: 'var(--font-display-serif)' }}>
+          Join GuardPipe.
+        </h1>
+        <p className="mt-2 text-body-sm text-white/70">
+          One score for your whole supply chain, starting with your first scan.
+        </p>
+      </div>
+
+      <Card>
         <CardTitle>Create your GuardPipe account</CardTitle>
         <CardDescription className="mt-1 mb-6">
           Already have an account?{' '}
@@ -113,7 +123,7 @@ export function RegisterPage() {
           </Button>
         </form>
       </Card>
-    </main>
+    </AuthShell>
   )
 }
 

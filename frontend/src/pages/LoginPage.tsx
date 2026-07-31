@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { AuthShell } from '../components/AuthShell'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
@@ -42,8 +43,15 @@ export function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <Card className="w-full max-w-sm">
+    <AuthShell>
+      <div className="mb-6 text-center">
+        <h1 className="text-display-section" style={{ fontFamily: 'var(--font-display-serif)' }}>
+          Welcome back.
+        </h1>
+        <p className="mt-2 text-body-sm text-white/70">Sign in to continue to your dashboard.</p>
+      </div>
+
+      <Card>
         <CardTitle>Sign in to GuardPipe</CardTitle>
         <CardDescription className="mt-1 mb-6">
           Don&apos;t have an account?{' '}
@@ -91,6 +99,6 @@ export function LoginPage() {
           </Button>
         </form>
       </Card>
-    </main>
+    </AuthShell>
   )
 }
