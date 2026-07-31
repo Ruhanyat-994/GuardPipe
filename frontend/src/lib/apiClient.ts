@@ -2,8 +2,8 @@
  * Typed fetch wrapper — the one place the frontend talks HTTP to the Go API
  * (documentation/08-frontend-architecture.md §2, "apiClient — typed fetch
  * wrapper"). Feature code calls apiClient.get/post/etc.; it never calls
- * fetch directly, so the error contract and auth header attachment live in
- * exactly one place.
+ * fetch directly, so the error contract, auth header, and silent-refresh
+ * retry live in exactly one place.
  */
 
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080/api/v1'
@@ -44,7 +44,36 @@ export function setAccessTokenGetter(fn: () => string | null): void {
   getAccessToken = fn
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** Set by the auth store: given a 401 `auth.token_expired`, attempt a
+ * refresh and return the new access token, or null if the session is dead.
+ * The store owns single-flight de-duplication (documentation/08's
+ * `Token storage + refresh with single-flight — never fire ten concurrent
+ * refreshes`) — apiClient just calls whatever this resolves to. */
+let onTokenExpired: (() => Promise<string | null>) | null = null
+
+export function setTokenExpiredHandler(fn: () => Promise<string | null>): void {
+  onTokenExpired = fn
+}
+
+async function parseProblem(response: Response): Promise<ProblemDetails> {
+  const isJson = response.headers.get('content-type')?.includes('json')
+  if (isJson) {
+    try {
+      return (await response.json()) as ProblemDetails
+    } catch {
+      // fall through to the generic problem below
+    }
+  }
+  return {
+    type: 'about:blank',
+    title: response.statusText,
+    status: response.status,
+    detail: 'The server returned an unexpected response.',
+    code: 'unknown',
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}, isRetry = false): Promise<T> {
   const token = getAccessToken()
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
@@ -55,27 +84,35 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set('Authorization', `Bearer ${token}`)
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers })
+  // credentials: 'include' is required for the gp_refresh cookie to travel
+  // on /auth/refresh — the frontend (5173) and API (8080) are different
+  // origins in dev, so cookies aren't sent by default
+  // (documentation/07-api-specification.md §2, "Token lifecycle").
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers,
+    credentials: 'include',
+  })
 
   if (response.status === 204) {
     return undefined as T
   }
 
-  const isJson = response.headers.get('content-type')?.includes('json')
-  const body = isJson ? await response.json() : undefined
-
   if (!response.ok) {
-    const problem: ProblemDetails = body ?? {
-      type: 'about:blank',
-      title: response.statusText,
-      status: response.status,
-      detail: 'The server returned an unexpected response.',
-      code: 'unknown',
+    const problem = await parseProblem(response)
+
+    if (problem.code === 'auth.token_expired' && !isRetry && onTokenExpired) {
+      const newToken = await onTokenExpired()
+      if (newToken) {
+        return request<T>(path, init, true)
+      }
     }
+
     throw new ApiError(problem)
   }
 
-  return body as T
+  const isJson = response.headers.get('content-type')?.includes('json')
+  return (isJson ? await response.json() : undefined) as T
 }
 
 export const apiClient = {

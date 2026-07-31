@@ -92,6 +92,17 @@
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
 
+  /* 2.9 Public-site only (Landing/Blog/Guides) — never used in the
+     authenticated app. documentation/09-ui-ux-design-system.md §2.9 names
+     Fraunces; this uses a system/web-safe editorial serif stack instead of
+     self-hosting or linking a webfont, to avoid an external font
+     dependency for now — same "editorial serif over sans" effect, revisit
+     if a real brand font gets sourced later. */
+  --font-display-serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+  --public-bg-hero: #05070c;
+  --glow-1: #3b5bff;
+  --glow-2: #1e1b4b;
+
   --text-display: 32px;
   --text-display--line-height: 40px;
   --text-display--font-weight: 600;
@@ -112,6 +123,12 @@
   --text-caption--line-height: 16px;
   --text-code: 13px;
   --text-code--line-height: 20px;
+  --text-display-hero: 56px;
+  --text-display-hero--line-height: 64px;
+  --text-display-hero--font-weight: 500;
+  --text-display-section: 40px;
+  --text-display-section--line-height: 48px;
+  --text-display-section--font-weight: 500;
 
   /* 2.7 Radius, elevation, motion — no light/dark variant, so these are
      declared once, directly, with no indirection needed. */
