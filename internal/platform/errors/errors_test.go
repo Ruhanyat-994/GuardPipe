@@ -55,6 +55,20 @@ func TestConstructors_SetKindAndCode(t *testing.T) {
 	}
 }
 
+func TestRateLimited_CarriesRetryAfter(t *testing.T) {
+	err := apperrors.RateLimited("ratelimit.exceeded", "too many login attempts", 42)
+
+	if err.Kind != apperrors.KindRateLimited {
+		t.Errorf("Kind = %q, want %q", err.Kind, apperrors.KindRateLimited)
+	}
+	if err.RetryAfter != 42 {
+		t.Errorf("RetryAfter = %d, want 42", err.RetryAfter)
+	}
+	if apperrors.StatusFor(err.Kind) != http.StatusTooManyRequests {
+		t.Errorf("StatusFor(KindRateLimited) = %d, want 429", apperrors.StatusFor(err.Kind))
+	}
+}
+
 func TestValidation_CarriesFieldErrors(t *testing.T) {
 	fields := []apperrors.FieldError{
 		{Field: "name", Message: "must be between 1 and 120 characters"},
