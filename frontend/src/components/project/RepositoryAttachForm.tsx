@@ -1,8 +1,9 @@
 import { type FormEvent, useState } from 'react'
-import { FolderGit2, KeyRound } from 'lucide-react'
+import { ExternalLink, GitBranch, KeyRound, Lock } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Card, CardDescription, CardTitle } from '../ui/Card'
 import { Input } from '../ui/Input'
+import { GitHubMark } from '../icons/GitHubMark'
 import { ApiError } from '../../lib/apiClient'
 import { attachRepository, setCredential, type Repository } from '../../lib/projectsApi'
 
@@ -27,9 +28,7 @@ export function RepositoryAttachForm({
   const [token, setToken] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [attached, setAttached] = useState<{ owner: string; name: string } | null>(
-    existing ? { owner: existing.owner, name: existing.name } : null,
-  )
+  const [attached, setAttached] = useState<Repository | null>(existing ?? null)
 
   async function handleAttach(e: FormEvent) {
     e.preventDefault()
@@ -43,7 +42,7 @@ export function RepositoryAttachForm({
         await setCredential(projectId, token)
       }
       const repo = await attachRepository(projectId, url)
-      setAttached({ owner: repo.owner, name: repo.name })
+      setAttached(repo)
       setToken('')
       onAttached?.(repo)
     } catch (err) {
@@ -63,7 +62,7 @@ export function RepositoryAttachForm({
   return (
     <Card>
       <div className="flex items-center gap-2">
-        <FolderGit2 className="h-4 w-4 text-text-tertiary" aria-hidden="true" />
+        <GitHubMark className="h-4 w-4 text-text-tertiary" />
         <CardTitle className="text-h3">Repository</CardTitle>
       </div>
       <CardDescription className="mt-1">
@@ -71,11 +70,35 @@ export function RepositoryAttachForm({
       </CardDescription>
 
       {attached && !needsToken ? (
-        <div className="mt-4 flex items-center justify-between">
-          <p className="flex items-center gap-1.5 text-body-sm text-success">
-            <FolderGit2 className="h-4 w-4" aria-hidden="true" />
-            {attached.owner}/{attached.name}
-          </p>
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-border-default bg-bg-subtle p-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <GitHubMark className="h-7 w-7 shrink-0 text-text-primary" />
+            <div className="min-w-0">
+              <a
+                href={attached.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-body-sm font-medium text-text-primary hover:text-accent hover:underline"
+              >
+                <span className="truncate">
+                  {attached.owner}/{attached.name}
+                </span>
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              </a>
+              <div className="mt-0.5 flex items-center gap-3 text-caption text-text-tertiary">
+                <span className="flex items-center gap-1">
+                  <GitBranch className="h-3 w-3" aria-hidden="true" />
+                  {attached.default_branch}
+                </span>
+                {attached.is_private && (
+                  <span className="flex items-center gap-1 text-warning">
+                    <Lock className="h-3 w-3" aria-hidden="true" />
+                    Private
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
           <Button variant="ghost" size="sm" onClick={() => setAttached(null)}>
             Replace
           </Button>
@@ -86,13 +109,17 @@ export function RepositoryAttachForm({
             <label htmlFor="repo-url" className="mb-1 block text-body-sm text-text-secondary">
               Repository URL
             </label>
-            <Input
-              id="repo-url"
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://github.com/acme/payments-api"
-            />
+            <div className="relative">
+              <GitHubMark className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-text-tertiary" />
+              <Input
+                id="repo-url"
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://github.com/acme/payments-api"
+                className="pl-9"
+              />
+            </div>
           </div>
 
           {needsToken && (
