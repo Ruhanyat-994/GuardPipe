@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/cn'
 import { GlobalSearch } from './GlobalSearch'
+import { Logo } from './Logo'
 import { NotificationPanel } from './NotificationPanel'
 import { UserMenu } from './UserMenu'
 import { Button } from './ui/Button'
@@ -64,7 +65,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
         </button>
 
-        <Link to="/projects" className="text-h3 font-semibold text-chrome-text">
+        <Link
+          to="/projects"
+          className="flex items-center gap-2 text-h3 font-semibold text-chrome-text"
+        >
+          <Logo className="h-6 w-auto" />
           GuardPipe
         </Link>
 
