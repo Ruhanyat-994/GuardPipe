@@ -4,17 +4,18 @@
 |---|---|
 | **Document** | Architecture Overview |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Structure** | arc42 + C4 model (levels 1–3) |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-01 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial architecture description |
+| 1.1 | 2026-08-01 | Team | §8.1 cross-referenced to the new live scan execution graph (`documentation/09-ui-ux-design-system.md` §4.8, planned `BUILD_GUIDE.md` Phase 6) — a frontend-only addition, no change to the runtime sequence or the `Engine`/API contracts documented here |
 
 ---
 
@@ -409,6 +410,8 @@ sequenceDiagram
     W->>A: GET /scans/{id} → completed
     W-->>U: Results view
 ```
+
+Every `GET /scans/{id}` poll in the sequence above is what the SPA renders as a **live execution graph** — nodes and edges lifted directly from §6.3's engine contract and the orchestrator's Execution DAG (`documentation/05-module-specifications.md` §5: workspace prep fanning into the parallel engines shown in the `par` block above, `pentest` branching independently since it needs no workspace, all converging into AI enrichment → scoring), not a flat list — full UI spec in `documentation/09-ui-ux-design-system.md` §4.8. This is a frontend rendering concern only: the sequence above, and the `GET /scans/{id}/progress` contract it relies on, are unchanged by it.
 
 ### 8.2 Sandboxed pentest
 
