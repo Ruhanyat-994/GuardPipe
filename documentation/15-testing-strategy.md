@@ -246,6 +246,8 @@ Automated checks catch roughly 40% of WCAG issues. The rest is the manual checkl
 
 **This is the centrepiece of the strategy.** Five small repositories under `testdata/fixtures/`, each with a catalogue of exactly what should be found.
 
+These are local, catalogued, and CI-gated — not to be confused with the two **live** demo repositories (real, standalone GitHub repos, used for manual testing and the teacher-facing demo) described in [20 — Demo Repositories](20-demo-repositories.md). Keep the two separate: fixtures here are the precise scoring instrument, the demo repos are for showing the product working end to end.
+
 | Fixture | Contents | Purpose |
 |---|---|---|
 | `fixture-vulnerable` | Deliberate instances of every Core rule across 5 languages, a bad Dockerfile, insecure K8s manifests, a compromised workflow, vulnerable dependencies | **Detection rate** |
