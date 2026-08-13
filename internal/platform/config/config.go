@@ -90,11 +90,33 @@ type Pentest struct {
 // AI — §5.6.
 type AI struct {
 	Enabled            bool
-	GeminiAPIKey       string
+	GeminiAPIKey       string   // single-key form, kept working as a one-key alias
+	GeminiAPIKeys      []string // GUARDPIPE_GEMINI_API_KEYS — comma-separated rotation pool (BUILD_GUIDE.md Phase 4)
 	ModelFast          string
 	ModelSmart         string
 	TokenBudgetPerScan int
 	CacheTTL           time.Duration
+}
+
+// KeyPool returns the full set of configured Gemini API keys, in rotation
+// order: GUARDPIPE_GEMINI_API_KEYS first (if set), then the singular
+// GUARDPIPE_GEMINI_API_KEY appended if it isn't already in the list — so a
+// developer who sets both doesn't get a key rotated to twice. Empty entries
+// are never present (Load already trims/drops them via getCSV, and the
+// singular form is checked for blank separately).
+func (a AI) KeyPool() []string {
+	pool := make([]string, 0, len(a.GeminiAPIKeys)+1)
+	seen := make(map[string]bool, len(a.GeminiAPIKeys)+1)
+	for _, k := range a.GeminiAPIKeys {
+		if k != "" && !seen[k] {
+			pool = append(pool, k)
+			seen[k] = true
+		}
+	}
+	if a.GeminiAPIKey != "" && !seen[a.GeminiAPIKey] {
+		pool = append(pool, a.GeminiAPIKey)
+	}
+	return pool
 }
 
 // External — §5.7.
@@ -180,6 +202,7 @@ func Load() (*Config, error) {
 		AI: AI{
 			Enabled:            getBool("GUARDPIPE_AI_ENABLED", true, p),
 			GeminiAPIKey:       getString("GUARDPIPE_GEMINI_API_KEY", ""),
+			GeminiAPIKeys:      getCSV("GUARDPIPE_GEMINI_API_KEYS", nil),
 			ModelFast:          getString("GUARDPIPE_GEMINI_MODEL_FAST", "gemini-2.5-flash"),
 			ModelSmart:         getString("GUARDPIPE_GEMINI_MODEL_SMART", "gemini-2.5-pro"),
 			TokenBudgetPerScan: getInt("GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN", 100000, p),
@@ -197,8 +220,8 @@ func Load() (*Config, error) {
 	}
 
 	validateSecurity(cfg, p)
-	if cfg.AI.Enabled && strings.TrimSpace(cfg.AI.GeminiAPIKey) == "" {
-		p.add("GUARDPIPE_GEMINI_API_KEY is required when GUARDPIPE_AI_ENABLED is true")
+	if cfg.AI.Enabled && len(cfg.AI.KeyPool()) == 0 {
+		p.add("GUARDPIPE_GEMINI_API_KEY or GUARDPIPE_GEMINI_API_KEYS is required when GUARDPIPE_AI_ENABLED is true")
 	}
 	if cfg.Core.Role != RoleAll && cfg.Core.Role != RoleAPI && cfg.Core.Role != RoleWorker {
 		p.add("GUARDPIPE_ROLE must be one of \"all\", \"api\", \"worker\", got %q", string(cfg.Core.Role))
