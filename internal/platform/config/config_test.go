@@ -114,6 +114,7 @@ func TestLoad_AIEnabledRequiresGeminiAPIKey(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("GUARDPIPE_AI_ENABLED", "true")
 	t.Setenv("GUARDPIPE_GEMINI_API_KEY", "")
+	t.Setenv("GUARDPIPE_GEMINI_API_KEYS", "")
 
 	_, err := config.Load()
 	if err == nil {
@@ -130,9 +131,61 @@ func TestLoad_AIDisabledDoesNotRequireGeminiAPIKey(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("GUARDPIPE_AI_ENABLED", "false")
 	t.Setenv("GUARDPIPE_GEMINI_API_KEY", "")
+	t.Setenv("GUARDPIPE_GEMINI_API_KEYS", "")
 
 	if _, err := config.Load(); err != nil {
 		t.Errorf("Load() error = %v, want nil when AI is disabled", err)
+	}
+}
+
+// TestLoad_AIEnabledAcceptsKeyPoolWithoutSingularKey is the Phase 4
+// multi-key-rotation-pool counterpart to the singular-key test above: the
+// plural GUARDPIPE_GEMINI_API_KEYS form must satisfy the requirement on its
+// own, with no singular GUARDPIPE_GEMINI_API_KEY set at all.
+func TestLoad_AIEnabledAcceptsKeyPoolWithoutSingularKey(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GUARDPIPE_AI_ENABLED", "true")
+	t.Setenv("GUARDPIPE_GEMINI_API_KEY", "")
+	t.Setenv("GUARDPIPE_GEMINI_API_KEYS", "key-a, key-b ,key-c")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil when GUARDPIPE_GEMINI_API_KEYS alone is set", err)
+	}
+	if got := cfg.AI.KeyPool(); len(got) != 3 || got[0] != "key-a" || got[1] != "key-b" || got[2] != "key-c" {
+		t.Errorf("AI.KeyPool() = %v, want [key-a key-b key-c] (trimmed, in order)", got)
+	}
+}
+
+// TestAI_KeyPool_MergesSingularAndPluralWithoutDuplicating covers KeyPool
+// directly (no Load involved): both forms set, the singular key already
+// present in the plural list must not be rotated to twice.
+func TestAI_KeyPool_MergesSingularAndPluralWithoutDuplicating(t *testing.T) {
+	ai := config.AI{
+		GeminiAPIKey:  "key-a",
+		GeminiAPIKeys: []string{"key-b", "key-c"},
+	}
+	got := ai.KeyPool()
+	want := []string{"key-b", "key-c", "key-a"}
+	if len(got) != len(want) {
+		t.Fatalf("KeyPool() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("KeyPool()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Near-miss: the singular key duplicated inside the plural list collapses
+	// to one entry, not two — otherwise rotation would burn the same key's
+	// quota twice before ever reaching the others.
+	dup := config.AI{
+		GeminiAPIKey:  "key-a",
+		GeminiAPIKeys: []string{"key-a", "key-b"},
+	}
+	gotDup := dup.KeyPool()
+	if len(gotDup) != 2 || gotDup[0] != "key-a" || gotDup[1] != "key-b" {
+		t.Errorf("KeyPool() with a duplicated key = %v, want [key-a key-b]", gotDup)
 	}
 }
 
