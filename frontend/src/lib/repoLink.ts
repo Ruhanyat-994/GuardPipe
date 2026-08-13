@@ -15,11 +15,7 @@ export function buildRepoBlobUrl(
   const cleaned = repositoryUrl.replace(/\.git$/, '').replace(/\/+$/, '')
   if (!/^https?:\/\/(www\.)?github\.com\/[^/]+\/[^/]+$/.test(cleaned)) return null
 
-  const encodedPath = path
-    .split('/')
-    .filter(Boolean)
-    .map(encodeURIComponent)
-    .join('/')
+  const encodedPath = path.split('/').filter(Boolean).map(encodeURIComponent).join('/')
 
   let anchor = ''
   if (lineStart) {

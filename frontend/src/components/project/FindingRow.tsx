@@ -50,7 +50,13 @@ export function FindingRow({
   const summary = locationSummary(finding)
   const blobUrl =
     repository && gitRef && finding.location.type === 'file' && finding.location.path
-      ? buildRepoBlobUrl(repository.url, gitRef, finding.location.path, finding.location.line_start, finding.location.line_end)
+      ? buildRepoBlobUrl(
+          repository.url,
+          gitRef,
+          finding.location.path,
+          finding.location.line_start,
+          finding.location.line_end,
+        )
       : null
 
   return (
@@ -70,7 +76,10 @@ export function FindingRow({
         <span className="flex-1 text-body-sm text-text-primary">{finding.title}</span>
         <span className="hidden text-caption text-text-tertiary sm:inline">{finding.rule_id}</span>
         <ChevronDown
-          className={cn('h-4 w-4 shrink-0 text-text-tertiary transition-transform', expanded && 'rotate-180')}
+          className={cn(
+            'h-4 w-4 shrink-0 text-text-tertiary transition-transform',
+            expanded && 'rotate-180',
+          )}
           aria-hidden="true"
         />
       </button>

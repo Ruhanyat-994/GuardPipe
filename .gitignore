@@ -2,6 +2,9 @@
 .env
 .env.local
 !.env.example
+# Planted golden-fixture case for depscan.secrets.env-file-committed —
+# a fake secret, not a real one; must be tracked for the rule to fire in CI.
+!testdata/fixtures/fixture-vulnerable/.env
 
 # Go
 /guardpipe

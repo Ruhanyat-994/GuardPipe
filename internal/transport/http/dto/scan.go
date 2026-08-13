@@ -139,7 +139,7 @@ func FromOrgScanSummary(s orchestrator.OrgScanSummary) OrgScanSummaryResponse {
 // OrgScanListResponse matches `GET /scans`.
 type OrgScanListResponse struct {
 	Data       []OrgScanSummaryResponse `json:"data"`
-	Pagination Pagination                `json:"pagination"`
+	Pagination Pagination               `json:"pagination"`
 }
 
 // EngineProgressResponse is one entry in ProgressResponse.Engines.
