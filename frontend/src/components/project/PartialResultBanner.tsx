@@ -25,8 +25,8 @@ export function PartialResultBanner({ jobs }: { jobs: Job[] }) {
           {failed.map((j) => (
             <li key={j.id}>
               <span className="font-medium capitalize">{j.engine}</span> failed
-              {j.error_reason ? ` (${j.error_reason.replace(/_/g, ' ')})` : ''} — its findings are not
-              included.
+              {j.error_reason ? ` (${j.error_reason.replace(/_/g, ' ')})` : ''} — its findings are
+              not included.
             </li>
           ))}
           {skipped.map((j) => (

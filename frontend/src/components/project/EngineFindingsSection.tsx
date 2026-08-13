@@ -31,11 +31,17 @@ function subtitle(status: JobStatus, findingCount: number): string {
     case 'cancelled':
       return 'Cancelled'
     case 'succeeded':
-      return findingCount === 0 ? 'No findings — clean' : `${findingCount} finding${findingCount === 1 ? '' : 's'}`
+      return findingCount === 0
+        ? 'No findings — clean'
+        : `${findingCount} finding${findingCount === 1 ? '' : 's'}`
   }
 }
 
-function emptyMessage(status: JobStatus, errorReason: string | null, skipReason: string | null): string {
+function emptyMessage(
+  status: JobStatus,
+  errorReason: string | null,
+  skipReason: string | null,
+): string {
   switch (status) {
     case 'queued':
     case 'running':
@@ -118,7 +124,10 @@ export function EngineFindingsSection({
           </span>
         )}
         <ChevronDown
-          className={cn('h-4 w-4 shrink-0 text-text-tertiary transition-transform', expanded && 'rotate-180')}
+          className={cn(
+            'h-4 w-4 shrink-0 text-text-tertiary transition-transform',
+            expanded && 'rotate-180',
+          )}
           aria-hidden="true"
         />
       </button>

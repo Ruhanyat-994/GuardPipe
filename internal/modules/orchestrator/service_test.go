@@ -62,6 +62,7 @@ func (f *fakeScanRepo) ListByProject(_ context.Context, projectID uuid.UUID, pag
 	end := min(start+page.PageSize, len(out))
 	return out[start:end], total, nil
 }
+
 // ListByOrg ignores orgID — this fake has no concept of organisations
 // (that scoping is the real repo's WHERE clause, proven by
 // TestScanRepo_ListByOrg_ScopedToOrgAndNewestFirst against real Postgres).

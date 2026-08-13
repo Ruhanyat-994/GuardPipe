@@ -93,7 +93,9 @@ export function ScanLauncher({
                 'flex flex-col items-center gap-2 rounded-lg border px-3 py-3 text-center transition-colors',
                 !enabled && 'cursor-not-allowed opacity-45',
                 enabled && isSelected && 'border-accent bg-accent/5',
-                enabled && !isSelected && 'border-border-default bg-bg-surface hover:border-border-strong',
+                enabled &&
+                  !isSelected &&
+                  'border-border-default bg-bg-surface hover:border-border-strong',
                 !enabled && 'border-border-default bg-bg-subtle',
               )}
             >
@@ -108,7 +110,9 @@ export function ScanLauncher({
                 <span className="text-body-sm font-medium text-text-primary">{meta.label}</span>
                 {meta.hasOsvMark && <OsvMark />}
               </div>
-              <span className="text-caption text-text-tertiary">{enabled ? 'Available' : 'Coming soon'}</span>
+              <span className="text-caption text-text-tertiary">
+                {enabled ? 'Available' : 'Coming soon'}
+              </span>
             </button>
           )
         })}
