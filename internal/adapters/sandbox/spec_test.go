@@ -32,9 +32,9 @@ func TestBuildContainerSpec_EnforcesSecuritySettings(t *testing.T) {
 	require.Equal(t, []string{"ALL"}, hostConfig.CapDrop, "--cap-drop=ALL")
 	require.Contains(t, hostConfig.SecurityOpt, "no-new-privileges")
 	require.Equal(t, "none", string(hostConfig.NetworkMode))
-	require.Equal(t, int64(defaultMemoryMB*1024*1024), hostConfig.Resources.Memory)
-	require.NotNil(t, hostConfig.Resources.PidsLimit)
-	require.Equal(t, int64(defaultPidsLimit), *hostConfig.Resources.PidsLimit)
+	require.Equal(t, int64(defaultMemoryMB*1024*1024), hostConfig.Memory)
+	require.NotNil(t, hostConfig.PidsLimit)
+	require.Equal(t, int64(defaultPidsLimit), *hostConfig.PidsLimit)
 }
 
 func TestBuildContainerSpec_NeverExposesDockerSocket(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/crypto"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
@@ -37,6 +38,14 @@ type Service interface {
 	RegisterTarget(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in TargetInput) (*Target, error)
 	AttestTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID, in AttestationInput) (*Target, *TargetAttestation, error)
 	RevokeTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID) error
+
+	// GetCloneInfo returns what modules/orchestrator's background worker
+	// needs to check out a project's repository — no actor parameter,
+	// deliberately: the worker isn't handling a per-request authorization
+	// check, it's processing a scan job whose creation was already
+	// authorized (CreateScan verified the actor owned the project). Token
+	// is "" when no credential is attached (a public repository).
+	GetCloneInfo(ctx context.Context, projectID uuid.UUID) (repoURL, branch, token string, err error)
 }
 
 // ProjectDetail is a Project plus the pieces the API returns alongside it
@@ -128,6 +137,7 @@ type service struct {
 	users         UserDisplayNameLookup
 	vcs           vcs.Service
 	resolver      validate.Resolver
+	audit         audit.Service
 	encryptionKey []byte
 
 	allowPrivateTargets bool
@@ -135,7 +145,9 @@ type service struct {
 	attestationVersion  string
 }
 
-// NewService wires the project module.
+// NewService wires the project module. auditSvc is BUILD_GUIDE.md Phase 6's
+// retroactive instrumentation — project created/archived, repository
+// attached, target attested are the four events named there.
 func NewService(
 	projects ProjectRepository,
 	repositories RepositoryRepository,
@@ -145,6 +157,7 @@ func NewService(
 	users UserDisplayNameLookup,
 	vcsSvc vcs.Service,
 	resolver validate.Resolver,
+	auditSvc audit.Service,
 	encryptionKey []byte,
 	allowPrivateTargets bool,
 	pentestAllowlist []string,
@@ -158,6 +171,7 @@ func NewService(
 		users:               users,
 		vcs:                 vcsSvc,
 		resolver:            resolver,
+		audit:               auditSvc,
 		encryptionKey:       encryptionKey,
 		allowPrivateTargets: allowPrivateTargets,
 		pentestAllowlist:    pentestAllowlist,
@@ -190,12 +204,16 @@ func (s *service) Create(ctx context.Context, actor domain.Actor, in CreateProje
 	if err := s.projects.Create(ctx, p); err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("create project: %w", err))
 	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "project.created",
+		ResourceType: strPtr("project"), ResourceID: &p.ID,
+	})
 
 	detail := &ProjectDetail{Project: *p}
 
 	repoURL := trimmedOrNil(in.RepositoryURL)
 	if repoURL != nil {
-		repo, err := s.attachRepository(ctx, p.ID, *repoURL, "")
+		repo, err := s.attachRepository(ctx, actor, p.ID, *repoURL, "")
 		if err != nil {
 			// FR-PRJ-005: validated *before* saving. The project row is
 			// already committed by this point, so a failed attach
@@ -272,6 +290,10 @@ func (s *service) Archive(ctx context.Context, actor domain.Actor, projectID uui
 	if err := s.projects.Update(ctx, p); err != nil {
 		return apperrors.Internal(fmt.Errorf("archive project: %w", err))
 	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "project.archived",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+	})
 	return nil
 }
 
@@ -285,12 +307,14 @@ func (s *service) AttachRepository(ctx context.Context, actor domain.Actor, proj
 		return nil, apperrors.Internal(fmt.Errorf("read existing credential: %w", err))
 	}
 
-	return s.attachRepository(ctx, projectID, in.URL, token)
+	return s.attachRepository(ctx, actor, projectID, in.URL, token)
 }
 
 // attachRepository is the shared implementation behind Create's optional
-// repository_url and the standalone AttachRepository endpoint.
-func (s *service) attachRepository(ctx context.Context, projectID uuid.UUID, rawURL, token string) (*Repository, error) {
+// repository_url and the standalone AttachRepository endpoint — actor is
+// threaded through just for the audit entry, both call sites already have
+// one in scope.
+func (s *service) attachRepository(ctx context.Context, actor domain.Actor, projectID uuid.UUID, rawURL, token string) (*Repository, error) {
 	info, err := s.vcs.ValidateRepository(ctx, rawURL, token)
 	if err != nil {
 		return nil, translateRepoValidationError(err, token != "")
@@ -310,6 +334,11 @@ func (s *service) attachRepository(ctx context.Context, projectID uuid.UUID, raw
 	if err := s.repositories.Upsert(ctx, repo); err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("attach repository: %w", err))
 	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "repository.attached",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+		Detail: map[string]any{"repository_url": repo.URL},
+	})
 	return repo, nil
 }
 
@@ -462,6 +491,15 @@ func (s *service) AttestTarget(ctx context.Context, actor domain.Actor, targetID
 		return nil, nil, apperrors.Internal(fmt.Errorf("resolve attester display name: %w", err))
 	}
 
+	var ipAddr *netip.Addr
+	if parsed, err := netip.ParseAddr(in.SourceIP); err == nil {
+		ipAddr = &parsed
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "target.attested",
+		ResourceType: strPtr("pentest_target"), ResourceID: &targetID, IP: ipAddr,
+	})
+
 	return t, &TargetAttestation{AttestedAt: now, AttestedByID: actor.UserID, AttestedByName: name}, nil
 }
 
@@ -473,6 +511,23 @@ func (s *service) RevokeTarget(ctx context.Context, actor domain.Actor, targetID
 		return apperrors.Internal(fmt.Errorf("revoke target: %w", err))
 	}
 	return nil
+}
+
+func (s *service) GetCloneInfo(ctx context.Context, projectID uuid.UUID) (repoURL, branch, token string, err error) {
+	repo, err := s.repositories.GetByProjectID(ctx, projectID)
+	if err != nil {
+		if isNotFound(err) {
+			return "", "", "", apperrors.NotFound("project.repository_not_found", "no repository attached to this project")
+		}
+		return "", "", "", apperrors.Internal(fmt.Errorf("get repository: %w", err))
+	}
+
+	plaintext, err := s.credentials.GetPlaintext(ctx, projectID, CredentialKindGitHubPAT, s.encryptionKey)
+	if err != nil && !isNotFound(err) {
+		return "", "", "", apperrors.Internal(fmt.Errorf("read credential: %w", err))
+	}
+
+	return repo.URL, repo.DefaultBranch, plaintext, nil
 }
 
 func (s *service) getOwnedProject(ctx context.Context, actor domain.Actor, projectID uuid.UUID) (*Project, error) {
@@ -546,6 +601,10 @@ func maskToken(token string) string {
 		return prefix + "••••" + token
 	}
 	return prefix + "••••" + token[len(token)-4:]
+}
+
+func strPtr(s string) *string {
+	return &s
 }
 
 func trimmedOrNil(s *string) *string {
