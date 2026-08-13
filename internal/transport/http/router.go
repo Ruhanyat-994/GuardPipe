@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
@@ -33,6 +34,7 @@ type RouterConfig struct {
 
 	IdentitySvc identity.Service
 	ProjectSvc  project.Service
+	AdvisorySvc advisory.Service
 	HealthDB    handler.Pinger
 
 	Version   string
@@ -104,6 +106,14 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	{
 		targets.POST("/:id/attest", middleware.RBAC(memberAndAbove...), projectH.AttestTarget)
 		targets.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.RevokeTarget)
+	}
+
+	ruleH := handler.NewRuleHandler(cfg.AdvisorySvc, v)
+	rules := api.Group("/rules", requireAuth)
+	{
+		rules.GET("", middleware.RBAC(viewerAndAbove...), ruleH.List)
+		rules.GET("/:id", middleware.RBAC(viewerAndAbove...), ruleH.Get)
+		rules.PATCH("/:id", middleware.RBAC(adminOnly...), ruleH.SetEnabled)
 	}
 
 	return r
