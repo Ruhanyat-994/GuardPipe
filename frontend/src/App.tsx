@@ -14,6 +14,7 @@ import { GuideDetailPage } from './pages/GuideDetailPage'
 import { BlogIndexPage } from './pages/BlogIndexPage'
 import { BlogPostPage } from './pages/BlogPostPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
+import { RulesPage } from './pages/RulesPage'
 import { RequireAuth } from './components/RequireAuth'
 import { AppShell } from './components/AppShell'
 import { useAuthStore } from './stores/authStore'
@@ -87,7 +88,7 @@ function App() {
           path="/targets"
           element={<PlaceholderPage title="Pentest Targets" phase="Phase 7" />}
         />
-        <Route path="/rules" element={<PlaceholderPage title="Rules" phase="Phase 7" />} />
+        <Route path="/rules" element={<RulesPage />} />
         <Route path="/settings" element={<PlaceholderPage title="Settings" phase="Phase 9" />} />
       </Route>
 

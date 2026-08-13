@@ -20,6 +20,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver, used only to run goose migrations
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
@@ -110,6 +113,25 @@ func run() error {
 		cfg.Pentest.Allowlist,
 	)
 
+	redisClient, err := queue.New(cfg.Data.RedisURL)
+	if err != nil {
+		return fmt.Errorf("connect to redis: %w", err)
+	}
+	defer redisClient.Close()
+
+	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
+	advisorySvc := advisory.NewService(
+		osvClient,
+		advisory.NewRedisCache(redisClient),
+		cfg.External.OSVCacheTTL,
+		repo.NewRuleRepo(db.Pool),
+		advisory.NewRuleRegistry(), // empty until Phase 6+ engines register rules — see RuleRegistry's doc comment
+		log,
+	)
+	if err := advisorySvc.SyncRules(ctx); err != nil {
+		return fmt.Errorf("sync rules catalogue: %w", err)
+	}
+
 	if cfg.Core.Role == config.RoleWorker {
 		// The worker pool doesn't exist yet — it lands in Phase 6 with the
 		// first engine. A worker-role process today has nothing to claim,
@@ -124,6 +146,7 @@ func run() error {
 		CORSOrigins:     cfg.Security.CORSOrigins,
 		IdentitySvc:     identitySvc,
 		ProjectSvc:      projectSvc,
+		AdvisorySvc:     advisorySvc,
 		HealthDB:        db,
 		Version:         version,
 		CommitSHA:       commitSHA,
