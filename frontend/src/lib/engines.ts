@@ -15,7 +15,10 @@ import type { Engine } from './rulesApi'
  * previously duplicated across RulesPage and SupplyChainPipeline, which had
  * drifted apart on the `hasOsvMark` flag. Both now import from here.
  */
-export const ENGINE_META: Record<Engine, { label: string; icon: LucideIcon; hasOsvMark?: boolean }> = {
+export const ENGINE_META: Record<
+  Engine,
+  { label: string; icon: LucideIcon; hasOsvMark?: boolean }
+> = {
   docreview: { label: 'Docs', icon: FileText },
   codescan: { label: 'Code', icon: Code2 },
   depscan: { label: 'Deps', icon: Package, hasOsvMark: true },

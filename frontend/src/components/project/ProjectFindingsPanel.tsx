@@ -5,7 +5,13 @@ import { Card, CardDescription, CardTitle } from '../ui/Card'
 import { EngineFindingsSection } from './EngineFindingsSection'
 import { ApiError } from '../../lib/apiClient'
 import type { Repository } from '../../lib/projectsApi'
-import { getScan, listFindings, listScans, type FindingListItem, type Scan } from '../../lib/scansApi'
+import {
+  getScan,
+  listFindings,
+  listScans,
+  type FindingListItem,
+  type Scan,
+} from '../../lib/scansApi'
 import { relativeTime } from '../../lib/format'
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
@@ -51,7 +57,8 @@ export function ProjectFindingsPanel({
         })
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof ApiError ? err.problem.detail : 'Could not load findings.')
+        if (!cancelled)
+          setError(err instanceof ApiError ? err.problem.detail : 'Could not load findings.')
       })
 
     return () => {
@@ -79,8 +86,7 @@ export function ProjectFindingsPanel({
         <ScanSearch className="h-10 w-10 text-text-tertiary" aria-hidden="true" />
         <CardTitle>No scans yet</CardTitle>
         <CardDescription className="max-w-sm">
-          Run a scan from the Scans tab to see dependency, secret, and vulnerability findings
-          here.
+          Run a scan from the Scans tab to see dependency, secret, and vulnerability findings here.
         </CardDescription>
         <Link
           to={`/projects/${projectId}/scans`}
@@ -112,8 +118,8 @@ export function ProjectFindingsPanel({
       {!TERMINAL_STATUSES.has(scan.status) && (
         <Card>
           <CardDescription>
-            This scan is still running — findings will appear here once it finishes. Open the
-            scan to watch its progress live.
+            This scan is still running — findings will appear here once it finishes. Open the scan
+            to watch its progress live.
           </CardDescription>
         </Card>
       )}

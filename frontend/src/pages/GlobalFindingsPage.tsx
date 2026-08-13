@@ -25,7 +25,10 @@ function ProjectFindingsAccordion({ project }: { project: Project }) {
         <FolderKanban className="h-4 w-4 shrink-0 text-text-secondary" aria-hidden="true" />
         <span className="flex-1 font-semibold text-text-primary">{project.name}</span>
         <ChevronDown
-          className={cn('h-4 w-4 shrink-0 text-text-tertiary transition-transform', expanded && 'rotate-180')}
+          className={cn(
+            'h-4 w-4 shrink-0 text-text-tertiary transition-transform',
+            expanded && 'rotate-180',
+          )}
           aria-hidden="true"
         />
       </button>
@@ -57,7 +60,8 @@ export function GlobalFindingsPage() {
         if (!cancelled) setProjects(res.data)
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof ApiError ? err.problem.detail : 'Could not load projects.')
+        if (!cancelled)
+          setError(err instanceof ApiError ? err.problem.detail : 'Could not load projects.')
       })
     return () => {
       cancelled = true

@@ -88,7 +88,9 @@ export function ScanHistoryTable({
               </td>
               <td className="px-4 py-3">
                 {totalFindings(s.finding_counts) === 0 ? (
-                  <span className="text-text-tertiary">{s.status === 'completed' ? 'None' : '—'}</span>
+                  <span className="text-text-tertiary">
+                    {s.status === 'completed' ? 'None' : '—'}
+                  </span>
                 ) : (
                   <div className="flex items-center gap-2">
                     {SEVERITY_ORDER.filter((sev) => s.finding_counts[sev] > 0).map((sev) => (
