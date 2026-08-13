@@ -22,7 +22,10 @@ export function Tabs({
   className?: string
 }) {
   return (
-    <div role="tablist" className={cn('flex items-center gap-1 border-b border-border-default', className)}>
+    <div
+      role="tablist"
+      className={cn('flex items-center gap-1 border-b border-border-default', className)}
+    >
       {items.map((item) => {
         const isActive = item.id === active
         return (

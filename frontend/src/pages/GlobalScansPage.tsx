@@ -35,7 +35,10 @@ export function GlobalScansPage() {
         if (res.data.length > 0) setSelectedProjectId(res.data[0].id)
       })
       .catch((err: unknown) => {
-        if (!cancelled) setProjectsError(err instanceof ApiError ? err.problem.detail : 'Could not load projects.')
+        if (!cancelled)
+          setProjectsError(
+            err instanceof ApiError ? err.problem.detail : 'Could not load projects.',
+          )
       })
     return () => {
       cancelled = true
@@ -49,7 +52,10 @@ export function GlobalScansPage() {
         if (!cancelled) setScans(res.data)
       })
       .catch((err: unknown) => {
-        if (!cancelled) setLoadError(err instanceof ApiError ? err.problem.detail : 'Could not load scan history.')
+        if (!cancelled)
+          setLoadError(
+            err instanceof ApiError ? err.problem.detail : 'Could not load scan history.',
+          )
       })
     return () => {
       cancelled = true
@@ -118,7 +124,9 @@ export function GlobalScansPage() {
             </label>
           </Card>
 
-          {selectedProjectId && <ScanLauncher projectId={selectedProjectId} onStarted={handleStarted} />}
+          {selectedProjectId && (
+            <ScanLauncher projectId={selectedProjectId} onStarted={handleStarted} />
+          )}
         </div>
       )}
 

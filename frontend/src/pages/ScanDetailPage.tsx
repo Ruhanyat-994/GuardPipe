@@ -132,13 +132,17 @@ export function ScanDetailPage() {
       <Card>
         <CardTitle className="text-h3">Findings</CardTitle>
         {!TERMINAL_STATUSES.has(scan.status) && (
-          <CardDescription className="mt-2">Findings will appear once the scan finishes.</CardDescription>
+          <CardDescription className="mt-2">
+            Findings will appear once the scan finishes.
+          </CardDescription>
         )}
         {TERMINAL_STATUSES.has(scan.status) && findings === null && (
           <CardDescription className="mt-2">Loading findings…</CardDescription>
         )}
         {findings !== null && findings.length === 0 && (
-          <CardDescription className="mt-2">No findings — this scan came back clean.</CardDescription>
+          <CardDescription className="mt-2">
+            No findings — this scan came back clean.
+          </CardDescription>
         )}
         {findings !== null && findings.length > 0 && (
           <ul className="mt-4 flex flex-col divide-y divide-border-default">
@@ -147,7 +151,9 @@ export function ScanDetailPage() {
                 key={f.id}
                 finding={f}
                 repository={project?.repository ?? null}
-                gitRef={scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null}
+                gitRef={
+                  scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null
+                }
               />
             ))}
           </ul>

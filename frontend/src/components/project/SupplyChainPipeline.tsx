@@ -62,7 +62,14 @@ const STATUS_ICON: Record<NodeStatus, LucideIcon> = {
   skipped: MinusCircle,
 }
 
-const PARALLEL_ENGINES: Engine[] = ['docreview', 'codescan', 'depscan', 'containerscan', 'k8sscan', 'cicdscan']
+const PARALLEL_ENGINES: Engine[] = [
+  'docreview',
+  'codescan',
+  'depscan',
+  'containerscan',
+  'k8sscan',
+  'cicdscan',
+]
 
 function jobStatusToNodeStatus(status: JobStatus): NodeStatus {
   switch (status) {
@@ -86,10 +93,18 @@ interface EngineNodeState {
   reason: string | null
 }
 
-function resolveEngineState(engine: Engine, progress: Progress | null, jobs: Job[]): EngineNodeState {
+function resolveEngineState(
+  engine: Engine,
+  progress: Progress | null,
+  jobs: Job[],
+): EngineNodeState {
   const live = progress?.engines.find((e) => e.engine === engine)
   if (live) {
-    return { status: jobStatusToNodeStatus(live.status), findingCount: live.finding_count, reason: null }
+    return {
+      status: jobStatusToNodeStatus(live.status),
+      findingCount: live.finding_count,
+      reason: null,
+    }
   }
   const job = jobs.find((j) => j.engine === engine)
   if (job) {
@@ -111,9 +126,16 @@ function StatusBadge({ status, size = 'md' }: { status: NodeStatus; size?: 'sm' 
         'inline-flex items-center gap-1.5 rounded-full font-semibold capitalize',
         size === 'md' ? 'px-3 py-1 text-body-sm' : 'text-caption',
       )}
-      style={{ color, backgroundColor: size === 'md' ? `color-mix(in srgb, ${color} 12%, transparent)` : undefined }}
+      style={{
+        color,
+        backgroundColor:
+          size === 'md' ? `color-mix(in srgb, ${color} 12%, transparent)` : undefined,
+      }}
     >
-      <Icon className={cn('h-3.5 w-3.5', status === 'running' && 'animate-spin')} aria-hidden="true" />
+      <Icon
+        className={cn('h-3.5 w-3.5', status === 'running' && 'animate-spin')}
+        aria-hidden="true"
+      />
       {STATUS_LABEL[status]}
     </span>
   )
@@ -138,7 +160,10 @@ function Node({
     <div
       className="relative z-[1] flex w-[116px] shrink-0 flex-col items-center gap-2 rounded-xl border bg-bg-surface px-3 py-3.5 text-center shadow-sm transition-colors"
       style={{
-        borderColor: status === 'not_run' ? 'var(--border-default)' : `color-mix(in srgb, ${color} 45%, transparent)`,
+        borderColor:
+          status === 'not_run'
+            ? 'var(--border-default)'
+            : `color-mix(in srgb, ${color} 45%, transparent)`,
       }}
       title={tooltip ?? undefined}
     >
@@ -152,8 +177,14 @@ function Node({
         <span className="text-body-sm font-semibold text-text-primary">{label}</span>
         {osvMark && <OsvMark />}
       </div>
-      <span className="flex items-center gap-1 text-caption font-medium capitalize" style={{ color }}>
-        <StatusIcon className={cn('h-3 w-3', status === 'running' && 'animate-spin')} aria-hidden="true" />
+      <span
+        className="flex items-center gap-1 text-caption font-medium capitalize"
+        style={{ color }}
+      >
+        <StatusIcon
+          className={cn('h-3 w-3', status === 'running' && 'animate-spin')}
+          aria-hidden="true"
+        />
         {STATUS_LABEL[status]}
       </span>
     </div>
@@ -231,8 +262,13 @@ export function SupplyChainPipeline({
   scan?: Pick<Scan, 'id' | 'type' | 'branch' | 'queued_at'>
 }) {
   const scanStarted = progress !== null || jobs.length > 0
-  const anyRunningOrDone = jobs.some((j) => j.status !== 'queued') || (progress?.progress_pct ?? 0) > 0
-  const workspaceStatus: NodeStatus = !scanStarted ? 'not_run' : anyRunningOrDone ? 'succeeded' : 'running'
+  const anyRunningOrDone =
+    jobs.some((j) => j.status !== 'queued') || (progress?.progress_pct ?? 0) > 0
+  const workspaceStatus: NodeStatus = !scanStarted
+    ? 'not_run'
+    : anyRunningOrDone
+      ? 'succeeded'
+      : 'running'
 
   const pentestState = resolveEngineState('pentest', progress, jobs)
   const status = overallStatus(scanStarted, progress, jobs)
@@ -251,7 +287,11 @@ export function SupplyChainPipeline({
       {/* graph */}
       <div className="overflow-x-auto p-6">
         <div className="flex min-w-max flex-col items-center">
-          <Node label="Scan start" icon={ShieldAlert} status={scanStarted ? 'succeeded' : 'not_run'} />
+          <Node
+            label="Scan start"
+            icon={ShieldAlert}
+            status={scanStarted ? 'succeeded' : 'not_run'}
+          />
 
           <div className="flex w-full items-start justify-center gap-10 pt-0">
             <div className="flex flex-col items-center">
@@ -288,15 +328,28 @@ export function SupplyChainPipeline({
               <span className="rounded-full bg-bg-subtle px-2 py-0.5 text-caption text-text-tertiary">
                 Needs no workspace
               </span>
-              <div className="h-4 w-px border-l border-dashed border-border-strong" aria-hidden="true" />
-              <Node label="Pentest" icon={ShieldAlert} status={pentestState.status} tooltip={pentestState.reason} />
+              <div
+                className="h-4 w-px border-l border-dashed border-border-strong"
+                aria-hidden="true"
+              />
+              <Node
+                label="Pentest"
+                icon={ShieldAlert}
+                status={pentestState.status}
+                tooltip={pentestState.reason}
+              />
             </div>
           </div>
 
           <TrunkLine />
           <JointDot />
           <TrunkLine />
-          <Node label="AI enrichment" icon={FileText} status="not_run" tooltip="Lands in Phase 10/11" />
+          <Node
+            label="AI enrichment"
+            icon={FileText}
+            status="not_run"
+            tooltip="Lands in Phase 10/11"
+          />
           <TrunkLine />
           <JointDot />
           <TrunkLine />
@@ -307,12 +360,17 @@ export function SupplyChainPipeline({
       {/* footer: legend + real scan info, no fabricated fields */}
       <div className="flex flex-wrap items-start justify-between gap-6 border-t border-border-default bg-bg-subtle px-5 py-4">
         <div className="flex flex-col gap-1.5">
-          <span className="text-caption font-semibold uppercase tracking-wide text-text-tertiary">Legend</span>
+          <span className="text-caption font-semibold uppercase tracking-wide text-text-tertiary">
+            Legend
+          </span>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5">
             {LEGEND.map(({ status: s, label }) => {
               const Icon = STATUS_ICON[s]
               return (
-                <span key={s} className="flex items-center gap-1.5 text-caption text-text-secondary">
+                <span
+                  key={s}
+                  className="flex items-center gap-1.5 text-caption text-text-secondary"
+                >
                   <Icon className="h-3 w-3" style={{ color: STATUS_COLOR[s] }} aria-hidden="true" />
                   {label}
                 </span>
