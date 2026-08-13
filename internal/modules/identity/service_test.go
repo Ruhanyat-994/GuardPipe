@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 
@@ -18,6 +19,30 @@ import (
 )
 
 // --- hand-written fakes (no mocking framework) ---
+
+// fakeAuditService records every entry logged, so tests can assert
+// BUILD_GUIDE.md Phase 6's login/logout/refresh-reuse-detected
+// instrumentation actually fires, without needing a real audit_log table.
+type fakeAuditService struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (f *fakeAuditService) Log(_ context.Context, e audit.Entry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append(f.entries, e)
+}
+
+func (f *fakeAuditService) actions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.entries))
+	for i, e := range f.entries {
+		out[i] = e.Action
+	}
+	return out
+}
 
 type fakeUserRepo struct {
 	mu    sync.Mutex
@@ -162,13 +187,23 @@ const testJWTSecret = "test-secret-at-least-32-bytes-long!!"
 
 func newTestService(t *testing.T) (identity.Service, *fakeUserRepo, *fakeTokenRepo) {
 	t.Helper()
+	svc, users, tokens, _ := newTestServiceWithAudit(t)
+	return svc, users, tokens
+}
+
+// newTestServiceWithAudit is newTestService plus the fakeAuditService, for
+// the tests that assert on BUILD_GUIDE.md Phase 6's audit instrumentation
+// directly.
+func newTestServiceWithAudit(t *testing.T) (identity.Service, *fakeUserRepo, *fakeTokenRepo, *fakeAuditService) {
+	t.Helper()
 	orgID := id.New()
 	users := newFakeUserRepo(orgID)
 	orgs := &fakeOrgRepo{}
 	tokens := newFakeTokenRepo()
+	auditSvc := &fakeAuditService{}
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
-	svc := identity.NewService(users, orgs, tokens, issuer, 15*time.Minute, 7*24*time.Hour)
-	return svc, users, tokens
+	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 7*24*time.Hour)
+	return svc, users, tokens, auditSvc
 }
 
 func appErrCode(t *testing.T, err error) string {
@@ -308,6 +343,49 @@ func TestLogin_CorrectCredentialsIssueTokens(t *testing.T) {
 	}
 }
 
+// TestLogin_RecordsAuditEntry is BUILD_GUIDE.md Phase 6's retroactive
+// instrumentation requirement: a successful login must append to
+// audit_log, not just issue tokens.
+func TestLogin_RecordsAuditEntry(t *testing.T) {
+	svc, _, _, auditSvc := newTestServiceWithAudit(t)
+	ctx := context.Background()
+	if _, err := svc.Register(ctx, identity.RegisterInput{
+		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if _, err := svc.Login(ctx, "nadia@example.com", "correct-horse-battery"); err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+
+	actions := auditSvc.actions()
+	if len(actions) != 1 || actions[0] != "auth.login" {
+		t.Errorf("audit actions = %v, want exactly [\"auth.login\"]", actions)
+	}
+}
+
+// TestLogin_WrongPassword_RecordsNoAuditEntry is the near-miss: a failed
+// login attempt is not a login and must not appear in the audit trail as
+// one.
+func TestLogin_WrongPassword_RecordsNoAuditEntry(t *testing.T) {
+	svc, _, _, auditSvc := newTestServiceWithAudit(t)
+	ctx := context.Background()
+	if _, err := svc.Register(ctx, identity.RegisterInput{
+		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if _, err := svc.Login(ctx, "nadia@example.com", "wrong-password"); err == nil {
+		t.Fatal("Login() error = nil, want an error for a wrong password")
+	}
+
+	if actions := auditSvc.actions(); len(actions) != 0 {
+		t.Errorf("audit actions = %v, want none for a failed login", actions)
+	}
+}
+
 func TestLogin_WrongPasswordIsRejected(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
@@ -393,7 +471,7 @@ func TestRefresh_RotatesTheToken(t *testing.T) {
 // already-used refresh token must invalidate every token in its family, not
 // just fail once.
 func TestRefresh_ReuseOfConsumedTokenRevokesTheFamily(t *testing.T) {
-	svc, _, _ := newTestService(t)
+	svc, _, _, auditSvc := newTestServiceWithAudit(t)
 	ctx := context.Background()
 	if _, err := svc.Register(ctx, identity.RegisterInput{
 		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
@@ -424,6 +502,19 @@ func TestRefresh_ReuseOfConsumedTokenRevokesTheFamily(t *testing.T) {
 	if err == nil {
 		t.Fatal("Refresh() with the rotated token succeeded after family revocation, want an error")
 	}
+
+	// BUILD_GUIDE.md Phase 6: reuse detection is a security event and must
+	// be audited, not just rejected.
+	actions := auditSvc.actions()
+	found := false
+	for _, a := range actions {
+		if a == "auth.refresh_reused" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("audit actions = %v, want \"auth.refresh_reused\" present", actions)
+	}
 }
 
 func TestRefresh_InvalidTokenIsRejected(t *testing.T) {
@@ -437,7 +528,7 @@ func TestRefresh_InvalidTokenIsRejected(t *testing.T) {
 // --- Logout ---
 
 func TestLogout_RevokesTheSession(t *testing.T) {
-	svc, _, _ := newTestService(t)
+	svc, _, _, auditSvc := newTestServiceWithAudit(t)
 	ctx := context.Background()
 	if _, err := svc.Register(ctx, identity.RegisterInput{
 		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
@@ -456,6 +547,11 @@ func TestLogout_RevokesTheSession(t *testing.T) {
 	_, err = svc.Refresh(ctx, pair.RefreshToken)
 	if err == nil {
 		t.Fatal("Refresh() succeeded after Logout(), want the session to be dead")
+	}
+
+	actions := auditSvc.actions()
+	if len(actions) != 2 || actions[0] != "auth.login" || actions[1] != "auth.logout" {
+		t.Errorf("audit actions = %v, want [\"auth.login\" \"auth.logout\"]", actions)
 	}
 }
 
@@ -496,7 +592,7 @@ func TestVerify_ValidAccessTokenRoundTrips(t *testing.T) {
 
 func TestVerify_ExpiredTokenReturnsTokenExpiredCode(t *testing.T) {
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), -1*time.Minute) // already expired
-	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, -1*time.Minute, time.Hour)
+	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, &fakeAuditService{}, -1*time.Minute, time.Hour)
 
 	token, err := issuer.Issue(id.New(), id.New(), domain.RoleMember)
 	if err != nil {
