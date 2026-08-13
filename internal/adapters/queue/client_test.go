@@ -12,7 +12,7 @@ func TestNew_ValidURL(t *testing.T) {
 	client, err := queue.New("redis://localhost:6379/0")
 	require.NoError(t, err)
 	require.NotNil(t, client)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 }
 
 func TestNew_InvalidURL(t *testing.T) {
