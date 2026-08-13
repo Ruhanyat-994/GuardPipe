@@ -48,7 +48,7 @@ func (r *RuleRepo) Upsert(ctx context.Context, rule advisory.Rule) error {
 			updated_at = now()`
 	_, err := r.db.Exec(ctx, q,
 		rule.ID, string(rule.Engine), rule.Category, rule.Title, rule.Description, rule.Remediation,
-		string(rule.DefaultSeverity), rule.CWE, rule.OWASP, rule.References, string(rule.Tier),
+		string(rule.DefaultSeverity), nonNilStrings(rule.CWE), nonNilStrings(rule.OWASP), nonNilStrings(rule.References), string(rule.Tier),
 	)
 	if err != nil {
 		return fmt.Errorf("repo: upsert rule: %w", err)

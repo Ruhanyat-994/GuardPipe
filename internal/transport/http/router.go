@@ -11,6 +11,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/handler"
@@ -32,10 +33,11 @@ type RouterConfig struct {
 	Logger      *slog.Logger
 	CORSOrigins []string
 
-	IdentitySvc identity.Service
-	ProjectSvc  project.Service
-	AdvisorySvc advisory.Service
-	HealthDB    handler.Pinger
+	IdentitySvc     identity.Service
+	ProjectSvc      project.Service
+	AdvisorySvc     advisory.Service
+	OrchestratorSvc orchestrator.Service
+	HealthDB        handler.Pinger
 
 	Version   string
 	CommitSHA string
@@ -106,6 +108,16 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	{
 		targets.POST("/:id/attest", middleware.RBAC(memberAndAbove...), projectH.AttestTarget)
 		targets.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.RevokeTarget)
+	}
+
+	scanH := handler.NewScanHandler(cfg.OrchestratorSvc, v)
+	projects.POST("/:id/scans", middleware.RBAC(memberAndAbove...), scanH.Create)
+	scans := api.Group("/scans", requireAuth)
+	{
+		scans.GET("/:id", middleware.RBAC(viewerAndAbove...), scanH.Get)
+		scans.GET("/:id/progress", middleware.RBAC(viewerAndAbove...), scanH.Progress)
+		scans.POST("/:id/cancel", middleware.RBAC(memberAndAbove...), scanH.Cancel)
+		scans.GET("/:id/findings", middleware.RBAC(viewerAndAbove...), scanH.ListFindings)
 	}
 
 	ruleH := handler.NewRuleHandler(cfg.AdvisorySvc, v)

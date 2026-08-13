@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/crypto"
@@ -287,7 +288,33 @@ type testDeps struct {
 	users        *fakeUserLookup
 	vcs          *fakeVCS
 	resolver     fakeResolver
+	audit        *fakeAuditService
 	allowlist    []string
+}
+
+// fakeAuditService is a hand-written fake — no mocking framework, matching
+// the project's testing philosophy. Records every entry so tests can
+// assert BUILD_GUIDE.md Phase 6's retroactive instrumentation actually
+// fires.
+type fakeAuditService struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (f *fakeAuditService) Log(_ context.Context, e audit.Entry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append(f.entries, e)
+}
+
+func (f *fakeAuditService) actions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.entries))
+	for i, e := range f.entries {
+		out[i] = e.Action
+	}
+	return out
 }
 
 func newTestDeps() *testDeps {
@@ -300,13 +327,14 @@ func newTestDeps() *testDeps {
 		users:        &fakeUserLookup{name: "Nadia R."},
 		vcs:          &fakeVCS{},
 		resolver:     fakeResolver{},
+		audit:        &fakeAuditService{},
 		allowlist:    []string{"acme.example"},
 	}
 }
 
 func (d *testDeps) build() project.Service {
 	key := make([]byte, crypto.KeySize)
-	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.users, d.vcs, d.resolver, key, false, d.allowlist)
+	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.users, d.vcs, d.resolver, d.audit, key, false, d.allowlist)
 }
 
 func newActor() domain.Actor {
@@ -323,6 +351,40 @@ func TestCreate_NoRepository(t *testing.T) {
 	require.Equal(t, "Payments API", detail.Name)
 	require.Nil(t, detail.Repository)
 	require.False(t, detail.HasCredential)
+}
+
+// TestCreate_RecordsAuditEntry is BUILD_GUIDE.md Phase 6's retroactive
+// instrumentation requirement: creating a project must append to
+// audit_log.
+func TestCreate_RecordsAuditEntry(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	actions := d.audit.actions()
+	require.Len(t, actions, 1)
+	require.Equal(t, "project.created", actions[0])
+	require.Equal(t, detail.ID, *d.audit.entries[0].ResourceID)
+}
+
+// TestCreate_WithRepository_RecordsBothAuditEntries confirms attaching a
+// repository during Create fires its own "repository.attached" entry in
+// addition to "project.created" — two audit-worthy things happened, not one.
+func TestCreate_WithRepository_RecordsBothAuditEntries(t *testing.T) {
+	d := newTestDeps()
+	d.vcs.info = &vcs.RepoInfo{Owner: "acme", Name: "payments-api", NormalizedURL: "https://github.com/acme/payments-api", DefaultBranch: "main", IsPrivate: false, SizeKB: 100}
+	svc := d.build()
+	actor := newActor()
+
+	url := "https://github.com/acme/payments-api"
+	_, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API", RepositoryURL: &url})
+	require.NoError(t, err)
+
+	actions := d.audit.actions()
+	require.Equal(t, []string{"project.created", "repository.attached"}, actions)
 }
 
 func TestCreate_WithPublicRepository(t *testing.T) {
@@ -416,6 +478,58 @@ func TestArchive_SetsStatus(t *testing.T) {
 	got, err := svc.Get(context.Background(), actor, detail.ID)
 	require.NoError(t, err)
 	require.Equal(t, project.StatusArchived, got.Status)
+
+	actions := d.audit.actions()
+	require.Equal(t, []string{"project.created", "project.archived"}, actions)
+}
+
+// TestGetCloneInfo_PublicRepository_NoCredential confirms
+// modules/orchestrator's worker gets an empty token (not an error) for a
+// public repository with nothing attached — the common case.
+func TestGetCloneInfo_PublicRepository_NoCredential(t *testing.T) {
+	d := newTestDeps()
+	d.vcs.info = &vcs.RepoInfo{Owner: "acme", Name: "payments-api", NormalizedURL: "https://github.com/acme/payments-api", DefaultBranch: "main", IsPrivate: false, SizeKB: 100}
+	svc := d.build()
+	actor := newActor()
+
+	url := "https://github.com/acme/payments-api"
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API", RepositoryURL: &url})
+	require.NoError(t, err)
+
+	repoURL, branch, token, err := svc.GetCloneInfo(context.Background(), detail.ID)
+	require.NoError(t, err)
+	require.Equal(t, "https://github.com/acme/payments-api", repoURL)
+	require.Equal(t, "main", branch)
+	require.Empty(t, token)
+}
+
+func TestGetCloneInfo_PrivateRepository_ReturnsDecryptedToken(t *testing.T) {
+	d := newTestDeps()
+	d.vcs.info = &vcs.RepoInfo{Owner: "acme", Name: "private-api", NormalizedURL: "https://github.com/acme/private-api", DefaultBranch: "main", IsPrivate: true, SizeKB: 50}
+	svc := d.build()
+	actor := newActor()
+
+	url := "https://github.com/acme/private-api"
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Private API", RepositoryURL: &url})
+	require.NoError(t, err)
+	_, err = svc.SetCredential(context.Background(), actor, detail.ID, project.CredentialKindGitHubPAT, "ghp_realtoken1234567890")
+	require.NoError(t, err)
+
+	_, _, token, err := svc.GetCloneInfo(context.Background(), detail.ID)
+	require.NoError(t, err)
+	require.Equal(t, "ghp_realtoken1234567890", token)
+}
+
+func TestGetCloneInfo_NoRepositoryAttached_ReturnsNotFound(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "No Repo Yet"})
+	require.NoError(t, err)
+
+	_, _, _, err = svc.GetCloneInfo(context.Background(), detail.ID)
+	require.Error(t, err)
 }
 
 func TestSetCredential_NeverExposesRawToken_ButRoundTripsCorrectly(t *testing.T) {
@@ -472,6 +586,15 @@ func TestRegisterTarget_ThenAttest_FullFlow(t *testing.T) {
 	require.Equal(t, project.TargetAttested, updated.Status)
 	require.Equal(t, "Nadia R.", attestation.AttestedByName)
 	require.Len(t, d.attestations.records, 1)
+
+	// BUILD_GUIDE.md Phase 6: attestation is a legal record and must be
+	// audited, IP included since AttestationInput already carries it.
+	actions := d.audit.actions()
+	require.Contains(t, actions, "target.attested")
+	last := d.audit.entries[len(d.audit.entries)-1]
+	require.Equal(t, "target.attested", last.Action)
+	require.NotNil(t, last.IP)
+	require.Equal(t, "203.0.113.99", last.IP.String())
 }
 
 func TestAttestTarget_RequiresAcceptance(t *testing.T) {

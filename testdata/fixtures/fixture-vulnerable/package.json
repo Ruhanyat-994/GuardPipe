@@ -1,0 +1,7 @@
+{
+  "name": "fixture-vulnerable",
+  "private": true,
+  "dependencies": {
+    "left-pad": "*"
+  }
+}

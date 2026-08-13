@@ -8,6 +8,8 @@ import { ProjectsListPage } from './pages/ProjectsListPage'
 import { ProjectCreatePage } from './pages/ProjectCreatePage'
 import { ProjectLayout } from './pages/ProjectLayout'
 import { ProjectTargetsPage } from './pages/ProjectTargetsPage'
+import { ProjectScansPage } from './pages/ProjectScansPage'
+import { ScanDetailPage } from './pages/ScanDetailPage'
 import { ProjectSettingsPage } from './pages/ProjectSettingsPage'
 import { GuidesIndexPage } from './pages/GuidesIndexPage'
 import { GuideDetailPage } from './pages/GuideDetailPage'
@@ -67,16 +69,22 @@ function App() {
 
         {/* Per-project tab bar (documentation/09-ui-ux-design-system.md
             §4.4's ProjectTabBar) — Overview is the existing Phase 2/3
-            dashboard preview; Scans/Findings have no real data source
-            until Phase 6/8 so they stay PlaceholderPage; Targets/Settings
-            are real, backed by the Phase 3 project API. */}
+            dashboard preview; Scans is now real (Phase 6, depscan only);
+            Findings stays a placeholder until Phase 8's dedicated findings
+            surface; Targets/Settings are real, backed by the Phase 3
+            project API. */}
         <Route path="/projects/:id" element={<ProjectLayout />}>
           <Route index element={<DashboardPage />} />
-          <Route path="scans" element={<PlaceholderPage title="Scans" phase="Phase 6" />} />
+          <Route path="scans" element={<ProjectScansPage />} />
           <Route path="findings" element={<PlaceholderPage title="Findings" phase="Phase 8" />} />
           <Route path="targets" element={<ProjectTargetsPage />} />
           <Route path="settings" element={<ProjectSettingsPage />} />
         </Route>
+
+        {/* Scan detail — not project-scoped in the URL since a scan ID
+            alone is enough to look it up (documentation/07-api-specification.md
+            §5); reached from ProjectScansPage's "Run Scan" trigger. */}
+        <Route path="/scans/:id" element={<ScanDetailPage />} />
 
         {/* Sidebar destinations with no project scope and no real screen
             yet — wired so the authenticated app is fully click-through-able
