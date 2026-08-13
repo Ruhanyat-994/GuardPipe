@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/crypto"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
@@ -76,17 +77,21 @@ type service struct {
 	orgs            OrganizationRepository
 	tokens          RefreshTokenRepository
 	issuer          *TokenIssuer
+	audit           audit.Service
 	accessTokenTTL  time.Duration
 	refreshTokenTTL time.Duration
 }
 
 // NewService wires the identity module. accessTokenTTL/refreshTokenTTL come
 // from platform/config (GUARDPIPE_ACCESS_TOKEN_TTL/GUARDPIPE_REFRESH_TOKEN_TTL).
+// auditSvc is BUILD_GUIDE.md Phase 6's retroactive instrumentation —
+// login/logout/refresh-reuse-detected are the three events named there.
 func NewService(
 	users UserRepository,
 	orgs OrganizationRepository,
 	tokens RefreshTokenRepository,
 	issuer *TokenIssuer,
+	auditSvc audit.Service,
 	accessTokenTTL, refreshTokenTTL time.Duration,
 ) Service {
 	return &service{
@@ -94,6 +99,7 @@ func NewService(
 		orgs:            orgs,
 		tokens:          tokens,
 		issuer:          issuer,
+		audit:           auditSvc,
 		accessTokenTTL:  accessTokenTTL,
 		refreshTokenTTL: refreshTokenTTL,
 	}
@@ -188,6 +194,8 @@ func (s *service) Login(ctx context.Context, email, password string) (*TokenPair
 		return nil, apperrors.Internal(fmt.Errorf("record successful login: %w", err))
 	}
 
+	s.audit.Log(ctx, audit.Entry{OrgID: &user.OrgID, ActorID: &user.ID, Action: "auth.login"})
+
 	return s.issueTokenPair(ctx, user)
 }
 
@@ -209,6 +217,11 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		// evidence — invalidate the whole family
 		// (documentation/05-module-specifications.md §3).
 		_ = s.tokens.RevokeFamily(ctx, rt.FamilyID, now)
+		userID := rt.UserID
+		s.audit.Log(ctx, audit.Entry{
+			ActorID: &userID, Action: "auth.refresh_reused",
+			Detail: map[string]any{"family_id": rt.FamilyID.String()},
+		})
 		return nil, apperrors.Unauthorized("auth.refresh_reused", "refresh token was already used; all sessions on this device have been revoked")
 	}
 	if rt.ExpiresAt.Before(now) {
@@ -243,6 +256,8 @@ func (s *service) Logout(ctx context.Context, refreshToken string) error {
 	if err := s.tokens.RevokeFamily(ctx, rt.FamilyID, time.Now().UTC()); err != nil {
 		return apperrors.Internal(fmt.Errorf("revoke token family: %w", err))
 	}
+	userID := rt.UserID
+	s.audit.Log(ctx, audit.Entry{ActorID: &userID, Action: "auth.logout"})
 	return nil
 }
 
