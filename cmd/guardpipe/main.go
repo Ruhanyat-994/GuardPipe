@@ -112,7 +112,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect to redis: %w", err)
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
 	advisorySvc := advisory.NewService(
