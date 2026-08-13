@@ -22,8 +22,11 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/depscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/config"
@@ -88,11 +91,14 @@ func run() error {
 	}
 	defer db.Close()
 
+	auditSvc := audit.NewService(repo.NewAuditRepo(db.Pool), log)
+
 	identitySvc := identity.NewService(
 		repo.NewUserRepo(db.Pool),
 		repo.NewOrganizationRepo(db.Pool),
 		repo.NewRefreshTokenRepo(db.Pool),
 		identity.NewTokenIssuer([]byte(cfg.Security.JWTSecret), cfg.Security.AccessTokenTTL),
+		auditSvc,
 		cfg.Security.AccessTokenTTL,
 		cfg.Security.RefreshTokenTTL,
 	)
@@ -108,6 +114,7 @@ func run() error {
 		repo.NewUserRepo(db.Pool),
 		vcsSvc,
 		net.DefaultResolver,
+		auditSvc,
 		cfg.Security.EncryptionKeyRaw,
 		cfg.Pentest.AllowPrivateTargets,
 		cfg.Pentest.Allowlist,
@@ -117,7 +124,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect to redis: %w", err)
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
+
+	// Every engine's rule catalogue registers here before SyncRules runs —
+	// findings.rule_id is a foreign key into `rules`, so a rule missing from
+	// this registry means every finding it would produce fails to persist.
+	ruleRegistry := advisory.NewRuleRegistry()
+	ruleRegistry.Register(depscan.Rules...)
 
 	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
 	advisorySvc := advisory.NewService(
@@ -125,20 +138,54 @@ func run() error {
 		advisory.NewRedisCache(redisClient),
 		cfg.External.OSVCacheTTL,
 		repo.NewRuleRepo(db.Pool),
-		advisory.NewRuleRegistry(), // empty until Phase 6+ engines register rules — see RuleRegistry's doc comment
+		ruleRegistry,
 		log,
 	)
 	if err := advisorySvc.SyncRules(ctx); err != nil {
 		return fmt.Errorf("sync rules catalogue: %w", err)
 	}
 
+	jobQueue := queue.NewJobQueue(redisClient)
+	registry := orchestrator.NewRegistry()
+	registry.Register(depscan.New(advisorySvc))
+
+	orchestratorSvc := orchestrator.NewService(
+		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),
+		projectSvc, jobQueue, registry,
+	)
+
+	pool := &orchestrator.Pool{
+		Size:           cfg.Scanning.WorkerCount,
+		Queue:          orchestrator.NewJobQueueClaimer(jobQueue.Claim, jobQueue.Ack),
+		Registry:       registry,
+		Scans:          repo.NewScanRepo(db.Pool),
+		Jobs:           repo.NewScanJobRepo(db.Pool),
+		JobResults:     repo.NewJobResultRepo(db.Pool),
+		Projects:       projectSvc,
+		Cloner:         vcsSvc,
+		WorkspaceRoot:  cfg.Scanning.WorkspaceRoot,
+		EngineTimeouts: cfg.Scanning.EngineTimeouts,
+		DefaultTimeout: 5 * time.Minute,
+		Log:            log,
+	}
+
+	// GUARDPIPE_ROLE=api never runs the worker pool; GUARDPIPE_ROLE=all
+	// (the default) and GUARDPIPE_ROLE=worker both do — the same binary,
+	// an intentional near-zero-cost split into separate replicas later.
+	var workerCtx context.Context
+	var stopWorkers context.CancelFunc
+	if cfg.Core.Role != config.RoleAPI {
+		workerCtx, stopWorkers = context.WithCancel(context.Background())
+		go pool.Start(workerCtx)
+		defer stopWorkers()
+		log.Info("worker pool started", "size", cfg.Scanning.WorkerCount, "engines", registry.IDs())
+	}
+
 	if cfg.Core.Role == config.RoleWorker {
-		// The worker pool doesn't exist yet — it lands in Phase 6 with the
-		// first engine. A worker-role process today has nothing to claim,
-		// so it just idles until told to stop, rather than pretending to
-		// do work it can't yet do.
-		log.Warn("GUARDPIPE_ROLE=worker has no worker pool to run yet (lands in Phase 6) — idling")
-		return waitForShutdown(log, nil)
+		return waitForShutdown(log, func(context.Context) error {
+			stopWorkers()
+			return nil
+		})
 	}
 
 	router := transporthttp.NewRouter(transporthttp.RouterConfig{
@@ -147,6 +194,7 @@ func run() error {
 		IdentitySvc:     identitySvc,
 		ProjectSvc:      projectSvc,
 		AdvisorySvc:     advisorySvc,
+		OrchestratorSvc: orchestratorSvc,
 		HealthDB:        db,
 		Version:         version,
 		CommitSHA:       commitSHA,
@@ -171,6 +219,9 @@ func run() error {
 	}()
 
 	return waitForShutdown(log, func(ctx context.Context) error {
+		if stopWorkers != nil {
+			stopWorkers()
+		}
 		return srv.Shutdown(ctx)
 	}, serverErr)
 }
