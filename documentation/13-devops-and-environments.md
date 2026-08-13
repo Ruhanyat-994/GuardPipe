@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-08-01 |
+| **Last updated** | 2026-08-12 |
 
 ### Revision history
 
@@ -15,6 +15,7 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial DevOps design |
 | 1.1 | 2026-08-01 | Team | §5.6 adds `GUARDPIPE_GEMINI_API_KEYS` (comma-separated key pool with automatic rotation on quota errors), kept alongside the existing singular `GUARDPIPE_GEMINI_API_KEY` as a one-key alias — added to solve real quota-exhaustion friction during the team's own free-tier testing, planned for `BUILD_GUIDE.md` Phase 4, not yet built |
+| 1.2 | 2026-08-12 | Team | §5.6's `GUARDPIPE_GEMINI_API_KEYS` pool is now built (`BUILD_GUIDE.md` Phase 4, `internal/platform/config.AI.KeyPool()` + `internal/adapters/gemini`'s rotate-on-429 retry) — status note updated from "planned" to reflect reality |
 
 ---
 

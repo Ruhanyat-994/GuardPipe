@@ -47,6 +47,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(runHealthcheck())
 	}
+	// aiprobe is a throwaway manual-verification command for Phase 4, not a
+	// product feature — see cmd/guardpipe/aiprobe.go.
+	if len(os.Args) > 1 && os.Args[1] == "aiprobe" {
+		os.Exit(runAIProbe(os.Args[2:]))
+	}
 
 	if err := run(); err != nil {
 		// A security product that boots half-configured is worse than one
