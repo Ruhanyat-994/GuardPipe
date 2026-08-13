@@ -201,12 +201,12 @@ type queryBatchResponse struct {
 // a Finding: CVE aliasing, human summary, severity, and affected ranges for
 // the "no fix available" check.
 type Vulnerability struct {
-	ID        string           `json:"id"`
-	Summary   string           `json:"summary"`
-	Details   string           `json:"details"`
-	Aliases   []string         `json:"aliases"` // includes CVE-YYYY-NNNNN when known
-	Severity  []VulnSeverity   `json:"severity"`
-	Affected  []VulnAffected   `json:"affected"`
+	ID         string          `json:"id"`
+	Summary    string          `json:"summary"`
+	Details    string          `json:"details"`
+	Aliases    []string        `json:"aliases"` // includes CVE-YYYY-NNNNN when known
+	Severity   []VulnSeverity  `json:"severity"`
+	Affected   []VulnAffected  `json:"affected"`
 	References []VulnReference `json:"references"`
 }
 
@@ -229,7 +229,7 @@ type VulnAffectedPackage struct {
 }
 
 type VulnRange struct {
-	Type   string          `json:"type"` // "SEMVER" | "ECOSYSTEM" | "GIT"
+	Type   string           `json:"type"` // "SEMVER" | "ECOSYSTEM" | "GIT"
 	Events []VulnRangeEvent `json:"events"`
 }
 
