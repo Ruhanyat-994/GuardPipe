@@ -1,10 +1,11 @@
 # ADR-0010 — Build our own scanners rather than wrapping existing tools
 
-| Status | Accepted |
+| Status | Accepted, partially superseded |
 |---|---|
 | Date | 2026-07-29 |
 | Deciders | Full team |
 | Supersedes | — |
+| Superseded by | [ADR-0011](0011-codescan-wraps-sonarqube.md), for `codescan` only (2026-08-14) — an external requirement now requires a real third-party API integration; and [ADR-0012](0012-containerscan-wraps-trivy.md), for `containerscan` only (2026-08-14) — Trivy's vulnerability database is a better fit than an in-house one, same reasoning `depscan` already applied to OSV.dev; `k8sscan`/`pentest`/secret-sweep are untouched and this ADR's decision stands for them |
 
 ## Context
 
@@ -77,3 +78,7 @@ Option C was rejected because a partial dependency has the full operational cost
 
 - GuardPipe is pursued beyond the course as a real product → a hybrid model, using our engines for correlation and scoring while optionally ingesting SARIF from external tools, becomes the sensible commercial architecture.
 - A specific engine's recall proves inadequate for a real use case.
+
+**Already revisited twice:**
+- `codescan`, 2026-08-14 — see [ADR-0011](0011-codescan-wraps-sonarqube.md). An external requirement to demonstrate a real third-party API integration made this the first engine to move to the hybrid model described above, ahead of schedule and for a different reason (a requirement, not a recall problem).
+- `containerscan`, 2026-08-14 — see [ADR-0012](0012-containerscan-wraps-trivy.md). No external requirement this time; a judgment call that OS-package/image vulnerability matching is the same class of "database, not logic" problem `depscan` already delegated to OSV.dev, made before Phase 8 had started.

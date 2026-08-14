@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"time"
 
@@ -183,6 +184,11 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		if runCtx.Err() != nil {
 			reason = "timeout"
 		}
+		// The underlying error only ever reaches this log line — JobResult's
+		// ErrorReason is a short machine code, not free text, so without this
+		// there is no way to tell *why* an engine failed short of
+		// reproducing the run by hand.
+		p.Log.Error("orchestrator: engine run failed", "job_id", jobID, "engine", job.Engine, "reason", reason, "error", runErr)
 		// Findings collected before the failure still get persisted — a
 		// panic or timeout partway through a run shouldn't discard
 		// everything already emitted.
@@ -232,5 +238,33 @@ func (p *Pool) prepareWorkspace(ctx context.Context, projectID uuid.UUID) (dir s
 		cleanup()
 		return "", nil, fmt.Errorf("clone repository: %w", err)
 	}
+
+	// os.MkdirTemp creates dir at mode 0700 regardless of umask, and go-git's
+	// own file/directory modes underneath aren't guaranteed world-readable
+	// either — fine for every in-process engine (they read this tree as the
+	// same uid that created it), but codescan's sonar-scanner runs as a
+	// *different* uid in a sibling container (adapters/sonarqube/scanner.go
+	// mounts this same directory read-only there) and gets
+	// java.nio.file.AccessDeniedException walking a tree it can't read.
+	// Files never need to be executed (engines only ever read scanned
+	// content, never run it — see domain.Engine's own doc comment), so
+	// flattening every file to 0644 and every directory to 0755 is always
+	// safe here, not just for this specific clone.
+	if err := makeWorldReadable(dir); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("relax workspace permissions: %w", err)
+	}
 	return dir, cleanup, nil
+}
+
+func makeWorldReadable(root string) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.Chmod(path, 0o755)
+		}
+		return os.Chmod(path, 0o644)
+	})
 }

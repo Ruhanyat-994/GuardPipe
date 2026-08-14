@@ -17,10 +17,13 @@ import type { Engine } from './rulesApi'
  */
 export const ENGINE_META: Record<
   Engine,
-  { label: string; icon: LucideIcon; hasOsvMark?: boolean }
+  { label: string; icon: LucideIcon; hasOsvMark?: boolean; hasSonarQubeMark?: boolean }
 > = {
   docreview: { label: 'Docs', icon: FileText },
-  codescan: { label: 'Code', icon: Code2 },
+  // codescan wraps a self-hosted SonarQube instance (Phase 7, ADR-0011)
+  // rather than running its own SAST — hasSonarQubeMark reverses the
+  // earlier "no external brand mark" note now that one applies.
+  codescan: { label: 'Code', icon: Code2, hasSonarQubeMark: true },
   depscan: { label: 'Deps', icon: Package, hasOsvMark: true },
   containerscan: { label: 'Containers', icon: ContainerIcon },
   k8sscan: { label: 'K8s', icon: Boxes },
@@ -45,15 +48,19 @@ export const ALL_ENGINES: Engine[] = [
 /**
  * Which engines are actually registered on the backend and can be run
  * today. Hardcoded here rather than queried — the orchestrator has no
- * "list registered engines" endpoint yet, and `internal/modules/orchestrator/registry.go`
- * only registers `depscan` as of this phase (BUILD_GUIDE.md). Update this
- * list in lockstep with `cmd/guardpipe/main.go`'s engine registration as
- * each new engine lands; a partial scan requesting an engine not in both
- * places gets rejected by the backend with `scan.engine_unavailable` (422)
- * regardless, so this is a UI convenience (disable what can't run), not the
- * source of truth.
+ * "list registered engines" endpoint yet, and `cmd/guardpipe/main.go`
+ * registers `depscan`, `codescan`, and `containerscan` as of this phase
+ * (BUILD_GUIDE.md Phase 8). Update this list in lockstep with that
+ * registration as each new engine lands — missing this once already caused
+ * a real, confusing bug: "Run all scans" ran `containerscan` correctly
+ * (that path just asks the backend for everything registered), but its
+ * individual checkbox stayed greyed out here until this list caught up,
+ * making it look broken when it wasn't. A partial scan requesting an engine
+ * not in both places gets rejected by the backend with
+ * `scan.engine_unavailable` (422) regardless, so this is a UI convenience
+ * (disable what can't run), not the source of truth.
  */
-export const ENABLED_ENGINES: Engine[] = ['depscan']
+export const ENABLED_ENGINES: Engine[] = ['depscan', 'codescan', 'containerscan']
 
 export function isEngineEnabled(engine: Engine): boolean {
   return ENABLED_ENGINES.includes(engine)

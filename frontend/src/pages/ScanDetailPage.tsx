@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
-import { FindingRow } from '../components/project/FindingRow'
+import { FindingsList } from '../components/project/FindingsList'
 import { PartialResultBanner } from '../components/project/PartialResultBanner'
 import { SupplyChainPipeline } from '../components/project/SupplyChainPipeline'
 import { ApiError } from '../lib/apiClient'
@@ -145,18 +145,13 @@ export function ScanDetailPage() {
           </CardDescription>
         )}
         {findings !== null && findings.length > 0 && (
-          <ul className="mt-4 flex flex-col divide-y divide-border-default">
-            {findings.map((f) => (
-              <FindingRow
-                key={f.id}
-                finding={f}
-                repository={project?.repository ?? null}
-                gitRef={
-                  scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null
-                }
-              />
-            ))}
-          </ul>
+          <div className="mt-4">
+            <FindingsList
+              findings={findings}
+              repository={project?.repository ?? null}
+              gitRef={scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null}
+            />
+          </div>
         )}
       </Card>
     </main>
