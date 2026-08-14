@@ -251,7 +251,7 @@ GuardPipe must pass GuardPipe. These are the standards our own code is held to â
 | TLS | Verification always on | `codescan.tls.verify-disabled` |
 | Frontend | No `dangerouslySetInnerHTML`; token in memory | `codescan.injection.xss-react-html` |
 | Dependencies | Scanned in CI; HIGH/CRITICAL fails the build (NFR-SEC-009) | `depscan.vuln.known-cve` |
-| Containers | Non-root, pinned base images, multi-stage | `containerscan.dockerfile.*` |
+| Containers | Non-root, pinned base images, multi-stage | `containerscan.trivy.*` (Trivy-sourced, ADR-0012) |
 | CI | Actions pinned to SHA, explicit `permissions:` | `cicdscan.supply-chain.unpinned-action` |
 
 **CI runs GuardPipe against GuardPipe.** A regression in our own security posture fails our own build. It is also, not incidentally, the most persuasive thing we can show in the demo.

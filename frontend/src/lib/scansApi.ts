@@ -62,6 +62,8 @@ export interface Location {
   package?: string
   version?: string
   manifest_path?: string
+  image?: string
+  layer_digest?: string
   [key: string]: unknown
 }
 

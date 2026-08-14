@@ -19,9 +19,14 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver, used only to run goose migrations
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/dockerx"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/sonarqube"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/trivy"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/codescan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/containerscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/depscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
@@ -145,9 +150,44 @@ func run() error {
 		return fmt.Errorf("sync rules catalogue: %w", err)
 	}
 
+	// codescan (Phase 7, ADR-0011) wraps a self-hosted SonarQube instance
+	// instead of running its own SAST — the sonar-scanner-cli invocation
+	// needs Docker directly (dockerx), not adapters/sandbox: sandbox enforces
+	// a no-network-by-default policy for *untrusted* execution, and
+	// sonar-scanner is trusted first-party tooling that must reach the
+	// sonarqube service over GUARDPIPE_DOCKER_NETWORK to do its job at all.
+	dockerClient, err := dockerx.New(cfg.Scanning.DockerHost)
+	if err != nil {
+		return fmt.Errorf("create docker client: %w", err)
+	}
+	defer func() { _ = dockerClient.Close() }()
+
+	sonarqubeClient := sonarqube.NewClient(cfg.External.SonarQubeAPIURL, cfg.External.SonarQubeToken, nil)
+	sonarqubeScanner := sonarqube.NewScanner(dockerClient, sonarqube.ScannerConfig{
+		Network:       cfg.Scanning.DockerNetwork,
+		HostURL:       cfg.External.SonarQubeAPIURL,
+		Token:         cfg.External.SonarQubeToken,
+		Volume:        cfg.Scanning.WorkspaceVolume,
+		WorkspaceRoot: cfg.Scanning.WorkspaceRoot,
+	})
+
+	trivyScanner := trivy.NewScanner(dockerClient, trivy.ScannerConfig{
+		Image:         cfg.Scanning.TrivyImage,
+		DBUpdate:      cfg.Scanning.TrivyDBUpdate,
+		Volume:        cfg.Scanning.WorkspaceVolume,
+		WorkspaceRoot: cfg.Scanning.WorkspaceRoot,
+	})
+
 	jobQueue := queue.NewJobQueue(redisClient)
 	registry := orchestrator.NewRegistry()
 	registry.Register(depscan.New(advisorySvc))
+	// advisorySvc also satisfies codescan.RuleRegistrar/containerscan.RuleRegistrar
+	// (just UpsertRule) — neither SonarQube's nor Trivy's own catalogue is
+	// enumerable at compile time the way depscan.Rules is, so neither engine
+	// has a static ruleRegistry.Register(...) call above; both register each
+	// rule at runtime instead (their own engine.go).
+	registry.Register(codescan.New(sonarqubeClient, sonarqubeScanner, advisorySvc, cfg.External.SonarQubeAnalysisTimeout))
+	registry.Register(containerscan.New(trivyScanner, dockerClient, advisorySvc))
 
 	orchestratorSvc := orchestrator.NewService(
 		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),
@@ -201,8 +241,8 @@ func run() error {
 		BuildTime:       buildTime,
 		SecureCookies:   cfg.Core.Env == "production",
 		RefreshTokenTTL: cfg.Security.RefreshTokenTTL,
-		AuthRateLimit:   5,
-		AuthRateWindow:  time.Minute,
+		AuthRateLimit:   cfg.Security.AuthRateLimit,
+		AuthRateWindow:  cfg.Security.AuthRateWindow,
 	})
 
 	srv := &http.Server{

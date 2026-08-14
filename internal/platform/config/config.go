@@ -65,17 +65,37 @@ type Security struct {
 	AccessTokenTTL   time.Duration
 	RefreshTokenTTL  time.Duration
 	CORSOrigins      []string
+
+	// AuthRateLimit/AuthRateWindow bound /auth/register and /auth/login,
+	// shared one bucket per client IP (documentation/07-api-specification.md
+	// §1.6 specifies 5/min — that's the default here too, so a default
+	// deployment stays spec-compliant without reading either var). Was
+	// hardcoded in cmd/guardpipe/main.go until a single local dev IP running
+	// both a browser session and API testing/automation against the same
+	// backend kept exhausting the shared 5/min bucket within normal use —
+	// exposing it as env vars lets a local .env raise it for that kind of
+	// testing without touching the documented production default.
+	AuthRateLimit  int
+	AuthRateWindow time.Duration
 }
 
 // Scanning — §5.4.
 type Scanning struct {
-	WorkerCount    int
-	WorkspaceRoot  string
-	MaxRepoMB      int
-	SandboxMax     int
-	SandboxImage   string
-	DockerHost     string
-	EngineTimeouts map[domain.EngineID]time.Duration
+	WorkerCount     int
+	WorkspaceRoot   string
+	MaxRepoMB       int
+	SandboxMax      int
+	SandboxImage    string
+	DockerHost      string
+	DockerNetwork   string // Compose network name a sibling container (e.g. codescan's sonar-scanner) joins to reach other services by name — see docker-compose.yml's networks.default.name
+	WorkspaceVolume string // Named Docker volume backing WorkspaceRoot, as seen by the daemon — see docker-compose.yml's volumes.workspace.name; a sibling container (e.g. codescan's sonar-scanner) must mount it by this name, since WorkspaceRoot is a path inside *this* container's mount namespace, not the daemon host's
+	EngineTimeouts  map[domain.EngineID]time.Duration
+
+	// Trivy — containerscan (Phase 8, ADR-0012). No API URL/token here
+	// unlike SonarQube's External fields — Trivy is a local CLI invocation,
+	// not a service with an endpoint to authenticate against.
+	TrivyImage    string
+	TrivyDBUpdate bool
 }
 
 // Pentest — §5.5.
@@ -124,6 +144,14 @@ type External struct {
 	OSVAPIURL    string
 	OSVCacheTTL  time.Duration
 	GitHubAPIURL string
+
+	// SonarQube — codescan (Phase 7, ADR-0011): self-hosted CE, not
+	// SonarCloud. SonarQubeToken is a user token generated once in
+	// SonarQube's own UI on first boot (BUILD_GUIDE.md Phase 7) — there is
+	// no default, codescan simply can't run without one.
+	SonarQubeAPIURL          string
+	SonarQubeToken           string
+	SonarQubeAnalysisTimeout time.Duration
 }
 
 // Gate — §5.8.
@@ -182,15 +210,21 @@ func Load() (*Config, error) {
 			AccessTokenTTL:  getDuration("GUARDPIPE_ACCESS_TOKEN_TTL", 15*time.Minute, p),
 			RefreshTokenTTL: getDuration("GUARDPIPE_REFRESH_TOKEN_TTL", 168*time.Hour, p),
 			CORSOrigins:     getCSV("GUARDPIPE_CORS_ORIGINS", []string{"http://localhost:5173"}),
+			AuthRateLimit:   getInt("GUARDPIPE_AUTH_RATE_LIMIT", 5, p),
+			AuthRateWindow:  getDuration("GUARDPIPE_AUTH_RATE_WINDOW", time.Minute, p),
 		},
 		Scanning: Scanning{
-			WorkerCount:    getInt("GUARDPIPE_WORKER_COUNT", 4, p),
-			WorkspaceRoot:  getString("GUARDPIPE_WORKSPACE_ROOT", "/var/lib/guardpipe/workspace"),
-			MaxRepoMB:      getInt("GUARDPIPE_MAX_REPO_MB", 500, p),
-			SandboxMax:     getInt("GUARDPIPE_SANDBOX_MAX", 2, p),
-			SandboxImage:   getString("GUARDPIPE_SANDBOX_IMAGE", ""),
-			DockerHost:     getString("GUARDPIPE_DOCKER_HOST", "unix:///var/run/docker.sock"),
-			EngineTimeouts: loadEngineTimeouts(p),
+			WorkerCount:     getInt("GUARDPIPE_WORKER_COUNT", 4, p),
+			WorkspaceRoot:   getString("GUARDPIPE_WORKSPACE_ROOT", "/var/lib/guardpipe/workspace"),
+			MaxRepoMB:       getInt("GUARDPIPE_MAX_REPO_MB", 500, p),
+			SandboxMax:      getInt("GUARDPIPE_SANDBOX_MAX", 2, p),
+			SandboxImage:    getString("GUARDPIPE_SANDBOX_IMAGE", ""),
+			DockerHost:      getString("GUARDPIPE_DOCKER_HOST", "unix:///var/run/docker.sock"),
+			DockerNetwork:   getString("GUARDPIPE_DOCKER_NETWORK", "guardpipe-net"),
+			WorkspaceVolume: getString("GUARDPIPE_WORKSPACE_VOLUME", "guardpipe-workspace"),
+			EngineTimeouts:  loadEngineTimeouts(p),
+			TrivyImage:      getString("GUARDPIPE_TRIVY_IMAGE", ""),
+			TrivyDBUpdate:   getBool("GUARDPIPE_TRIVY_DB_UPDATE", true, p),
 		},
 		Pentest: Pentest{
 			Enabled:             getBool("GUARDPIPE_PENTEST_ENABLED", true, p),
@@ -209,9 +243,12 @@ func Load() (*Config, error) {
 			CacheTTL:           getDuration("GUARDPIPE_AI_CACHE_TTL", 168*time.Hour, p),
 		},
 		External: External{
-			OSVAPIURL:    getString("GUARDPIPE_OSV_API_URL", "https://api.osv.dev"),
-			OSVCacheTTL:  getDuration("GUARDPIPE_OSV_CACHE_TTL", 24*time.Hour, p),
-			GitHubAPIURL: getString("GUARDPIPE_GITHUB_API_URL", "https://api.github.com"),
+			OSVAPIURL:                getString("GUARDPIPE_OSV_API_URL", "https://api.osv.dev"),
+			OSVCacheTTL:              getDuration("GUARDPIPE_OSV_CACHE_TTL", 24*time.Hour, p),
+			GitHubAPIURL:             getString("GUARDPIPE_GITHUB_API_URL", "https://api.github.com"),
+			SonarQubeAPIURL:          getString("GUARDPIPE_SONARQUBE_API_URL", "http://sonarqube:9000"),
+			SonarQubeToken:           getString("GUARDPIPE_SONARQUBE_TOKEN", ""),
+			SonarQubeAnalysisTimeout: getDuration("GUARDPIPE_SONARQUBE_ANALYSIS_TIMEOUT", 5*time.Minute, p),
 		},
 		Gate: Gate{
 			Warn:  getInt("GUARDPIPE_GATE_WARN", 30, p),

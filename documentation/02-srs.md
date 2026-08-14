@@ -8,13 +8,15 @@
 | **Status** | Draft |
 | **Standard** | ISO/IEC/IEEE 29148:2018 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-14 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial SRS |
+| 1.1 | 2026-08-14 | Team | FR-CODE-001 reversed: `codescan` now wraps a self-hosted SonarQube Community Edition instance instead of implementing its own SAST analyzer, per explicit external requirement. See [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md) for rationale; supersedes the codescan-specific portion of [ADR-0010](17-adr/0010-own-scanners.md) |
+| 1.2 | 2026-08-14 | Team | FR-CNT-004..008 reversed: `containerscan` now wraps Trivy for image vulnerability/misconfiguration/secret scanning instead of implementing its own layer-walking and package-database matching. See [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md) for rationale; supersedes the containerscan-specific portion of [ADR-0010](17-adr/0010-own-scanners.md) |
 
 > **Change control:** this document is a shared contract. Any modification requires **two approvals** (see [14 — GitHub Workflow](14-github-workflow.md)).
 
@@ -233,7 +235,7 @@ flowchart TB
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-CODE-001 | The system **shall** implement its own static analyzer; it **shall not** depend on an external SAST service or binary. | Core |
+| FR-CODE-001 | The system **shall** run static analysis via a self-hosted SonarQube Community Edition instance (`adapters/sonarqube`) it controls, and **shall** normalise and filter SonarQube's output to security-relevant findings (`VULNERABILITY`/`SECURITY_HOTSPOT` types) before they reach the `Finding` model — raw SonarQube output (code smells, style/maintainability issues) is never surfaced to the client. *(Reversed 2026-08-14 — was "shall not depend on an external SAST service or binary"; see [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md).)* | Core |
 | FR-CODE-002 | The system **shall** analyse at minimum: JavaScript/TypeScript, Python, Go, Java, and PHP. | Core |
 | FR-CODE-003 | The system **shall** detect **SQL injection** — untrusted input reaching a query construction site via string concatenation, formatting, or interpolation. | Core |
 | FR-CODE-004 | The system **shall** detect **cross-site scripting (XSS)** — untrusted input reaching a sink such as `innerHTML`, `document.write`, `dangerouslySetInnerHTML`, or an unescaped template output. | Core |
@@ -272,18 +274,18 @@ flowchart TB
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-CNT-001 | The system **shall** discover and parse all `Dockerfile`, `*.dockerfile`, and `Containerfile` files in the repository. | Core |
-| FR-CNT-002 | The system **shall** report Dockerfile misconfigurations including: running as `root` (no `USER` directive), use of `latest` or unpinned base image tags, secrets passed via `ARG`/`ENV`, use of `ADD` with a remote URL, `curl \| sh` installation patterns, missing `HEALTHCHECK`, and absence of a multi-stage build where build tooling is installed. | Core |
+| FR-CNT-001 | The system **shall** discover all `Dockerfile`, `*.dockerfile`, and `Containerfile` files in the repository and feed them to Trivy's config scanner (`trivy config`) — no Docker daemon required for this step. *(Mechanism updated 2026-08-14 — was GuardPipe's own AST parser; see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Core |
+| FR-CNT-002 | The system **shall** report Dockerfile misconfigurations including: running as `root` (no `USER` directive), use of `latest` or unpinned base image tags, secrets passed via `ARG`/`ENV`, use of `ADD` with a remote URL, `curl \| sh` installation patterns, missing `HEALTHCHECK`, and absence of a multi-stage build where build tooling is installed — via Trivy's own misconfiguration checks, normalised into `Finding`. *(Mechanism updated 2026-08-14; see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Core |
 | FR-CNT-003 | The system **shall** report `EXPOSE` of sensitive ports (22, 3306, 5432, 6379, 27017) as a finding. | Core |
-| FR-CNT-004 | The system **shall** inspect a container image — either built locally from a discovered Dockerfile or pulled by reference — and enumerate its layers. | Core |
-| FR-CNT-005 | The system **shall** extract the OS package inventory from the image by reading the package database appropriate to the detected distribution (`dpkg` status, `rpm` database, `apk` installed). | Core |
-| FR-CNT-006 | The system **shall** match extracted packages against known vulnerabilities via OSV.dev and report matches with CVE, CVSS, and fixed version. | Core |
-| FR-CNT-007 | The system **shall** detect application-language dependencies inside the image (`node_modules`, `site-packages`, Go binaries' embedded module data) and include them in vulnerability matching. | Stretch |
-| FR-CNT-008 | The system **shall** detect secrets embedded in image layers (files matching secret patterns, and secrets present in layer history commands). | Core |
+| FR-CNT-004 | The system **shall** inspect a container image — either built locally from a discovered Dockerfile or pulled by reference — and enumerate its layers via Trivy (`adapters/trivy`), not GuardPipe's own layer walker. *(Reversed 2026-08-14 — see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Core |
+| FR-CNT-005 | The system **shall** extract the OS package inventory from the image via Trivy's own distribution-aware package reader (`dpkg`/`rpm`/`apk`), not a GuardPipe-maintained parser. *(Reversed 2026-08-14 — was a GuardPipe-owned package-database reader; see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Core |
+| FR-CNT-006 | The system **shall** match extracted packages against known vulnerabilities via Trivy's own vulnerability database (NVD/GHSA/distro trackers) and report matches with CVE, CVSS, and fixed version. *(Reversed 2026-08-14 — was "via OSV.dev" with GuardPipe performing the batch match; see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Core |
+| FR-CNT-007 | The system **shall** detect application-language dependencies inside the image (`node_modules`, `site-packages`, Go binaries' embedded module data) and include them in vulnerability matching, via Trivy's built-in language-package detection. *(Reversed and promoted Core 2026-08-14 — was Stretch because it required GuardPipe to hand-build the extra parsing; Trivy does this as part of its normal image scan. See [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Core |
+| FR-CNT-008 | The system **shall** detect secrets embedded in image layers (files matching secret patterns, and secrets present in layer history commands), via Trivy's built-in secret scanner (`--scanners secret`) rather than a GuardPipe-owned detector. This is a distinct surface from `depscan`'s repository-checkout secret sweep (`05-module-specifications.md` §7) — an image can contain secrets that never touched git. *(Reversed 2026-08-14 — see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Core |
 | FR-CNT-009 | The system **shall** report the image's effective user, exposed ports, entrypoint, and declared volumes as informational metadata on the scan result. | Core |
 | FR-CNT-010 | Image analysis **shall** occur without executing the image. | Core |
 | FR-CNT-011 | The system **shall** cap image size for analysis (default 2 GB) and layer count (default 100), failing the job cleanly if exceeded. | Core |
-| FR-CNT-012 | The system **should** map findings to CIS Docker Benchmark control identifiers. | Stretch |
+| FR-CNT-012 | The system **should** map findings to CIS Docker Benchmark control identifiers, via Trivy's native `--compliance docker-cis` support rather than a GuardPipe-maintained mapping table. *(Mechanism updated 2026-08-14; see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md).)* | Stretch |
 
 ### 3.8 Kubernetes policy scanning — `k8sscan`
 

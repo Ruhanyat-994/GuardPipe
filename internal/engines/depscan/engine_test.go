@@ -35,6 +35,9 @@ func (f *fakeAdvisoryService) Lookup(_ context.Context, deps []advisory.Dependen
 	return out, nil
 }
 func (f *fakeAdvisoryService) SyncRules(context.Context) error { return nil }
+func (f *fakeAdvisoryService) UpsertRule(context.Context, domain.RuleMeta) error {
+	return nil
+}
 func (f *fakeAdvisoryService) ListRules(context.Context, advisory.RuleFilter, advisory.RulePage) ([]advisory.Rule, int, error) {
 	return nil, 0, nil
 }
