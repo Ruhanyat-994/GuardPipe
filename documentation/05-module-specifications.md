@@ -4,16 +4,17 @@
 |---|---|
 | **Document** | Module Specifications |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-14 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial module specifications |
+| 1.1 | 2026-08-14 | Team | §6 `codescan` rewritten: wraps a self-hosted SonarQube CE instance via `adapters/sonarqube` instead of implementing its own SAST engine, per external requirement — see [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md). §7's secret-sweep note and §16's rule-count summary updated to match; `depscan`'s secret sweep is now standalone rather than a planned shared package with `codescan` |
 
 > **How to use this document.** Read §1–2 fully, then read *your* module's section in full and skim the rest. Each engine section has a **Core / Stretch rule table** — Core rules are what you must have working on demo day. If time runs out, cut Stretch without asking.
 
@@ -62,7 +63,7 @@ flowchart LR
 | `reporting` | M5+M1 | 2 | `scoring`, `ai` |
 | `codescan` | M2 | 1–2 | `domain` |
 | `depscan` | M2 | 1 | `advisory` |
-| `containerscan` | M3 | 2 | `advisory`, `sandbox` |
+| `containerscan` | M3 | 2 | `domain` |
 | `k8sscan` | M3 | 2 | `domain` |
 | `cicdscan` | M4 | 2 | `ai` |
 | `docreview` | M4 | 2 | `ai` |
@@ -350,108 +351,73 @@ Cancelling sets `scans.cancel_requested = true` and publishes to a Redis channel
 
 ---
 
-## 6. `codescan` — static application security testing
+## 6. `codescan` — SonarQube-backed static application security testing
 
 **Owner:** Member 2 · **Requirements:** FR-CODE-001..018 · **Sprint:** 1–2
 
 ### Responsibility
-GuardPipe's own SAST engine. No external SAST binary or service (FR-CODE-001).
+Wraps a self-hosted SonarQube Community Edition instance for the actual static analysis; GuardPipe's own code triggers the scan, filters SonarQube's output down to security-relevant findings, and normalises them into the `Finding` model (FR-CODE-001, reversed 2026-08-14 — see [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md), which supersedes [ADR-0010](17-adr/0010-own-scanners.md) for this engine only).
 
-### Analysis strategy — three tiers of increasing precision
+### Pipeline
 
 ```mermaid
 flowchart LR
-    F[Source file] --> T1["Tier 1: regex + entropy<br/><i>secrets, weak crypto,<br/>insecure TLS flags</i>"]
-    F --> T2["Tier 2: lexical/AST pattern<br/><i>dangerous sink called with<br/>a non-literal argument</i>"]
-    F --> T3["Tier 3: intra-file taint<br/><i>source → propagation → sink,<br/>with sanitiser awareness</i>"]
-    T1 & T2 & T3 --> N[Normalise → Finding]
+    W["workspace<br/>(shallow clone)"] --> S["sonar-scanner<br/>analysis"]
+    S --> A["SonarQube Web API<br/>issues/hotspots"]
+    A --> Filt["Security-relevance filter<br/>(VULNERABILITY + SECURITY_HOTSPOT only)"]
+    Filt --> N[Normalise → Finding]
 ```
 
-- **Tier 1** — pure pattern matching. Cheap, high recall, needs entropy and context filters to control false positives. Ships first.
-- **Tier 2** — the workhorse. Identify calls to known dangerous sinks; flag when the argument is not a literal constant. Language-aware but not full-AST for every language.
-- **Tier 3** — Core for Go and Python (where `go/ast` and a Python tokenizer make it tractable), **Stretch** for JS/TS/Java/PHP.
+### SonarQube deployment
+Self-hosted Community Edition, not SonarCloud — keeps the zero-budget/local-only constraint (`01-project-charter.md` §8) intact and supports private repos. Runs as a `sonarqube` service in `docker-compose.yml` with its own dedicated Postgres database service (`sonarqube-db`) — SonarQube's data is not stored in GuardPipe's own `guardpipe` database, keeping the module boundary the same shape as every other adapter-backed engine (`depscan`↔OSV, `containerscan`↔`adapters/dockerx`).
 
-### Taint model
+### `adapters/sonarqube`
+A REST client over SonarQube's Web API, following the same shape as `adapters/osv`:
 
-| Concept | Definition | Examples |
-|---|---|---|
-| **Source** | Untrusted input | HTTP request params/body/headers, CLI args, env vars, file reads, DB reads (configurable), message payloads |
-| **Propagator** | Carries taint | assignment, string concatenation, formatting, collection insert, function return within the file |
-| **Sanitiser** | Removes taint | parameterised query binding, HTML escape, path canonicalisation + containment check, allowlist validation, integer parse |
-| **Sink** | Dangerous use | query execution, HTML render, `exec`, file open, HTTP client call, deserialization |
+| Endpoint | Used for |
+|---|---|
+| `POST /api/ce/submit` (via `sonar-scanner` CLI invocation against the cloned workspace) | Starts analysis for the project |
+| `GET /api/ce/task` | Poll background-task status until the analysis completes, bounded timeout |
+| `GET /api/qualitygates/project_status` | Confirms analysis landed before reading results |
+| `GET /api/issues/search?componentKeys=<key>&types=VULNERABILITY` | Vulnerability issues |
+| `GET /api/hotspots/search?projectKey=<key>` | Security hotspots |
+| `GET /api/rules/show?key=<rule-key>` | Rule metadata: CWE/OWASP tags, remediation text |
 
-Taint is tracked per-variable within a function, and across functions **within one file** (Core for Go/Python). Cross-file analysis is out of scope and stated as a known limitation in the report — false negatives are acknowledged rather than hidden.
+The `sonar-scanner` invocation runs against the same shallow-cloned workspace `codescan` and every other source-reading engine already use (`03-architecture-overview.md`'s workspace-prep step) — no second clone.
+
+### Security-relevance filter
+Only `type=VULNERABILITY` issues and **all** `SECURITY_HOTSPOT`s pass through to GuardPipe's `Finding` model. Code smells, non-security bugs, coverage, and duplication findings are read from the API (if present) but discarded before normalisation — SonarQube's general code-quality output is never surfaced to the client. GuardPipe is a security decision engine, not a code-quality dashboard (`01-project-charter.md` §3's positioning).
+
+### Normalisation
+
+| GuardPipe field | Sourced from |
+|---|---|
+| `RuleID` | `codescan.sonarqube.<sonar-rule-key>` (e.g. `codescan.sonarqube.java:S2076`) — permanent once assigned, same rule as every other engine (`03-architecture-overview.md` §7.1) |
+| `Severity` | Issue `severity` (`BLOCKER`/`CRITICAL`→critical, `MAJOR`→high, `MINOR`→medium, `INFO`→low) or hotspot `vulnerabilityProbability` (`HIGH`/`MEDIUM`/`LOW`) mapped the same way |
+| `CWE` | `rule.securityStandards.cwe`, when SonarQube provides one for that rule |
+| `Location` | `component`/`textRange` → file:line |
+| `Confidence` | `high` for confirmed `VULNERABILITY` issues, `medium` for `SECURITY_HOTSPOT` (a hotspot is "needs review," not confirmed-exploitable, by SonarQube's own model — reflect that honestly rather than over-claiming confidence) |
+| `Remediation` | `rule.show`'s "How to fix it" text (SonarQube-authored, not GuardPipe- or AI-authored) — see below |
+
+### Remediation
+`Finding.Remediation` is populated from SonarQube's own rule description, not hand-written GuardPipe copy and not AI-generated. This still satisfies the standing rule that remediation must stand alone without AI (`CLAUDE.md`, security posture section): Gemini being down must never remove guidance, and SonarQube-sourced text doesn't depend on Gemini at all. `modules/ai` can still layer an AI explanation on top later, exactly as it does for every other engine's findings (Phase 13 scoring/reporting enrichment) — no special-casing needed for this engine.
 
 ### Language support
+Whatever SonarQube Community Edition analyses out of the box for GuardPipe's target languages — Go, Python, JavaScript/TypeScript, Java, PHP (same floor as the old FR-CODE-002; SonarQube CE covers all five without GuardPipe hand-building a parser per language).
 
-| Language | Detection | Parsing approach | Tier |
-|---|---|---|---|
-| Go | `.go` | `go/parser` + `go/ast` (stdlib — full fidelity, free) | Core, Tier 3 |
-| Python | `.py` | line/token analysis + block structure | Core, Tier 3 |
-| JavaScript/TypeScript | `.js .jsx .ts .tsx` | lexical scanning + brace tracking | Core, Tier 2 |
-| Java | `.java` | lexical scanning + method-call patterns | Core, Tier 2 |
-| PHP | `.php` | lexical scanning + superglobal tracking | Core, Tier 2 |
-
-> **Honest note:** for JS/TS/Java/PHP we do not build a full parser in 4 weeks. Tier-2 sink analysis with literal-argument discrimination catches the majority of the demo-relevant classes with acceptable precision. This limitation is documented in the product, not concealed.
-
-### Core rules
-
-| Rule ID | Detects | CWE | Severity | Tier |
-|---|---|---|---|---|
-| `codescan.injection.sql-string-concat` | Query built by concatenation/format/interpolation with tainted data | CWE-89 | high | Core |
-| `codescan.injection.sql-raw-exec` | Raw query API called with a non-literal string | CWE-89 | high | Core |
-| `codescan.injection.command` | `exec`/`system`/`Runtime.exec`/`subprocess(shell=True)` with tainted data | CWE-78 | critical | Core |
-| `codescan.injection.xss-innerhtml` | `innerHTML`/`outerHTML`/`document.write` with tainted data | CWE-79 | high | Core |
-| `codescan.injection.xss-react-html` | `dangerouslySetInnerHTML` with non-constant value | CWE-79 | high | Core |
-| `codescan.injection.xss-template` | Unescaped output in a template (`{{{ }}}`, `\|safe`, `text/template` in HTML context) | CWE-79 | high | Core |
-| `codescan.injection.path-traversal` | Tainted data reaching a file API without normalisation + containment | CWE-22 | high | Core |
-| `codescan.injection.ssrf` | Tainted URL reaching an HTTP client without host validation | CWE-918 | high | Core |
-| `codescan.injection.deserialization` | `pickle.loads`, `ObjectInputStream.readObject`, `unserialize`, `node-serialize` on tainted data | CWE-502 | critical | Core |
-| `codescan.injection.ldap` | LDAP filter built by concatenation | CWE-90 | high | Stretch |
-| `codescan.secrets.api-key` | Provider-specific key patterns (AWS, GCP, Slack, Stripe, GitHub, OpenAI, Gemini) | CWE-798 | critical | Core |
-| `codescan.secrets.private-key` | `-----BEGIN … PRIVATE KEY-----` | CWE-798 | critical | Core |
-| `codescan.secrets.connection-string` | DB connection strings containing a password | CWE-798 | critical | Core |
-| `codescan.secrets.high-entropy` | String literal, Shannon entropy > 4.5, length ≥ 20, assigned to a secret-ish identifier | CWE-798 | high | Core |
-| `codescan.secrets.jwt-signing-key` | Hardcoded JWT secret | CWE-798 | critical | Core |
-| `codescan.crypto.weak-hash` | MD5/SHA-1 used for passwords, tokens, or signatures | CWE-327 | medium | Core |
-| `codescan.crypto.weak-cipher` | DES, 3DES, RC4, Blowfish | CWE-327 | high | Core |
-| `codescan.crypto.ecb-mode` | ECB block mode | CWE-327 | high | Core |
-| `codescan.crypto.static-iv` | Hardcoded IV or nonce | CWE-329 | high | Core |
-| `codescan.crypto.insecure-random` | `math/rand`, `Math.random`, `random.random` used for tokens/keys/IDs | CWE-338 | medium | Core |
-| `codescan.tls.verify-disabled` | `InsecureSkipVerify: true`, `verify=False`, `rejectUnauthorized: false`, `curl -k` | CWE-295 | high | Core |
-| `codescan.tls.min-version` | TLS < 1.2 configured explicitly | CWE-326 | medium | Core |
-| `codescan.web.cors-wildcard-credentials` | `Access-Control-Allow-Origin: *` with credentials enabled | CWE-942 | high | Core |
-| `codescan.web.cookie-insecure` | Cookie set without `Secure`/`HttpOnly`/`SameSite` | CWE-1004 | medium | Core |
-| `codescan.web.open-redirect` | Redirect target from tainted input, unvalidated | CWE-601 | medium | Core |
-| `codescan.auth.missing-guard` | Route handler lacking an auth annotation its siblings have | CWE-306 | medium | Stretch |
-| `codescan.misc.debug-enabled` | `DEBUG = True`, `app.run(debug=True)`, stack traces to client | CWE-489 | medium | Core |
-| `codescan.misc.eval-usage` | `eval`, `Function()`, `exec()` on non-literal input | CWE-95 | high | Core |
-
-**Core total: 26 rules.** Stretch: 2 rules + Tier-3 taint for JS/TS/Java/PHP.
-
-### False-positive controls
-| Control | Mechanism |
-|---|---|
-| Path exclusion | Default ignore: `vendor/`, `node_modules/`, `third_party/`, `*.min.js`, `dist/`, `build/`, `*_test.go`, `test/fixtures/`, `.git/` |
-| Test-file discount | Findings in test files drop one severity level and are tagged `in_test_code` |
-| Literal-argument discrimination | A sink called with a compile-time constant does not fire Tier-2 rules |
-| Entropy + identifier context | Secret rules require both a pattern/entropy hit **and** a secret-ish variable name or file location |
-| Known placeholders | `example`, `dummy`, `changeme`, `xxxx`, `test`, `<your-key>`, all-same-character strings are excluded |
-| Inline suppression | `// guardpipe:ignore <rule-id> — <justification ≥10 chars>` (FR-CODE-014) |
-| Confidence field | Tier-1-only hits are `medium`/`low` confidence; taint-confirmed hits are `high` |
-
-### Performance
-Target 5,000 LOC/s/worker (NFR-PERF-003). Regexes compiled once at package init. Files > 2 MB and binary files skipped. Bounded `errgroup` fan-out over files. `sync.Pool` for line buffers.
+### Secret sweep
+Unchanged and unaffected: the secret sweep stays owned by `depscan` (`internal/engines/depscan/secrets.go`), self-contained, not shared with `codescan`. SonarQube's own secret detection (if enabled in CE) is intentionally **not** used here, to avoid two engines emitting conflicting findings for the same secret — `depscan.secrets.*` remains the one namespace secrets are reported under. (This also fixes a stale cross-reference: §7's "Secret sweep scope" note below previously said this reused a shared package with `codescan` — that was a Phase-7-not-yet-built forward reference that no longer applies now that `codescan` doesn't run its own regex rules.)
 
 ### Failure modes
 | Failure | Handling |
 |---|---|
-| Unparseable file | Skip that file, record in `EngineResult.Skipped`, continue |
-| Pathological regex input | Per-file 5 s deadline; skip and record on breach |
+| SonarQube unreachable / connection refused | `codescan` job fails; `PartialResultBanner` names it; rest of the scan completes (FR-ORC-006/NFR-REL-001) — SonarQube is a dependency of one engine, not the orchestrator |
+| Analysis task times out (bounded poll deadline) | Job fails with a timeout reason, same partial-result handling |
+| SonarQube quality-gate/analysis reports an error for the project | Job fails, error surfaced in `EngineResult`, same partial-result handling |
 | No supported source files | `Applicable` returns false → job `skipped`, not failed |
 
 ### Tests
-Golden fixture repository with **known seeded vulnerabilities** — every Core rule has at least one true-positive and one near-miss (must-not-fire) case. Rule tests are table-driven. Published metric: detection rate and false-positive rate against the fixture.
+No mocking framework, per the project's standing testing philosophy — a hand-written fake implementing the same interface `adapters/sonarqube` exposes to `engines/codescan`, seeded with canned SonarQube API responses (real captured JSON shapes, not live SonarQube calls in CI). Golden fixture repository still applies: `codescan`'s share of `fixture-vulnerable`/`fixture-clean` is now validated against the fake's canned responses rather than against a rule table, since the rules themselves live in SonarQube, not in GuardPipe. The near-miss discipline moves to the security-relevance filter: near-miss tests confirm a `BUG`/`CODE_SMELL`-typed SonarQube issue does **not** produce a `Finding`, the same way a parameterised query previously had to not fire a SQL-injection rule.
 
 ---
 
@@ -513,7 +479,7 @@ sequenceDiagram
 **Core total: 8 rules.**
 
 ### Secret sweep scope
-The whole checkout, not just manifests: source, config, CI files, `.env*`, Dockerfiles, notebooks, and **git-tracked binaries' text segments** are out of scope (too noisy). Reuses `codescan`'s secret rule set via a shared internal package — the rules live once.
+The whole checkout, not just manifests: source, config, CI files, `.env*`, Dockerfiles, notebooks, and **git-tracked binaries' text segments** are out of scope (too noisy). Owned standalone by `depscan` (`internal/engines/depscan/secrets.go`) — no longer shared with `codescan`, since `codescan` wraps SonarQube instead of running its own regex rules (§6, [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md)).
 
 ### Failure modes
 | Failure | Handling |
@@ -530,60 +496,59 @@ The whole checkout, not just manifests: source, config, CI files, `.env*`, Docke
 **Owner:** Member 3 · **Requirements:** FR-CNT-001..012 · **Sprint:** 2
 
 ### Responsibility
-Two distinct capabilities: **static Dockerfile linting** (always available) and **image layer/package analysis** (requires Docker).
+Wraps Trivy for the actual Dockerfile-misconfiguration and image-vulnerability/secret analysis; GuardPipe's own code discovers Dockerfiles/image references, invokes Trivy, and normalises its output into the `Finding` model (FR-CNT-004..008, reversed 2026-08-14 — see [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md), which supersedes [ADR-0010](17-adr/0010-own-scanners.md) for this engine only).
 
-### Phase A — Dockerfile lint (no Docker required)
-
-Parses instructions into an ordered AST (`FROM`, `RUN`, `COPY`, `ADD`, `USER`, `ENV`, `ARG`, `EXPOSE`, `HEALTHCHECK`, `ENTRYPOINT`, `CMD`, `WORKDIR`, `VOLUME`), tracking stage boundaries for multi-stage builds.
-
-| Rule ID | Detects | CWE | Severity | Tier |
-|---|---|---|---|---|
-| `containerscan.dockerfile.runs-as-root` | No `USER` directive, or `USER root` in the final stage | CWE-250 | high | Core |
-| `containerscan.dockerfile.unpinned-base` | `FROM x:latest` or no tag | CWE-1104 | medium | Core |
-| `containerscan.dockerfile.undigested-base` | Base image referenced by tag, not digest | CWE-494 | low | Core |
-| `containerscan.dockerfile.secret-in-arg` | Secret-looking `ARG`/`ENV` value | CWE-798 | critical | Core |
-| `containerscan.dockerfile.add-remote-url` | `ADD http…` instead of verified `COPY` | CWE-494 | medium | Core |
-| `containerscan.dockerfile.curl-pipe-shell` | `curl … \| sh` / `wget … \| bash` | CWE-494 | high | Core |
-| `containerscan.dockerfile.sensitive-port` | `EXPOSE` of 22/3306/5432/6379/27017 | CWE-668 | medium | Core |
-| `containerscan.dockerfile.no-healthcheck` | No `HEALTHCHECK` | — | low | Core |
-| `containerscan.dockerfile.apt-no-cleanup` | Package install without cache cleanup in the same layer | — | low | Core |
-| `containerscan.dockerfile.single-stage-build` | Build toolchain installed with no multi-stage separation | — | low | Core |
-| `containerscan.dockerfile.sudo-usage` | `sudo` inside a container build | CWE-250 | medium | Core |
-| `containerscan.dockerfile.world-writable` | `chmod 777` | CWE-732 | medium | Core |
-| `containerscan.dockerfile.copy-parent` | `COPY . .` with no `.dockerignore` present | CWE-538 | medium | Core |
-
-### Phase B — Image analysis (requires Docker)
+### Pipeline
 
 ```mermaid
-flowchart TB
-    A["Image reference<br/>(built locally or pulled)"] --> B["docker save → tar stream<br/><b>image is never run</b>"]
-    B --> C[Read manifest.json + config.json]
-    C --> D["Extract history:<br/>layer commands, user,<br/>ports, entrypoint, volumes"]
-    B --> E[Walk layer tars]
-    E --> F{Detect distro}
-    F -->|Debian/Ubuntu| G["/var/lib/dpkg/status"]
-    F -->|RHEL/Alpine…| H["rpm db / /lib/apk/db/installed"]
-    G & H --> I[Package inventory]
-    I --> J[OSV batch lookup]
-    E --> K[Scan layer files for secrets]
-    D --> L[Config findings]
-    J & K & L --> M[Emit findings]
+flowchart LR
+    W["workspace<br/>(shallow clone)"] --> D["trivy config<br/>(Dockerfile/IaC misconfig,<br/>no Docker daemon needed)"]
+    W --> B["Image reference<br/>(built locally or pulled)"]
+    B --> I["trivy image<br/>--scanners vuln,misconfig,secret<br/><b>image is never run</b>"]
+    D --> N[Normalise → Finding]
+    I --> N
 ```
 
-| Rule ID | Detects | Severity | Tier |
-|---|---|---|---|
-| `containerscan.image.os-package-cve` | OS package matches a known advisory | from CVSS | Core |
-| `containerscan.image.runs-as-root` | Effective user is root (config-derived) | high | Core |
-| `containerscan.image.secret-in-layer` | Secret pattern in a layer file | critical | Core |
-| `containerscan.image.secret-in-history` | Secret visible in a layer's build command | critical | Core |
-| `containerscan.image.excessive-layers` | > 50 layers (informational hygiene) | informational | Core |
-| `containerscan.image.lang-package-cve` | `node_modules`/`site-packages` inside the image matched to advisories | from CVSS | Stretch |
-| `containerscan.image.cis-mapping` | CIS Docker Benchmark control IDs on findings | — | Stretch |
+Two Trivy invocations, not one: `trivy config` runs directly against the checked-out repository (no Docker daemon required, preserving the old Phase A's "always available" property), `trivy image` runs against the built/pulled image reference and needs Docker. Both feed the same normalisation step.
 
-**Core total: 18 rules (13 Dockerfile + 5 image).**
+### `adapters/trivy`
+Same two-file shape as `adapters/sonarqube`: a thin parser over Trivy's own JSON report format, plus a `scanner.go` that launches a short-lived `aquasec/trivy` CLI container via `adapters/dockerx` — the same "trusted first-party tool run as a sibling container" pattern `sonar-scanner` established (§6), **not** built on `adapters/sandbox` (that package's no-network-by-default policy is for *untrusted* execution; Trivy needs network to pull the target image and update its vulnerability database).
+
+| Invocation | Used for |
+|---|---|
+| `trivy config <workspace-dir> --format json` | Dockerfile/IaC misconfiguration — FR-CNT-001/002/003 |
+| `trivy image <ref> --scanners vuln,misconfig,secret --format json` | OS-package + language-package vulnerabilities (FR-CNT-004..007), image-layer secrets (FR-CNT-008), effective-user/port/entrypoint metadata (FR-CNT-009) |
+| `trivy image <ref> --compliance docker-cis --format json` | CIS Docker Benchmark mapping, Stretch (FR-CNT-012) |
+
+### Normalisation
+
+| GuardPipe field | Sourced from |
+|---|---|
+| `RuleID` | Misconfig: `containerscan.trivy.<check-id>` (e.g. `containerscan.trivy.DS002`, "no USER"). Vulnerability: `containerscan.trivy.<cve-id>`. Permanent once assigned, same rule as every other engine (`03-architecture-overview.md` §7.1) |
+| `Severity` | Trivy's `CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN` scale, mapped onto GuardPipe's five-level `Severity` the same way `codescan` maps SonarQube's |
+| `CWE` | Trivy's own vulnerability metadata (`CweIDs`), where present |
+| `Location` | Misconfig: file:line in the Dockerfile. Vulnerability: layer digest + package name/version |
+| `Confidence` | `high` for confirmed CVE matches and misconfig findings — Trivy doesn't have SonarQube's "hotspot, needs review" tier, so there's no `medium` case to preserve here |
+| `Remediation` | Misconfig: Trivy's own guidance text. Vulnerability: fixed-version string, when Trivy reports one |
+
+### Secret scanning
+`trivy image --scanners secret` covers the **built image's layers** (files and layer-history commands) — a different surface than `depscan`'s secret sweep, which covers the **git checkout** (§7's "Secret sweep scope"). Unlike SonarQube's own secret detector (deliberately not used by `codescan`, §6, to avoid two engines reporting the same secret from the same checkout), Trivy's image-layer secrets and `depscan`'s repo secrets don't compete for the same namespace — an image can contain a secret that never touched git (baked in by a base image, or introduced during the build), so this is additive coverage, not a duplicate detector.
 
 ### Safety
-**The image is never executed** (FR-CNT-010). Analysis is `docker save` + tar reading only. Extraction happens inside the sandbox with size and layer caps (2 GB, 100 layers) to prevent decompression-bomb attacks.
+**The image is never executed** (FR-CNT-010) — Trivy's own image analysis reads layers without running the image, same guarantee the old hand-rolled `docker save`+tar-walk pipeline made. GuardPipe still enforces its own size/layer caps (FR-CNT-011, 2 GB / 100 layers) before invoking Trivy — that guard doesn't depend on which tool performs the analysis.
+
+### Failure modes
+| Failure | Handling |
+|---|---|
+| Trivy can't pull/update its vulnerability database | `containerscan` job fails; `PartialResultBanner` names it; rest of the scan completes (FR-ORC-006/NFR-REL-001) — same pattern `codescan` uses for a SonarQube outage |
+| Target image can't be built or pulled | Job fails, error surfaced in `EngineResult`, same partial-result handling |
+| No Dockerfile and no image reference found | `Applicable` returns false → job `skipped`, not failed |
+
+### Tests
+No mocking framework, per the project's standing testing philosophy — a hand-written fake implementing the same interface `adapters/trivy` exposes to `engines/containerscan`, seeded with canned Trivy JSON report shapes (real captured output, not live Trivy calls in CI). Golden fixture repository still applies: `containerscan`'s share of `fixture-vulnerable`/`fixture-clean` is now validated against the fake's canned responses rather than against a GuardPipe-owned rule table, since the detection logic itself lives in Trivy.
+
+### CI note
+This is unrelated to the existing `container-scan` CI job (`13-devops-and-environments.md` §8.2), which uses Trivy to scan **GuardPipe's own built images** as a supply-chain hygiene check on this project's artifacts. Both now use Trivy, for unrelated reasons — that CI job's definition is unaffected by this section.
 
 ### Failure modes
 | Failure | Handling |
@@ -952,13 +917,13 @@ Findings are matched across scans by `fingerprint`. This yields, per finding: `f
 
 | Engine | Core rules | Stretch | Owner |
 |---|---|---|---|
-| `codescan` | 26 | 2 rules + Tier-3 taint for JS/TS/Java/PHP | M2 |
+| `codescan` | SonarQube CE's own rule set, filtered to `VULNERABILITY`/`SECURITY_HOTSPOT` (§6, [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md)) | — | M2 |
 | `depscan` | 8 | 3 rules | M2 |
-| `containerscan` | 18 | 2 rules | M3 |
+| `containerscan` | Trivy's own misconfig checks + vulnerability database (§8, [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md)) | CIS Docker Benchmark mapping | M3 |
 | `k8sscan` | 31 | 1 rule + Helm/Kustomize rendering + CIS mapping | M3 |
 | `cicdscan` | 16 | GitLab CI + Jenkins support | M4 |
 | `docreview` | 13 | 1 rule | M4 |
 | `pentest` | 6 phases / ~35 checks | 2 phases | M6 |
-| **Total** | **112 rules + ~35 pentest checks** | **9 rules + 6 capability items** | |
+| **Total** | **68 own rules + SonarQube CE's rule set + Trivy's own coverage + ~35 pentest checks** | **6 rules + 6 capability items** | |
 
-**If the schedule slips, cut in this order:** `docreview` Stretch → `depscan` Stretch → `containerscan` image phase B language packages → `k8sscan` Stretch → `pentest` phases 5–6 → `codescan` Tier 3. Never cut: the `Engine` interface, finding normalisation, scoring, or the dashboard — those are the product.
+**If the schedule slips, cut in this order:** `docreview` Stretch → `depscan` Stretch → `k8sscan` Stretch → `pentest` phases 5–6. Never cut: the `Engine` interface, finding normalisation, scoring, or the dashboard — those are the product. (`codescan`/`containerscan` Tier 3 no longer exist as cut options — SonarQube and Trivy are each a single dependency, not tiered GuardPipe-owned code.)

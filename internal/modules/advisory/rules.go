@@ -109,29 +109,40 @@ func ParseRuleID(id string) (engine domain.EngineID, category string, err error)
 
 func (s *service) SyncRules(ctx context.Context) error {
 	for _, rm := range s.registry.All() {
-		engine, category, err := ParseRuleID(rm.ID)
-		if err != nil {
-			return apperrors.Internal(fmt.Errorf("sync rules: %w", err))
+		if err := s.UpsertRule(ctx, rm); err != nil {
+			return err
 		}
-		if !rm.Tier.Valid() {
-			return apperrors.Internal(fmt.Errorf("sync rules: rule %q has an invalid tier %q", rm.ID, rm.Tier))
-		}
-		r := Rule{
-			ID:              rm.ID,
-			Engine:          engine,
-			Category:        category,
-			Title:           rm.Title,
-			Description:     rm.Description,
-			Remediation:     rm.Remediation,
-			DefaultSeverity: rm.Severity,
-			CWE:             rm.CWE,
-			OWASP:           rm.OWASP,
-			References:      rm.References,
-			Tier:            rm.Tier,
-		}
-		if err := s.rules.Upsert(ctx, r); err != nil {
-			return apperrors.Internal(fmt.Errorf("sync rule %q: %w", rm.ID, err))
-		}
+	}
+	return nil
+}
+
+// UpsertRule converts one domain.RuleMeta into the rules catalogue's own
+// Rule shape and upserts it — the single-rule primitive both SyncRules'
+// startup batch and codescan's runtime per-rule registration
+// (documentation/05-module-specifications.md §6) build on.
+func (s *service) UpsertRule(ctx context.Context, rm domain.RuleMeta) error {
+	engine, category, err := ParseRuleID(rm.ID)
+	if err != nil {
+		return apperrors.Internal(fmt.Errorf("upsert rule: %w", err))
+	}
+	if !rm.Tier.Valid() {
+		return apperrors.Internal(fmt.Errorf("upsert rule: rule %q has an invalid tier %q", rm.ID, rm.Tier))
+	}
+	r := Rule{
+		ID:              rm.ID,
+		Engine:          engine,
+		Category:        category,
+		Title:           rm.Title,
+		Description:     rm.Description,
+		Remediation:     rm.Remediation,
+		DefaultSeverity: rm.Severity,
+		CWE:             rm.CWE,
+		OWASP:           rm.OWASP,
+		References:      rm.References,
+		Tier:            rm.Tier,
+	}
+	if err := s.rules.Upsert(ctx, r); err != nil {
+		return apperrors.Internal(fmt.Errorf("upsert rule %q: %w", rm.ID, err))
 	}
 	return nil
 }

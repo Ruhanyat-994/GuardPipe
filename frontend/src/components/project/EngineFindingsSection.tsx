@@ -7,7 +7,8 @@ import type { Repository } from '../../lib/projectsApi'
 import type { Engine } from '../../lib/rulesApi'
 import type { FindingListItem, JobStatus } from '../../lib/scansApi'
 import { OsvMark } from '../icons/OsvMark'
-import { FindingRow } from './FindingRow'
+import { SonarQubeMark } from '../icons/SonarQubeMark'
+import { FindingsList } from './FindingsList'
 
 const STATUS_COLOR: Record<JobStatus, string> = {
   queued: 'var(--text-tertiary)',
@@ -113,6 +114,7 @@ export function EngineFindingsSection({
           <div className="flex items-center gap-1.5">
             <span className="font-semibold text-text-primary">{meta.label}</span>
             {meta.hasOsvMark && <OsvMark />}
+            {meta.hasSonarQubeMark && <SonarQubeMark />}
           </div>
           <span className="text-caption" style={{ color }}>
             {subtitle(status, findingCount)}
@@ -148,11 +150,7 @@ export function EngineFindingsSection({
               {emptyMessage(status, errorReason, skipReason)}
             </p>
           ) : (
-            <ul className="flex flex-col divide-y divide-border-default">
-              {findings.map((f) => (
-                <FindingRow key={f.id} finding={f} repository={repository} gitRef={gitRef} />
-              ))}
-            </ul>
+            <FindingsList findings={findings} repository={repository} gitRef={gitRef} />
           )}
         </div>
       )}

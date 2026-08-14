@@ -5,6 +5,7 @@ import {
   Crosshair,
   FolderKanban,
   HelpCircle,
+  LayoutGrid,
   Menu,
   PanelLeftClose,
   Plus,
@@ -29,6 +30,7 @@ import { Button } from './ui/Button'
  */
 
 const NAV_ITEMS = [
+  { to: '/dashboard', label: 'Overview', icon: LayoutGrid },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
   { to: '/scans', label: 'Scans', icon: ScanSearch },
   { to: '/findings', label: 'Findings', icon: ShieldAlert },
@@ -67,7 +69,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </button>
 
         <Link
-          to="/projects"
+          to="/dashboard"
           className="flex items-center gap-2 text-h3 font-semibold text-chrome-text"
         >
           <Logo className="h-6 w-auto" />

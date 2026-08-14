@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-08-12 |
+| **Last updated** | 2026-08-14 |
 
 ### Revision history
 
@@ -16,6 +16,7 @@
 | 1.0 | 2026-07-29 | Team | Initial DevOps design |
 | 1.1 | 2026-08-01 | Team | §5.6 adds `GUARDPIPE_GEMINI_API_KEYS` (comma-separated key pool with automatic rotation on quota errors), kept alongside the existing singular `GUARDPIPE_GEMINI_API_KEY` as a one-key alias — added to solve real quota-exhaustion friction during the team's own free-tier testing, planned for `BUILD_GUIDE.md` Phase 4, not yet built |
 | 1.2 | 2026-08-12 | Team | §5.6's `GUARDPIPE_GEMINI_API_KEYS` pool is now built (`BUILD_GUIDE.md` Phase 4, `internal/platform/config.AI.KeyPool()` + `internal/adapters/gemini`'s rotate-on-429 retry) — status note updated from "planned" to reflect reality |
+| 1.3 | 2026-08-14 | Team | §5.7 adds `GUARDPIPE_SONARQUBE_*` vars for the new self-hosted SonarQube CE dependency (`codescan`, Phase 7, ADR-0011) — planned, not yet built |
 
 ---
 
@@ -150,6 +151,9 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_SANDBOX_MAX` | `2` | no | Concurrent sandbox containers |
 | `GUARDPIPE_SANDBOX_IMAGE` | pinned digest | no | Sandbox runner image |
 | `GUARDPIPE_DOCKER_HOST` | `unix:///var/run/docker.sock` | no | |
+| `GUARDPIPE_DOCKER_NETWORK` | `guardpipe-net` | no | Compose network a sibling container joins to reach another service by name — codescan's sonar-scanner container (Phase 7, ADR-0011) reaching `sonarqube`; matches `docker-compose.yml`'s `networks.default.name` |
+| `GUARDPIPE_TRIVY_IMAGE` | pinned tag, `aquasec/trivy` | no | containerscan's Trivy CLI image (Phase 8, ADR-0012) — sibling container via `adapters/dockerx`, same pattern as codescan's `sonar-scanner`; no `GUARDPIPE_DOCKER_NETWORK` join needed unless the vulnerability-database registry is proxied internally |
+| `GUARDPIPE_TRIVY_DB_UPDATE` | `true` | no | Whether Trivy fetches/updates its vulnerability database on each scan; `false` requires a pre-cached database volume instead (see ADR-0012's "Revisit when") |
 | `GUARDPIPE_ENGINE_TIMEOUT_*` | per [04 §6.3](04-backend-architecture.md#63-timeouts) | no | One per engine |
 
 ### 5.5 Pentest
@@ -181,6 +185,9 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_OSV_API_URL` | `https://api.osv.dev` | |
 | `GUARDPIPE_OSV_CACHE_TTL` | `24h` | |
 | `GUARDPIPE_GITHUB_API_URL` | `https://api.github.com` | |
+| `GUARDPIPE_SONARQUBE_API_URL` | `http://sonarqube:9000` | Self-hosted CE instance, the `sonarqube` Compose service — not SonarCloud (Phase 7, `codescan`, ADR-0011) |
+| `GUARDPIPE_SONARQUBE_TOKEN` | — (required once Phase 7 lands) | User-token auth against the Web API, generated once in SonarQube's own UI on first boot — never a password |
+| `GUARDPIPE_SONARQUBE_ANALYSIS_TIMEOUT` | `5m` | Bound on the `/api/ce/task` poll loop before `codescan`'s job fails (partial-result handling, not a whole-scan failure) |
 
 ### 5.8 Gate thresholds
 
@@ -267,7 +274,7 @@ flowchart LR
 | `self-scan` | GuardPipe scans this repository | Any CRITICAL finding |
 | `e2e` (Stretch) | Playwright against the Compose stack | Any failure |
 
-**We use Trivy in CI while building our own container scanner.** That is deliberate and worth saying out loud: Trivy is the independent check on our own supply chain, and having it there also gives us a reference implementation to compare `containerscan`'s output against. Using it in CI is not the same as depending on it in the product ([ADR-0010](17-adr/0010-own-scanners.md)).
+**Trivy now appears in two unrelated places, worth being explicit about so it doesn't read as redundant.** This `container-scan` CI job uses Trivy to scan **GuardPipe's own built images** — a supply-chain hygiene check on this project's artifacts, unrelated to any scan a client runs. As of [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md), the `containerscan` **product engine** (Phase 8) also wraps Trivy — to scan a *client's* target repository/image — which reverses the "Using it in CI is not the same as depending on it in the product" position [ADR-0010](17-adr/0010-own-scanners.md) originally took for this one engine. This CI job's own definition and purpose are unaffected either way.
 
 ### 8.3 Workflow hardening
 

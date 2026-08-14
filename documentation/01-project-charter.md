@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | Project Charter |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Status** | Draft |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-01 |
+| **Last updated** | 2026-08-14 |
 
 ### Revision history
 
@@ -15,6 +15,7 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial charter |
 | 1.1 | 2026-08-01 | Team | §5.2 out-of-scope row reworded — basic multi-tenancy (one isolated organisation per account) is now built, narrowing what's actually excluded to billing/SSO/multi-member organisations |
+| 1.2 | 2026-08-14 | Team | Positioning statement (§3) caveated: `codescan` now wraps a self-hosted SonarQube instance per an external requirement, rather than being fully in-house end to end. See [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md) |
 
 ---
 
@@ -51,7 +52,7 @@ Requirements → Design Docs → Code → Dependencies → Container → Kuberne
      └───────────────────── all inspected by GuardPipe ─────────────────────┘
 ```
 
-**Positioning.** GuardPipe is not a re-implementation of Snyk, Trivy, or SonarQube. It is a **decision engine**: it runs its own purpose-built analyzers, normalises what they find, correlates findings across stages, and produces a defensible go/no-go verdict with AI-authored explanations and patches.
+**Positioning.** GuardPipe is not a re-skin of Snyk, Trivy, or SonarQube's own dashboard. It is a **decision engine**: across most stages it runs its own purpose-built analyzers, and for `codescan` specifically it wraps a self-hosted SonarQube instance (per an external requirement — [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md)) and filters its output to security-relevant findings only. Either way, GuardPipe normalises what's found, correlates findings across all seven stages, and produces a defensible go/no-go verdict with AI-authored explanations and patches — none of that correlation, scoring, or explanation exists in SonarQube itself, and SonarQube's own UI/reports are never exposed to a GuardPipe user.
 
 ---
 
