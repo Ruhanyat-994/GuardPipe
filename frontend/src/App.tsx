@@ -3,6 +3,7 @@ import { Outlet, Route, Routes } from 'react-router-dom'
 import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { RegisterPage } from './pages/RegisterPage'
+import { GlobalDashboardPage } from './pages/GlobalDashboardPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { ProjectsListPage } from './pages/ProjectsListPage'
 import { ProjectCreatePage } from './pages/ProjectCreatePage'
@@ -67,14 +68,19 @@ function App() {
       <Route path="/register" element={<RegisterPage />} />
 
       <Route element={<ProtectedShell />}>
+        {/* The org-wide landing page after login (Phase 13, partial —
+            documentation/09-ui-ux-design-system.md's dashboard redesign
+            note) — real data across every project's latest scan, not the
+            old hardcoded per-project preview. */}
+        <Route path="/dashboard" element={<GlobalDashboardPage />} />
         <Route path="/projects" element={<ProjectsListPage />} />
         <Route path="/projects/new" element={<ProjectCreatePage />} />
 
         {/* Per-project tab bar (documentation/09-ui-ux-design-system.md
-            §4.4's ProjectTabBar) — Overview is the existing Phase 2/3
-            dashboard preview; Scans is real (Phase 6, depscan only);
+            §4.4's ProjectTabBar) — Overview is this project's own real
+            dashboard (Phase 13, partial); Scans is real (Phase 6-8);
             Findings shows the most recent scan's findings inline (the full
-            cross-scan explorer with filtering/triage is still Phase 8's);
+            cross-scan explorer with filtering/triage is still later work);
             Targets/Settings are real, backed by the Phase 3 project API. */}
         <Route path="/projects/:id" element={<ProjectLayout />}>
           <Route index element={<DashboardPage />} />

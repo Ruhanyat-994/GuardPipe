@@ -15,6 +15,7 @@ import { ENGINE_META } from '../../lib/engines'
 import type { Engine } from '../../lib/rulesApi'
 import type { Job, JobStatus, Progress, Scan } from '../../lib/scansApi'
 import { OsvMark } from '../icons/OsvMark'
+import { SonarQubeMark } from '../icons/SonarQubeMark'
 
 /**
  * The live scan execution graph (documentation/09-ui-ux-design-system.md
@@ -146,12 +147,14 @@ function Node({
   icon: Icon,
   status,
   osvMark,
+  sonarQubeMark,
   tooltip,
 }: {
   label: string
   icon: LucideIcon
   status: NodeStatus
   osvMark?: boolean
+  sonarQubeMark?: boolean
   tooltip?: string | null
 }) {
   const color = STATUS_COLOR[status]
@@ -176,6 +179,7 @@ function Node({
       <div className="flex items-center gap-1">
         <span className="text-body-sm font-semibold text-text-primary">{label}</span>
         {osvMark && <OsvMark />}
+        {sonarQubeMark && <SonarQubeMark />}
       </div>
       <span
         className="flex items-center gap-1 text-caption font-medium capitalize"
@@ -316,6 +320,7 @@ export function SupplyChainPipeline({
                         icon={meta.icon}
                         status={state.status}
                         osvMark={meta.hasOsvMark}
+                        sonarQubeMark={meta.hasSonarQubeMark}
                         tooltip={state.reason}
                       />
                     </div>

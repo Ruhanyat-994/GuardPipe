@@ -5,7 +5,7 @@
 | **Document** | ADR Index |
 | **Project** | GuardPipe |
 | **Format** | MADR / Nygard |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-14 |
 
 ---
 
@@ -87,4 +87,6 @@ The condition under which this decision should be reconsidered.
 | [0007](0007-monorepo.md) | Single monorepo | Accepted | 2026-07-29 | Repository |
 | [0008](0008-mermaid-diagrams.md) | Mermaid-in-Markdown for all diagrams | Accepted | 2026-07-29 | Documentation |
 | [0009](0009-goose-migrations.md) | goose for database migrations, no ORM | Accepted | 2026-07-29 | Data layer |
-| [0010](0010-own-scanners.md) | Build our own scanners rather than wrapping existing tools | Accepted | 2026-07-29 | Engines |
+| [0010](0010-own-scanners.md) | Build our own scanners rather than wrapping existing tools | Accepted, partially superseded | 2026-07-29 | Engines |
+| [0011](0011-codescan-wraps-sonarqube.md) | `codescan` wraps a self-hosted SonarQube instead of GuardPipe's own SAST | Accepted | 2026-08-14 | `codescan` |
+| [0012](0012-containerscan-wraps-trivy.md) | `containerscan` wraps Trivy instead of GuardPipe's own image/layer analyzer | Accepted | 2026-08-14 | `containerscan` |
