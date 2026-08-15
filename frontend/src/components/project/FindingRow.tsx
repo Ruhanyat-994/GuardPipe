@@ -22,6 +22,16 @@ function locationSummary(f: FindingListItem): string | null {
   if (loc.type === 'dependency' && loc.package) {
     return `${loc.ecosystem ?? ''} ${loc.package}${loc.version ? `@${loc.version}` : ''}`.trim()
   }
+  if (loc.type === 'image' && loc.path) {
+    // containerscan's image-type Location puts the affected package name in
+    // `path` (Finding's field doubles up across the file/image shapes —
+    // see domain.Location's own doc comment) — this is what makes each
+    // finding's specific package legible without opening it, especially
+    // important now that several distinct packages routinely share one CVE.
+    return loc.layer_digest
+      ? `${loc.path} (layer ${String(loc.layer_digest).slice(7, 19)})`
+      : loc.path
+  }
   return null
 }
 

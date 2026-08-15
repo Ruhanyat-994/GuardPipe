@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
+	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 )
 
 // OSVClient is the subset of adapters/osv.Client this package needs.
@@ -43,6 +44,15 @@ type Service interface {
 	// SyncRules upserts every rule in the RuleRegistry into the database —
 	// called once at startup (documentation/06-database-design.md §11).
 	SyncRules(ctx context.Context) error
+
+	// UpsertRule registers one rule at runtime rather than at startup —
+	// codescan's only use of this (documentation/05-module-specifications.md
+	// §6, ADR-0011): SonarQube's rule catalogue has thousands of entries and
+	// isn't enumerable at compile time the way depscan's hand-written Rules
+	// slice is, so codescan upserts each SonarQube rule the first time it
+	// actually fires a finding, not as a batch at startup. Idempotent, same
+	// as SyncRules' per-rule Upsert call.
+	UpsertRule(ctx context.Context, rm domain.RuleMeta) error
 	ListRules(ctx context.Context, filter RuleFilter, page RulePage) ([]Rule, int, error)
 	GetRule(ctx context.Context, id string) (*Rule, error)
 	SetRuleEnabled(ctx context.Context, id string, enabled bool) (*Rule, error)

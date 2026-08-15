@@ -8,6 +8,7 @@ import type { Engine } from '../../lib/rulesApi'
 import { ApiError } from '../../lib/apiClient'
 import { createScan, type Scan } from '../../lib/scansApi'
 import { OsvMark } from '../icons/OsvMark'
+import { SonarQubeMark } from '../icons/SonarQubeMark'
 
 /**
  * The scan launcher — replaces the single "Run Scan" button with an
@@ -109,6 +110,7 @@ export function ScanLauncher({
               <div className="flex items-center gap-1">
                 <span className="text-body-sm font-medium text-text-primary">{meta.label}</span>
                 {meta.hasOsvMark && <OsvMark />}
+                {meta.hasSonarQubeMark && <SonarQubeMark />}
               </div>
               <span className="text-caption text-text-tertiary">
                 {enabled ? 'Available' : 'Coming soon'}

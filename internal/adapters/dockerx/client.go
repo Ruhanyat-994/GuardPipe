@@ -7,11 +7,17 @@
 package dockerx
 
 import (
+	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 
 	"github.com/moby/moby/api/types/container"
 	dockerclient "github.com/moby/moby/client"
@@ -130,6 +136,142 @@ func (c *Client) RemoveContainer(ctx context.Context, id string) error {
 		return fmt.Errorf("dockerx: remove container %s: %w", id, err)
 	}
 	return nil
+}
+
+// BuildImage builds contextDir (tarred up in memory — bounded by
+// GUARDPIPE_MAX_REPO_MB, the same cap already applied at clone time, so this
+// never runs away) using the Dockerfile at dockerfilePath (relative to
+// contextDir, matching `docker build -f`), tagging the result as tag.
+// Building a client-supplied Dockerfile inherently executes that
+// Dockerfile's own RUN/ADD instructions with network access — unlike
+// adapters/sandbox's untrusted-execution contract, there is no way to build
+// an image without doing this; engines/containerscan's own size/timeout
+// caps are the mitigation, not sandboxing this call (documentation/05-module-specifications.md
+// §8, ADR-0012).
+func (c *Client) BuildImage(ctx context.Context, contextDir, dockerfilePath, tag string) error {
+	buildContext, err := tarDirectory(contextDir)
+	if err != nil {
+		return fmt.Errorf("dockerx: tar build context: %w", err)
+	}
+
+	result, err := c.cli.ImageBuild(ctx, buildContext, dockerclient.ImageBuildOptions{
+		Tags:       []string{tag},
+		Dockerfile: dockerfilePath,
+		Remove:     true,
+	})
+	if err != nil {
+		return fmt.Errorf("dockerx: build image: %w", err)
+	}
+	defer result.Body.Close()
+
+	if err := checkBuildStream(result.Body); err != nil {
+		return fmt.Errorf("dockerx: build image %s: %w", tag, err)
+	}
+	return nil
+}
+
+// RemoveImage force-removes an image by tag or ID. Called from a defer by
+// every caller that builds an image, so a scan never leaves a built image
+// behind (same "cleanup in a defer" discipline RemoveContainer already
+// follows).
+func (c *Client) RemoveImage(ctx context.Context, ref string) error {
+	if _, err := c.cli.ImageRemove(ctx, ref, dockerclient.ImageRemoveOptions{Force: true}); err != nil {
+		return fmt.Errorf("dockerx: remove image %s: %w", ref, err)
+	}
+	return nil
+}
+
+// buildStreamLine is one line of the newline-delimited JSON stream the
+// daemon returns while building — either plain progress ("stream") or a
+// build failure ("error"/"errorDetail"). A failed build still returns a 200
+// with no Go-level error from ImageBuild itself; the failure only shows up
+// inside this stream, which is why BuildImage has to read and parse it
+// rather than just draining it like PullImage does.
+type buildStreamLine struct {
+	Error       string `json:"error"`
+	ErrorDetail struct {
+		Message string `json:"message"`
+	} `json:"errorDetail"`
+}
+
+func checkBuildStream(r io.Reader) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var line buildStreamLine
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			continue // not every line is JSON we care about; ignore rather than fail the build over a parse miss
+		}
+		if line.Error != "" {
+			if line.ErrorDetail.Message != "" {
+				return fmt.Errorf("%s", line.ErrorDetail.Message)
+			}
+			return fmt.Errorf("%s", line.Error)
+		}
+	}
+	return scanner.Err()
+}
+
+// tarDirectory reads dir into an in-memory tar archive, the build-context
+// format ImageBuild expects. Symlinks are skipped rather than followed —
+// build contexts occasionally contain broken/self-referential symlinks
+// (e.g. a stray `node_modules/.bin` entry), and skipping is the same
+// fail-open-on-cosmetic-noise choice engines/codescan's own Applicable walk
+// makes for directories it can't classify.
+func tarDirectory(dir string) (io.Reader, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == dir {
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(relPath)
+		if d.IsDir() {
+			header.Name += "/"
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return &buf, nil
 }
 
 // ListContainerIDsByLabel returns every container (running or not) carrying

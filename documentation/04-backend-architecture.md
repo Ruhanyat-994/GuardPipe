@@ -127,9 +127,9 @@ internal/
 
   engines/
     docreview/
-    codescan/                   rules/ · lang/ (per-language parsers) · taint/
+    codescan/                   findings.go — normalises SonarQube's output only (ADR-0011); rules/lang/taint never built
     depscan/                    parsers/ (per ecosystem) · secrets/
-    containerscan/              dockerfile/ · image/ · pkgdb/
+    containerscan/              findings.go — normalises Trivy's output only (ADR-0012); dockerfile/image/pkgdb never built
     k8sscan/                    rules/ · rbac/ · psa/
     cicdscan/                   rules/ · aireview/
     pentest/                    phases/ · normalise/
@@ -140,6 +140,8 @@ internal/
     github/                     REST client + clone
     dockerx/                    Docker SDK wrapper
     sandbox/                    container lifecycle + limits + artifact extraction
+    sonarqube/                  Web API client + sonar-scanner sibling-container launcher (ADR-0011)
+    trivy/                      report parser + trivy sibling-container launcher (ADR-0012)
     queue/                      Redis queue implementation
 
   scripts/pentest/              the bash suite, embedded via go:embed
@@ -373,7 +375,7 @@ A panic in one engine must never take down the process (NFR-REL-001). This is th
 
 ## 7. Sandbox execution contract
 
-Used by `pentest` (always) and `containerscan` (for image extraction). Owned by Member 6.
+Used by `pentest` (always). No longer used by `containerscan` — Trivy is trusted first-party tooling that needs network access (pulling the target image, updating its vulnerability database), which this contract's no-network-by-default policy exists specifically to deny; `containerscan` launches Trivy via `adapters/dockerx` directly instead, the same pattern `codescan`'s `sonar-scanner` already established (`05-module-specifications.md` §8, [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md)). Owned by Member 6.
 
 ### 7.1 Interface
 
@@ -531,7 +533,7 @@ func (s *ScanService) Get(ctx context.Context, actor domain.Actor, id uuid.UUID)
 | Connection pooling (max 25, idle 5, lifetime 30 min) | pgx pool |
 | `pgx.CopyFrom` for bulk finding inserts | orchestrator persistence |
 | Covering indexes on `(scan_id, severity)`, `(project_id, created_at DESC)`, `(fingerprint)` | see [06 — Database](06-database-design.md) |
-| Advisory cache in Redis, 24 h TTL | `depscan`, `containerscan` |
+| Advisory cache in Redis, 24 h TTL | `depscan` — `containerscan` no longer performs its own OSV lookups; Trivy maintains its own vulnerability-database cache (ADR-0012) |
 | AI response cache keyed by content hash | `ai` |
 | Bounded `errgroup` fan-out over files | `codescan`, `k8sscan` |
 | Streaming file reads with a size cap (skip files > 2 MB) | all file-reading engines |

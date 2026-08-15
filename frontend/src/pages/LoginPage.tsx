@@ -29,7 +29,7 @@ export function LoginPage() {
     try {
       await login(email, password)
       const returnTo = searchParams.get('returnTo')
-      navigate(returnTo ? decodeURIComponent(returnTo) : '/projects', { replace: true })
+      navigate(returnTo ? decodeURIComponent(returnTo) : '/dashboard', { replace: true })
     } catch (err) {
       // Same message whether the email is unknown or the password is wrong
       // — the backend already guarantees no user-enumeration
