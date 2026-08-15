@@ -1,20 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  BookOpen,
-  Boxes,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  Container as ContainerIcon,
-  FileText,
-  Package,
-  ShieldAlert,
-  Workflow,
-} from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronRight } from 'lucide-react'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { useAuthStore } from '../stores/authStore'
 import { ApiError } from '../lib/apiClient'
+import { ENGINE_META } from '../lib/engines'
 import {
   listRules,
   setRuleEnabled,
@@ -35,16 +25,6 @@ import { cn } from '../lib/cn'
  * (codescan/depscan land Phase 6+) — same honest-empty-state posture as
  * ProjectTargetsPage before Phase 3 shipped real targets.
  */
-
-const ENGINE_META: Record<Engine, { label: string; icon: typeof FileText }> = {
-  docreview: { label: 'Docs', icon: FileText },
-  codescan: { label: 'Code', icon: Code2 },
-  depscan: { label: 'Deps', icon: Package },
-  containerscan: { label: 'Containers', icon: ContainerIcon },
-  k8sscan: { label: 'K8s', icon: Boxes },
-  cicdscan: { label: 'CI/CD', icon: Workflow },
-  pentest: { label: 'Pentest', icon: ShieldAlert },
-}
 
 const SEVERITY_LABEL: Record<Severity, string> = {
   critical: 'Critical',
@@ -202,8 +182,7 @@ export function RulesPage() {
           <ul className="mt-4 flex flex-col divide-y divide-border-default">
             {rows.map((rule) => {
               const expanded = expandedId === rule.id
-              const meta = ENGINE_META[rule.engine]
-              const Icon = meta?.icon ?? FileText
+              const Icon = ENGINE_META[rule.engine].icon
               return (
                 <li key={rule.id}>
                   <button

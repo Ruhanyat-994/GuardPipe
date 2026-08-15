@@ -1,0 +1,5 @@
+# Golden fixture catalogue (documentation/15-testing-strategy.md §5): "zero
+# non-informational findings on fixture-clean" is one of the two CI gates
+# named there. Every dependency here is pinned and lockfile-backed, and
+# there are no secrets — depscan should emit nothing.
+rules: []

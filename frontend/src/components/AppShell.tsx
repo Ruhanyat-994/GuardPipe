@@ -5,6 +5,7 @@ import {
   Crosshair,
   FolderKanban,
   HelpCircle,
+  LayoutGrid,
   Menu,
   PanelLeftClose,
   Plus,
@@ -29,6 +30,7 @@ import { Button } from './ui/Button'
  */
 
 const NAV_ITEMS = [
+  { to: '/dashboard', label: 'Overview', icon: LayoutGrid },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
   { to: '/scans', label: 'Scans', icon: ScanSearch },
   { to: '/findings', label: 'Findings', icon: ShieldAlert },
@@ -42,11 +44,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
 
   // Context-dependent primary action (§4.4's TopBar spec): a project-scoped
-  // route gets the not-yet-real "New Scan" (Phase 6), the projects list
-  // gets the real "New Project". Every other route (Findings/Rules/etc.
-  // placeholders) has nothing to create yet, so the slot is simply empty
-  // rather than showing a button that does nothing.
-  const inProject = /^\/projects\/[^/]+/.test(location.pathname)
+  // route gets "New Scan" (routes to that project's Scans tab, Phase 6),
+  // the projects list gets "New Project". Every other route (Findings/
+  // Rules/etc. placeholders) has nothing to create yet, so the slot is
+  // simply empty rather than showing a button that does nothing.
+  const projectMatch = /^\/projects\/([^/]+)/.exec(location.pathname)
+  const inProject = projectMatch !== null
   const onProjectsList = location.pathname === '/projects'
 
   return (
@@ -66,7 +69,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </button>
 
         <Link
-          to="/projects"
+          to="/dashboard"
           className="flex items-center gap-2 text-h3 font-semibold text-chrome-text"
         >
           <Logo className="h-6 w-auto" />
@@ -85,7 +88,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Button>
           )}
           {inProject && (
-            <Button size="sm" disabled title="Lands with the orchestrator, Phase 6">
+            <Button size="sm" onClick={() => navigate(`/projects/${projectMatch[1]}/scans`)}>
               <Plus className="h-4 w-4" aria-hidden="true" />
               New Scan
             </Button>

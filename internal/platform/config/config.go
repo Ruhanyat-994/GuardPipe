@@ -65,17 +65,37 @@ type Security struct {
 	AccessTokenTTL   time.Duration
 	RefreshTokenTTL  time.Duration
 	CORSOrigins      []string
+
+	// AuthRateLimit/AuthRateWindow bound /auth/register and /auth/login,
+	// shared one bucket per client IP (documentation/07-api-specification.md
+	// §1.6 specifies 5/min — that's the default here too, so a default
+	// deployment stays spec-compliant without reading either var). Was
+	// hardcoded in cmd/guardpipe/main.go until a single local dev IP running
+	// both a browser session and API testing/automation against the same
+	// backend kept exhausting the shared 5/min bucket within normal use —
+	// exposing it as env vars lets a local .env raise it for that kind of
+	// testing without touching the documented production default.
+	AuthRateLimit  int
+	AuthRateWindow time.Duration
 }
 
 // Scanning — §5.4.
 type Scanning struct {
-	WorkerCount    int
-	WorkspaceRoot  string
-	MaxRepoMB      int
-	SandboxMax     int
-	SandboxImage   string
-	DockerHost     string
-	EngineTimeouts map[domain.EngineID]time.Duration
+	WorkerCount     int
+	WorkspaceRoot   string
+	MaxRepoMB       int
+	SandboxMax      int
+	SandboxImage    string
+	DockerHost      string
+	DockerNetwork   string // Compose network name a sibling container (e.g. codescan's sonar-scanner) joins to reach other services by name — see docker-compose.yml's networks.default.name
+	WorkspaceVolume string // Named Docker volume backing WorkspaceRoot, as seen by the daemon — see docker-compose.yml's volumes.workspace.name; a sibling container (e.g. codescan's sonar-scanner) must mount it by this name, since WorkspaceRoot is a path inside *this* container's mount namespace, not the daemon host's
+	EngineTimeouts  map[domain.EngineID]time.Duration
+
+	// Trivy — containerscan (Phase 8, ADR-0012). No API URL/token here
+	// unlike SonarQube's External fields — Trivy is a local CLI invocation,
+	// not a service with an endpoint to authenticate against.
+	TrivyImage    string
+	TrivyDBUpdate bool
 }
 
 // Pentest — §5.5.
@@ -90,11 +110,33 @@ type Pentest struct {
 // AI — §5.6.
 type AI struct {
 	Enabled            bool
-	GeminiAPIKey       string
+	GeminiAPIKey       string   // single-key form, kept working as a one-key alias
+	GeminiAPIKeys      []string // GUARDPIPE_GEMINI_API_KEYS — comma-separated rotation pool (BUILD_GUIDE.md Phase 4)
 	ModelFast          string
 	ModelSmart         string
 	TokenBudgetPerScan int
 	CacheTTL           time.Duration
+}
+
+// KeyPool returns the full set of configured Gemini API keys, in rotation
+// order: GUARDPIPE_GEMINI_API_KEYS first (if set), then the singular
+// GUARDPIPE_GEMINI_API_KEY appended if it isn't already in the list — so a
+// developer who sets both doesn't get a key rotated to twice. Empty entries
+// are never present (Load already trims/drops them via getCSV, and the
+// singular form is checked for blank separately).
+func (a AI) KeyPool() []string {
+	pool := make([]string, 0, len(a.GeminiAPIKeys)+1)
+	seen := make(map[string]bool, len(a.GeminiAPIKeys)+1)
+	for _, k := range a.GeminiAPIKeys {
+		if k != "" && !seen[k] {
+			pool = append(pool, k)
+			seen[k] = true
+		}
+	}
+	if a.GeminiAPIKey != "" && !seen[a.GeminiAPIKey] {
+		pool = append(pool, a.GeminiAPIKey)
+	}
+	return pool
 }
 
 // External — §5.7.
@@ -102,6 +144,14 @@ type External struct {
 	OSVAPIURL    string
 	OSVCacheTTL  time.Duration
 	GitHubAPIURL string
+
+	// SonarQube — codescan (Phase 7, ADR-0011): self-hosted CE, not
+	// SonarCloud. SonarQubeToken is a user token generated once in
+	// SonarQube's own UI on first boot (BUILD_GUIDE.md Phase 7) — there is
+	// no default, codescan simply can't run without one.
+	SonarQubeAPIURL          string
+	SonarQubeToken           string
+	SonarQubeAnalysisTimeout time.Duration
 }
 
 // Gate — §5.8.
@@ -160,15 +210,21 @@ func Load() (*Config, error) {
 			AccessTokenTTL:  getDuration("GUARDPIPE_ACCESS_TOKEN_TTL", 15*time.Minute, p),
 			RefreshTokenTTL: getDuration("GUARDPIPE_REFRESH_TOKEN_TTL", 168*time.Hour, p),
 			CORSOrigins:     getCSV("GUARDPIPE_CORS_ORIGINS", []string{"http://localhost:5173"}),
+			AuthRateLimit:   getInt("GUARDPIPE_AUTH_RATE_LIMIT", 5, p),
+			AuthRateWindow:  getDuration("GUARDPIPE_AUTH_RATE_WINDOW", time.Minute, p),
 		},
 		Scanning: Scanning{
-			WorkerCount:    getInt("GUARDPIPE_WORKER_COUNT", 4, p),
-			WorkspaceRoot:  getString("GUARDPIPE_WORKSPACE_ROOT", "/var/lib/guardpipe/workspace"),
-			MaxRepoMB:      getInt("GUARDPIPE_MAX_REPO_MB", 500, p),
-			SandboxMax:     getInt("GUARDPIPE_SANDBOX_MAX", 2, p),
-			SandboxImage:   getString("GUARDPIPE_SANDBOX_IMAGE", ""),
-			DockerHost:     getString("GUARDPIPE_DOCKER_HOST", "unix:///var/run/docker.sock"),
-			EngineTimeouts: loadEngineTimeouts(p),
+			WorkerCount:     getInt("GUARDPIPE_WORKER_COUNT", 4, p),
+			WorkspaceRoot:   getString("GUARDPIPE_WORKSPACE_ROOT", "/var/lib/guardpipe/workspace"),
+			MaxRepoMB:       getInt("GUARDPIPE_MAX_REPO_MB", 500, p),
+			SandboxMax:      getInt("GUARDPIPE_SANDBOX_MAX", 2, p),
+			SandboxImage:    getString("GUARDPIPE_SANDBOX_IMAGE", ""),
+			DockerHost:      getString("GUARDPIPE_DOCKER_HOST", "unix:///var/run/docker.sock"),
+			DockerNetwork:   getString("GUARDPIPE_DOCKER_NETWORK", "guardpipe-net"),
+			WorkspaceVolume: getString("GUARDPIPE_WORKSPACE_VOLUME", "guardpipe-workspace"),
+			EngineTimeouts:  loadEngineTimeouts(p),
+			TrivyImage:      getString("GUARDPIPE_TRIVY_IMAGE", ""),
+			TrivyDBUpdate:   getBool("GUARDPIPE_TRIVY_DB_UPDATE", true, p),
 		},
 		Pentest: Pentest{
 			Enabled:             getBool("GUARDPIPE_PENTEST_ENABLED", true, p),
@@ -180,15 +236,19 @@ func Load() (*Config, error) {
 		AI: AI{
 			Enabled:            getBool("GUARDPIPE_AI_ENABLED", true, p),
 			GeminiAPIKey:       getString("GUARDPIPE_GEMINI_API_KEY", ""),
+			GeminiAPIKeys:      getCSV("GUARDPIPE_GEMINI_API_KEYS", nil),
 			ModelFast:          getString("GUARDPIPE_GEMINI_MODEL_FAST", "gemini-2.5-flash"),
 			ModelSmart:         getString("GUARDPIPE_GEMINI_MODEL_SMART", "gemini-2.5-pro"),
 			TokenBudgetPerScan: getInt("GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN", 100000, p),
 			CacheTTL:           getDuration("GUARDPIPE_AI_CACHE_TTL", 168*time.Hour, p),
 		},
 		External: External{
-			OSVAPIURL:    getString("GUARDPIPE_OSV_API_URL", "https://api.osv.dev"),
-			OSVCacheTTL:  getDuration("GUARDPIPE_OSV_CACHE_TTL", 24*time.Hour, p),
-			GitHubAPIURL: getString("GUARDPIPE_GITHUB_API_URL", "https://api.github.com"),
+			OSVAPIURL:                getString("GUARDPIPE_OSV_API_URL", "https://api.osv.dev"),
+			OSVCacheTTL:              getDuration("GUARDPIPE_OSV_CACHE_TTL", 24*time.Hour, p),
+			GitHubAPIURL:             getString("GUARDPIPE_GITHUB_API_URL", "https://api.github.com"),
+			SonarQubeAPIURL:          getString("GUARDPIPE_SONARQUBE_API_URL", "http://sonarqube:9000"),
+			SonarQubeToken:           getString("GUARDPIPE_SONARQUBE_TOKEN", ""),
+			SonarQubeAnalysisTimeout: getDuration("GUARDPIPE_SONARQUBE_ANALYSIS_TIMEOUT", 5*time.Minute, p),
 		},
 		Gate: Gate{
 			Warn:  getInt("GUARDPIPE_GATE_WARN", 30, p),
@@ -197,8 +257,8 @@ func Load() (*Config, error) {
 	}
 
 	validateSecurity(cfg, p)
-	if cfg.AI.Enabled && strings.TrimSpace(cfg.AI.GeminiAPIKey) == "" {
-		p.add("GUARDPIPE_GEMINI_API_KEY is required when GUARDPIPE_AI_ENABLED is true")
+	if cfg.AI.Enabled && len(cfg.AI.KeyPool()) == 0 {
+		p.add("GUARDPIPE_GEMINI_API_KEY or GUARDPIPE_GEMINI_API_KEYS is required when GUARDPIPE_AI_ENABLED is true")
 	}
 	if cfg.Core.Role != RoleAll && cfg.Core.Role != RoleAPI && cfg.Core.Role != RoleWorker {
 		p.add("GUARDPIPE_ROLE must be one of \"all\", \"api\", \"worker\", got %q", string(cfg.Core.Role))

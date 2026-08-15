@@ -19,11 +19,19 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver, used only to run goose migrations
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/dockerx"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/sonarqube"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/trivy"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/codescan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/containerscan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/depscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/config"
@@ -49,6 +57,11 @@ func main() {
 	// the binary itself instead: "guardpipe healthcheck".
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(runHealthcheck())
+	}
+	// aiprobe is a throwaway manual-verification command for Phase 4, not a
+	// product feature — see cmd/guardpipe/aiprobe.go.
+	if len(os.Args) > 1 && os.Args[1] == "aiprobe" {
+		os.Exit(runAIProbe(os.Args[2:]))
 	}
 
 	if err := run(); err != nil {
@@ -83,11 +96,14 @@ func run() error {
 	}
 	defer db.Close()
 
+	auditSvc := audit.NewService(repo.NewAuditRepo(db.Pool), log)
+
 	identitySvc := identity.NewService(
 		repo.NewUserRepo(db.Pool),
 		repo.NewOrganizationRepo(db.Pool),
 		repo.NewRefreshTokenRepo(db.Pool),
 		identity.NewTokenIssuer([]byte(cfg.Security.JWTSecret), cfg.Security.AccessTokenTTL),
+		auditSvc,
 		cfg.Security.AccessTokenTTL,
 		cfg.Security.RefreshTokenTTL,
 	)
@@ -103,6 +119,7 @@ func run() error {
 		repo.NewUserRepo(db.Pool),
 		vcsSvc,
 		net.DefaultResolver,
+		auditSvc,
 		cfg.Security.EncryptionKeyRaw,
 		cfg.Pentest.AllowPrivateTargets,
 		cfg.Pentest.Allowlist,
@@ -114,26 +131,101 @@ func run() error {
 	}
 	defer func() { _ = redisClient.Close() }()
 
+	// Every engine's rule catalogue registers here before SyncRules runs —
+	// findings.rule_id is a foreign key into `rules`, so a rule missing from
+	// this registry means every finding it would produce fails to persist.
+	ruleRegistry := advisory.NewRuleRegistry()
+	ruleRegistry.Register(depscan.Rules...)
+
 	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
 	advisorySvc := advisory.NewService(
 		osvClient,
 		advisory.NewRedisCache(redisClient),
 		cfg.External.OSVCacheTTL,
 		repo.NewRuleRepo(db.Pool),
-		advisory.NewRuleRegistry(), // empty until Phase 6+ engines register rules — see RuleRegistry's doc comment
+		ruleRegistry,
 		log,
 	)
 	if err := advisorySvc.SyncRules(ctx); err != nil {
 		return fmt.Errorf("sync rules catalogue: %w", err)
 	}
 
+	// codescan (Phase 7, ADR-0011) wraps a self-hosted SonarQube instance
+	// instead of running its own SAST — the sonar-scanner-cli invocation
+	// needs Docker directly (dockerx), not adapters/sandbox: sandbox enforces
+	// a no-network-by-default policy for *untrusted* execution, and
+	// sonar-scanner is trusted first-party tooling that must reach the
+	// sonarqube service over GUARDPIPE_DOCKER_NETWORK to do its job at all.
+	dockerClient, err := dockerx.New(cfg.Scanning.DockerHost)
+	if err != nil {
+		return fmt.Errorf("create docker client: %w", err)
+	}
+	defer func() { _ = dockerClient.Close() }()
+
+	sonarqubeClient := sonarqube.NewClient(cfg.External.SonarQubeAPIURL, cfg.External.SonarQubeToken, nil)
+	sonarqubeScanner := sonarqube.NewScanner(dockerClient, sonarqube.ScannerConfig{
+		Network:       cfg.Scanning.DockerNetwork,
+		HostURL:       cfg.External.SonarQubeAPIURL,
+		Token:         cfg.External.SonarQubeToken,
+		Volume:        cfg.Scanning.WorkspaceVolume,
+		WorkspaceRoot: cfg.Scanning.WorkspaceRoot,
+	})
+
+	trivyScanner := trivy.NewScanner(dockerClient, trivy.ScannerConfig{
+		Image:         cfg.Scanning.TrivyImage,
+		DBUpdate:      cfg.Scanning.TrivyDBUpdate,
+		Volume:        cfg.Scanning.WorkspaceVolume,
+		WorkspaceRoot: cfg.Scanning.WorkspaceRoot,
+	})
+
+	jobQueue := queue.NewJobQueue(redisClient)
+	registry := orchestrator.NewRegistry()
+	registry.Register(depscan.New(advisorySvc))
+	// advisorySvc also satisfies codescan.RuleRegistrar/containerscan.RuleRegistrar
+	// (just UpsertRule) — neither SonarQube's nor Trivy's own catalogue is
+	// enumerable at compile time the way depscan.Rules is, so neither engine
+	// has a static ruleRegistry.Register(...) call above; both register each
+	// rule at runtime instead (their own engine.go).
+	registry.Register(codescan.New(sonarqubeClient, sonarqubeScanner, advisorySvc, cfg.External.SonarQubeAnalysisTimeout))
+	registry.Register(containerscan.New(trivyScanner, dockerClient, advisorySvc))
+
+	orchestratorSvc := orchestrator.NewService(
+		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),
+		projectSvc, jobQueue, registry,
+	)
+
+	pool := &orchestrator.Pool{
+		Size:           cfg.Scanning.WorkerCount,
+		Queue:          orchestrator.NewJobQueueClaimer(jobQueue.Claim, jobQueue.Ack),
+		Registry:       registry,
+		Scans:          repo.NewScanRepo(db.Pool),
+		Jobs:           repo.NewScanJobRepo(db.Pool),
+		JobResults:     repo.NewJobResultRepo(db.Pool),
+		Projects:       projectSvc,
+		Cloner:         vcsSvc,
+		WorkspaceRoot:  cfg.Scanning.WorkspaceRoot,
+		EngineTimeouts: cfg.Scanning.EngineTimeouts,
+		DefaultTimeout: 5 * time.Minute,
+		Log:            log,
+	}
+
+	// GUARDPIPE_ROLE=api never runs the worker pool; GUARDPIPE_ROLE=all
+	// (the default) and GUARDPIPE_ROLE=worker both do — the same binary,
+	// an intentional near-zero-cost split into separate replicas later.
+	var workerCtx context.Context
+	var stopWorkers context.CancelFunc
+	if cfg.Core.Role != config.RoleAPI {
+		workerCtx, stopWorkers = context.WithCancel(context.Background())
+		go pool.Start(workerCtx)
+		defer stopWorkers()
+		log.Info("worker pool started", "size", cfg.Scanning.WorkerCount, "engines", registry.IDs())
+	}
+
 	if cfg.Core.Role == config.RoleWorker {
-		// The worker pool doesn't exist yet — it lands in Phase 6 with the
-		// first engine. A worker-role process today has nothing to claim,
-		// so it just idles until told to stop, rather than pretending to
-		// do work it can't yet do.
-		log.Warn("GUARDPIPE_ROLE=worker has no worker pool to run yet (lands in Phase 6) — idling")
-		return waitForShutdown(log, nil)
+		return waitForShutdown(log, func(context.Context) error {
+			stopWorkers()
+			return nil
+		})
 	}
 
 	router := transporthttp.NewRouter(transporthttp.RouterConfig{
@@ -142,14 +234,15 @@ func run() error {
 		IdentitySvc:     identitySvc,
 		ProjectSvc:      projectSvc,
 		AdvisorySvc:     advisorySvc,
+		OrchestratorSvc: orchestratorSvc,
 		HealthDB:        db,
 		Version:         version,
 		CommitSHA:       commitSHA,
 		BuildTime:       buildTime,
 		SecureCookies:   cfg.Core.Env == "production",
 		RefreshTokenTTL: cfg.Security.RefreshTokenTTL,
-		AuthRateLimit:   5,
-		AuthRateWindow:  time.Minute,
+		AuthRateLimit:   cfg.Security.AuthRateLimit,
+		AuthRateWindow:  cfg.Security.AuthRateWindow,
 	})
 
 	srv := &http.Server{
@@ -166,6 +259,9 @@ func run() error {
 	}()
 
 	return waitForShutdown(log, func(ctx context.Context) error {
+		if stopWorkers != nil {
+			stopWorkers()
+		}
 		return srv.Shutdown(ctx)
 	}, serverErr)
 }

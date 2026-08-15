@@ -1,0 +1,28 @@
+# Golden fixture catalogue (documentation/15-testing-strategy.md §5).
+# Counts cover depscan's deterministic, file-content-only rules —
+# depscan.vuln.known-cve/no-fix-available depend on modules/advisory (OSV
+# lookups), which tests never call live; those two are covered separately
+# in engine_test.go against a fake advisory.Service, not against this
+# fixture's real dependency versions.
+rules:
+  - id: depscan.hygiene.no-lockfile
+    count: 1
+    reason: "package.json has no package-lock.json"
+  - id: depscan.hygiene.wildcard-version
+    count: 1
+    reason: "package.json pins left-pad to \"*\""
+  - id: depscan.secrets.committed-credential
+    count: 1
+    reason: "config.py has a hardcoded AWS access key"
+  - id: depscan.secrets.env-file-committed
+    count: 1
+    reason: ".env is tracked (not .env.example, which must not fire)"
+  - id: depscan.secrets.key-file-committed
+    count: 1
+    reason: "id_rsa is tracked by filename convention"
+
+# Deliberately absent from this repo, to prove the near-misses stay quiet:
+# - config.py's DEFAULT_PASSWORD="changeme" and DB_PASSWORD=os.environ[...]
+# - .env.example (the safe template convention)
+# - requirements.txt is pinned (==), so it counts as its own lockfile —
+#   no depscan.hygiene.no-lockfile for the pypi ecosystem

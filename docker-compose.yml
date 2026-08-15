@@ -43,6 +43,18 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - workspace:/var/lib/guardpipe/workspace
+    # The runtime image runs as USER nonroot:nonroot (uid/gid 65532,
+    # Dockerfile) — no shell, so no usermod/chgrp is possible to fix this any
+    # other way. The bind-mounted docker.sock is root:root, mode 0660 on
+    # Docker Desktop (and on a native Linux host with the daemon's default
+    # config), so nonroot has neither owner nor group access to it without
+    # this: group_add supplies gid 0 as a supplementary group at container
+    # start, purely via the container runtime, satisfying the socket's group
+    # permission bit without running the process itself as root. If a given
+    # host's docker.sock is owned by a dedicated "docker" group instead of
+    # root (some native Linux distros), swap 0 for that group's numeric GID.
+    group_add:
+      - "0"
     healthcheck:
       test: ["CMD", "/app/guardpipe", "healthcheck"]
       interval: 5s
@@ -65,6 +77,84 @@ services:
       timeout: 5s
       retries: 10
 
+  # Phase 7 (codescan, ADR-0011): self-hosted SonarQube Community Edition,
+  # not SonarCloud — keeps the zero-budget/local-only constraint intact and
+  # supports private repos. Dedicated Postgres DB, not shared with `postgres`
+  # above, matching the module-boundary shape every other adapter-backed
+  # engine uses (depscan<->OSV, containerscan<->adapters/dockerx).
+  sonarqube-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${SONARQUBE_DB_USER:-sonarqube}
+      POSTGRES_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local-dev-only-changeme}
+      POSTGRES_DB: ${SONARQUBE_DB_NAME:-sonarqube}
+    volumes:
+      - sonarqube_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SONARQUBE_DB_USER:-sonarqube}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sonarqube:
+    image: sonarqube:community
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/${SONARQUBE_DB_NAME:-sonarqube}
+      SONAR_JDBC_USERNAME: ${SONARQUBE_DB_USER:-sonarqube}
+      SONAR_JDBC_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local-dev-only-changeme}
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    healthcheck:
+      # sonarqube:community's own image has curl but no wget (Ubuntu 24.04
+      # base) — unlike this project's own distroless images, which have
+      # neither and need the "guardpipe healthcheck" subcommand instead.
+      # Confirmed by exec'ing into a running container; don't switch back to
+      # wget without re-checking.
+      test: ["CMD-SHELL", "curl -f -s http://127.0.0.1:9000/api/system/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    # Needs real memory (Elasticsearch under the hood) — a few GB, not the
+    # ~25MB distroless footprint the rest of this stack has. If it fails to
+    # boot with an Elasticsearch bootstrap-check error on Docker Desktop
+    # (WSL2 backend), that's a vm.max_map_count issue, not a config bug here.
+
 volumes:
   pgdata:
+  # Named explicitly (see the networks.default note below for why) —
+  # codescan's sonar-scanner container (internal/adapters/sonarqube/scanner.go)
+  # mounts this volume *by name* (GUARDPIPE_WORKSPACE_VOLUME) to read the
+  # checkout guardpipe cloned, rather than bind-mounting WorkspaceRoot's path:
+  # that path (/var/lib/guardpipe/workspace/scan-*) only means something
+  # inside the guardpipe container's own mount namespace — the sibling
+  # container is created by the Docker daemon via the shared socket, so a
+  # bind-mount source is resolved against the daemon host's filesystem, not
+  # guardpipe's, and silently mounts an empty directory instead (codescan
+  # fails fast with no source files found). Mounting the named volume, with
+  # VolumeOptions.Subpath for the specific scan-* subdirectory, is what
+  # actually works for this Docker-outside-of-Docker sibling-container shape.
   workspace:
+    name: guardpipe-workspace
+  sonarqube_db_data:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+
+# Named explicitly (rather than relying on the "<project>_default" naming
+# Compose derives automatically from the top-level `name:`) so
+# GUARDPIPE_DOCKER_NETWORK has a stable, predictable value to default to.
+# codescan's sonar-scanner container (internal/adapters/sonarqube/scanner.go)
+# is launched as a sibling via the Docker socket, not declared as a Compose
+# service here, so it has to be told which network to join to reach
+# `sonarqube` by hostname — this is that network.
+networks:
+  default:
+    name: guardpipe-net

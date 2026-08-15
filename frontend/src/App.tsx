@@ -3,11 +3,17 @@ import { Outlet, Route, Routes } from 'react-router-dom'
 import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { RegisterPage } from './pages/RegisterPage'
+import { GlobalDashboardPage } from './pages/GlobalDashboardPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { ProjectsListPage } from './pages/ProjectsListPage'
 import { ProjectCreatePage } from './pages/ProjectCreatePage'
 import { ProjectLayout } from './pages/ProjectLayout'
 import { ProjectTargetsPage } from './pages/ProjectTargetsPage'
+import { ProjectScansPage } from './pages/ProjectScansPage'
+import { ProjectFindingsPage } from './pages/ProjectFindingsPage'
+import { GlobalScansPage } from './pages/GlobalScansPage'
+import { GlobalFindingsPage } from './pages/GlobalFindingsPage'
+import { ScanDetailPage } from './pages/ScanDetailPage'
 import { ProjectSettingsPage } from './pages/ProjectSettingsPage'
 import { GuidesIndexPage } from './pages/GuidesIndexPage'
 import { GuideDetailPage } from './pages/GuideDetailPage'
@@ -62,28 +68,40 @@ function App() {
       <Route path="/register" element={<RegisterPage />} />
 
       <Route element={<ProtectedShell />}>
+        {/* The org-wide landing page after login (Phase 13, partial —
+            documentation/09-ui-ux-design-system.md's dashboard redesign
+            note) — real data across every project's latest scan, not the
+            old hardcoded per-project preview. */}
+        <Route path="/dashboard" element={<GlobalDashboardPage />} />
         <Route path="/projects" element={<ProjectsListPage />} />
         <Route path="/projects/new" element={<ProjectCreatePage />} />
 
         {/* Per-project tab bar (documentation/09-ui-ux-design-system.md
-            §4.4's ProjectTabBar) — Overview is the existing Phase 2/3
-            dashboard preview; Scans/Findings have no real data source
-            until Phase 6/8 so they stay PlaceholderPage; Targets/Settings
-            are real, backed by the Phase 3 project API. */}
+            §4.4's ProjectTabBar) — Overview is this project's own real
+            dashboard (Phase 13, partial); Scans is real (Phase 6-8);
+            Findings shows the most recent scan's findings inline (the full
+            cross-scan explorer with filtering/triage is still later work);
+            Targets/Settings are real, backed by the Phase 3 project API. */}
         <Route path="/projects/:id" element={<ProjectLayout />}>
           <Route index element={<DashboardPage />} />
-          <Route path="scans" element={<PlaceholderPage title="Scans" phase="Phase 6" />} />
-          <Route path="findings" element={<PlaceholderPage title="Findings" phase="Phase 8" />} />
+          <Route path="scans" element={<ProjectScansPage />} />
+          <Route path="findings" element={<ProjectFindingsPage />} />
           <Route path="targets" element={<ProjectTargetsPage />} />
           <Route path="settings" element={<ProjectSettingsPage />} />
         </Route>
 
-        {/* Sidebar destinations with no project scope and no real screen
-            yet — wired so the authenticated app is fully click-through-able
-            for a demo (BUILD_GUIDE.md Phase 3). Each is replaced by its own
-            phase. */}
-        <Route path="/scans" element={<PlaceholderPage title="Scans" phase="Phase 6" />} />
-        <Route path="/findings" element={<PlaceholderPage title="Findings" phase="Phase 8" />} />
+        {/* Scan detail — not project-scoped in the URL since a scan ID
+            alone is enough to look it up (documentation/07-api-specification.md
+            §5); reached from ProjectScansPage's "Run Scan" trigger. */}
+        <Route path="/scans/:id" element={<ScanDetailPage />} />
+
+        {/* The global sidebar destinations — Scans lets you pick any
+            existing project and run it directly, plus the scan history
+            across every project; Findings is the same "project -> engine ->
+            findings" browser as the per-project tab, one accordion row per
+            project. Targets/Settings still have no dedicated screen. */}
+        <Route path="/scans" element={<GlobalScansPage />} />
+        <Route path="/findings" element={<GlobalFindingsPage />} />
         <Route
           path="/targets"
           element={<PlaceholderPage title="Pentest Targets" phase="Phase 7" />}
