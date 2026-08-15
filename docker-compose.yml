@@ -86,7 +86,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${SONARQUBE_DB_USER:-sonarqube}
-      POSTGRES_PASSWORD: ${SONARQUBE_DB_PASSWORD:-sonarqube}
+      POSTGRES_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local-dev-only-changeme}
       POSTGRES_DB: ${SONARQUBE_DB_NAME:-sonarqube}
     volumes:
       - sonarqube_db_data:/var/lib/postgresql/data
@@ -104,7 +104,7 @@ services:
     environment:
       SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/${SONARQUBE_DB_NAME:-sonarqube}
       SONAR_JDBC_USERNAME: ${SONARQUBE_DB_USER:-sonarqube}
-      SONAR_JDBC_PASSWORD: ${SONARQUBE_DB_PASSWORD:-sonarqube}
+      SONAR_JDBC_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local-dev-only-changeme}
     ports:
       - "9000:9000"
     volumes:
