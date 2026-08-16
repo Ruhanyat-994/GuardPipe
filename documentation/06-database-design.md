@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Database Design |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Status** | Draft |
 | **Engine** | PostgreSQL 16 · Redis 7 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-01 |
+| **Last updated** | 2026-08-16 |
 
 ### Revision history
 
@@ -16,6 +16,7 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial schema design |
 | 1.1 | 2026-08-01 | Team | §4.1/§13 corrected — description text only, no schema/DDL change — after fixing a real cross-account data leak caused by the previously-described single-shared-organisation model. **Needs its second reviewer per this doc's own change-control rule (§ above)**, since this file requires two approvals and only one person made this edit |
+| 1.2 | 2026-08-16 | Team | §4.3 gains `created_at`/`family_issued_at` on `refresh_tokens` (migration `00011`, BUILD_GUIDE.md Phase 14's session-timeout hardening); §11's planned sequence renumbered accordingly (indexes/triggers pushed to `00012`/`00013`). **Also needs its second reviewer** — same single-author caveat as 1.1, migration was built and merged same-session on explicit user request rather than waiting on the normal two-approval schema-PR flow |
 
 > **Change control:** this is a shared contract across all six developers. Any schema change requires **two approvals** and follows the protocol in §12.
 
@@ -220,7 +221,9 @@ Each registration creates its own row here — GuardPipe is multi-tenant at the 
 | `user_id` | `UUID` | FK → `users(id)` ON DELETE CASCADE | |
 | `token_hash` | `TEXT` | UNIQUE, NOT NULL | SHA-256 of the token; the token itself is never stored |
 | `family_id` | `UUID` | NOT NULL | rotation lineage — reuse detection invalidates the whole family |
-| `expires_at` | `TIMESTAMPTZ` | NOT NULL | |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` | added migration `00011` (BUILD_GUIDE.md Phase 14) |
+| `family_issued_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` | added migration `00011` — the family's *original* login time, copied unchanged onto every rotated row; lets `Refresh` enforce the absolute session-timeout cap (§7.1 of `documentation/12-security-and-threat-model.md`) against a single row, no second query |
+| `expires_at` | `TIMESTAMPTZ` | NOT NULL | the session's idle-timeout boundary — reset forward on every rotation |
 | `consumed_at` | `TIMESTAMPTZ` | NULL | non-null = already used; presenting it again is theft evidence |
 | `revoked_at` | `TIMESTAMPTZ` | NULL | |
 | `user_agent` / `ip` | `TEXT` / `INET` | NULL | forensics |
@@ -667,8 +670,9 @@ Tool: **goose** ([ADR-0009](17-adr/0009-goose-migrations.md)). Files: `internal/
 | 00008 | `ai_suggestions` |
 | 00009 | `dependencies`, `risk_assessments`, `scan_evidence` |
 | 00010 | `audit_log` |
-| 00011 | indexes |
-| 00012 | `updated_at` trigger function + triggers |
+| 00011 | `refresh_tokens` session-timeout hardening (`created_at`, `family_issued_at`) — claimed this slot ahead of the originally-planned "indexes" migration below, per BUILD_GUIDE.md Phase 14's session hardening item (2026-08-16); every other table's indexes were already created inline in their own migration as they were built, so this slot was still unclaimed |
+| 00012 | indexes (renumbered from 00011) |
+| 00013 | `updated_at` trigger function + triggers (renumbered from 00012) |
 
 ---
 

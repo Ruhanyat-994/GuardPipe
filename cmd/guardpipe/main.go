@@ -106,6 +106,7 @@ func run() error {
 		auditSvc,
 		cfg.Security.AccessTokenTTL,
 		cfg.Security.RefreshTokenTTL,
+		cfg.Security.SessionAbsoluteTTL,
 	)
 
 	githubClient := github.NewClient(cfg.External.GitHubAPIURL, nil)

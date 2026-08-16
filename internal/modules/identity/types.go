@@ -58,15 +58,21 @@ type Claims struct {
 }
 
 // RefreshToken mirrors the `refresh_tokens` table (documentation/06-database-design.md
-// §4.3).
+// §4.3). FamilyIssuedAt is copied unchanged onto every rotated token within
+// a family — it's the original login time the whole chain traces back to,
+// which is what lets Service.Refresh enforce an absolute session-lifetime
+// cap (BUILD_GUIDE.md Phase 14) independent of how recently the session was
+// used, without a second query per refresh.
 type RefreshToken struct {
-	ID         uuid.UUID
-	UserID     uuid.UUID
-	TokenHash  string
-	FamilyID   uuid.UUID
-	ExpiresAt  time.Time
-	ConsumedAt *time.Time
-	RevokedAt  *time.Time
-	UserAgent  *string
-	IP         *string
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	TokenHash      string
+	FamilyID       uuid.UUID
+	CreatedAt      time.Time
+	FamilyIssuedAt time.Time
+	ExpiresAt      time.Time
+	ConsumedAt     *time.Time
+	RevokedAt      *time.Time
+	UserAgent      *string
+	IP             *string
 }

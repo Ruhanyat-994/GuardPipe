@@ -73,18 +73,26 @@ type RefreshTokenRepository interface {
 }
 
 type service struct {
-	users           UserRepository
-	orgs            OrganizationRepository
-	tokens          RefreshTokenRepository
-	issuer          *TokenIssuer
-	audit           audit.Service
-	accessTokenTTL  time.Duration
-	refreshTokenTTL time.Duration
+	users              UserRepository
+	orgs               OrganizationRepository
+	tokens             RefreshTokenRepository
+	issuer             *TokenIssuer
+	audit              audit.Service
+	accessTokenTTL     time.Duration
+	refreshTokenTTL    time.Duration
+	sessionAbsoluteTTL time.Duration
 }
 
-// NewService wires the identity module. accessTokenTTL/refreshTokenTTL come
-// from platform/config (GUARDPIPE_ACCESS_TOKEN_TTL/GUARDPIPE_REFRESH_TOKEN_TTL).
-// auditSvc is BUILD_GUIDE.md Phase 6's retroactive instrumentation —
+// NewService wires the identity module. accessTokenTTL/refreshTokenTTL/
+// sessionAbsoluteTTL come from platform/config
+// (GUARDPIPE_ACCESS_TOKEN_TTL/GUARDPIPE_REFRESH_TOKEN_TTL/GUARDPIPE_SESSION_ABSOLUTE_TTL).
+// refreshTokenTTL is the *idle* timeout — Refresh resets it forward on every
+// rotation, so a session that keeps getting used never hits it.
+// sessionAbsoluteTTL (BUILD_GUIDE.md Phase 14) is the ceiling on top of
+// that: Refresh also rejects once the token's whole family — traced back to
+// the original login via RefreshToken.FamilyIssuedAt, unchanged across every
+// rotation — is older than this, regardless of activity. auditSvc is
+// BUILD_GUIDE.md Phase 6's retroactive instrumentation —
 // login/logout/refresh-reuse-detected are the three events named there.
 func NewService(
 	users UserRepository,
@@ -92,16 +100,17 @@ func NewService(
 	tokens RefreshTokenRepository,
 	issuer *TokenIssuer,
 	auditSvc audit.Service,
-	accessTokenTTL, refreshTokenTTL time.Duration,
+	accessTokenTTL, refreshTokenTTL, sessionAbsoluteTTL time.Duration,
 ) Service {
 	return &service{
-		users:           users,
-		orgs:            orgs,
-		tokens:          tokens,
-		issuer:          issuer,
-		audit:           auditSvc,
-		accessTokenTTL:  accessTokenTTL,
-		refreshTokenTTL: refreshTokenTTL,
+		users:              users,
+		orgs:               orgs,
+		tokens:             tokens,
+		issuer:             issuer,
+		audit:              auditSvc,
+		accessTokenTTL:     accessTokenTTL,
+		refreshTokenTTL:    refreshTokenTTL,
+		sessionAbsoluteTTL: sessionAbsoluteTTL,
 	}
 }
 
@@ -227,6 +236,22 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	if rt.ExpiresAt.Before(now) {
 		return nil, apperrors.Unauthorized("auth.token_expired", "refresh token has expired")
 	}
+	// Absolute session cap (BUILD_GUIDE.md Phase 14): independent of the
+	// idle-timeout check above, a session traces back to FamilyIssuedAt —
+	// the original login — and dies at sessionAbsoluteTTL regardless of how
+	// recently it was refreshed. Revoking the family here (not just
+	// rejecting this one call) means the very next presented token in the
+	// chain fails the same way, rather than leaving a technically-still-live
+	// row a caller could otherwise keep probing.
+	if now.Sub(rt.FamilyIssuedAt) > s.sessionAbsoluteTTL {
+		_ = s.tokens.RevokeFamily(ctx, rt.FamilyID, now)
+		userID := rt.UserID
+		s.audit.Log(ctx, audit.Entry{
+			ActorID: &userID, Action: "auth.session_expired",
+			Detail: map[string]any{"family_id": rt.FamilyID.String()},
+		})
+		return nil, apperrors.Unauthorized("auth.session_expired", "session has exceeded its maximum lifetime; please log in again")
+	}
 
 	if err := s.tokens.MarkConsumed(ctx, rt.ID, now); err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("consume refresh token: %w", err))
@@ -237,7 +262,7 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		return nil, apperrors.Internal(fmt.Errorf("get user for refresh: %w", err))
 	}
 
-	pair, err := s.issueTokenPairInFamily(ctx, user, rt.FamilyID)
+	pair, err := s.issueTokenPairInFamily(ctx, user, rt.FamilyID, rt.FamilyIssuedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -284,10 +309,15 @@ func (s *service) Me(ctx context.Context, actor domain.Actor) (*User, error) {
 }
 
 func (s *service) issueTokenPair(ctx context.Context, user *User) (*TokenPair, error) {
-	return s.issueTokenPairInFamily(ctx, user, id.New())
+	now := time.Now().UTC()
+	return s.issueTokenPairInFamily(ctx, user, id.New(), now)
 }
 
-func (s *service) issueTokenPairInFamily(ctx context.Context, user *User, familyID uuid.UUID) (*TokenPair, error) {
+// issueTokenPairInFamily issues a token pair within an existing rotation
+// family. familyIssuedAt is the family's original login time — unchanged
+// across every rotation — carried forward so the absolute session cap in
+// Refresh has something to measure against without a second query.
+func (s *service) issueTokenPairInFamily(ctx context.Context, user *User, familyID uuid.UUID, familyIssuedAt time.Time) (*TokenPair, error) {
 	accessToken, err := s.issuer.Issue(user.ID, user.OrgID, user.Role)
 	if err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("issue access token: %w", err))
@@ -299,11 +329,12 @@ func (s *service) issueTokenPairInFamily(ctx context.Context, user *User, family
 	}
 
 	rt := &RefreshToken{
-		ID:        id.New(),
-		UserID:    user.ID,
-		TokenHash: tokenHash,
-		FamilyID:  familyID,
-		ExpiresAt: time.Now().UTC().Add(s.refreshTokenTTL),
+		ID:             id.New(),
+		UserID:         user.ID,
+		TokenHash:      tokenHash,
+		FamilyID:       familyID,
+		FamilyIssuedAt: familyIssuedAt,
+		ExpiresAt:      time.Now().UTC().Add(s.refreshTokenTTL),
 	}
 	if err := s.tokens.Create(ctx, rt); err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("store refresh token: %w", err))

@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-08-14 |
+| **Last updated** | 2026-08-16 |
 
 ### Revision history
 
@@ -17,6 +17,7 @@
 | 1.1 | 2026-08-01 | Team | §5.6 adds `GUARDPIPE_GEMINI_API_KEYS` (comma-separated key pool with automatic rotation on quota errors), kept alongside the existing singular `GUARDPIPE_GEMINI_API_KEY` as a one-key alias — added to solve real quota-exhaustion friction during the team's own free-tier testing, planned for `BUILD_GUIDE.md` Phase 4, not yet built |
 | 1.2 | 2026-08-12 | Team | §5.6's `GUARDPIPE_GEMINI_API_KEYS` pool is now built (`BUILD_GUIDE.md` Phase 4, `internal/platform/config.AI.KeyPool()` + `internal/adapters/gemini`'s rotate-on-429 retry) — status note updated from "planned" to reflect reality |
 | 1.3 | 2026-08-14 | Team | §5.7 adds `GUARDPIPE_SONARQUBE_*` vars for the new self-hosted SonarQube CE dependency (`codescan`, Phase 7, ADR-0011) — planned, not yet built |
+| 1.4 | 2026-08-16 | Team | §5.3's `GUARDPIPE_REFRESH_TOKEN_TTL` default dropped from `168h` to `30m` (it's the session idle timeout, not a "remember me" duration) and a new `GUARDPIPE_SESSION_ABSOLUTE_TTL` (`12h`) added — both built, `BUILD_GUIDE.md` Phase 14 |
 
 ---
 
@@ -138,7 +139,8 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_JWT_SECRET` | — | **yes** | ≥ 32 bytes. Startup **fails** if shorter |
 | `GUARDPIPE_ENCRYPTION_KEY` | — | **yes** | base64 of exactly 32 bytes (AES-256) |
 | `GUARDPIPE_ACCESS_TOKEN_TTL` | `15m` | no | |
-| `GUARDPIPE_REFRESH_TOKEN_TTL` | `168h` | no | |
+| `GUARDPIPE_REFRESH_TOKEN_TTL` | `30m` | no | Session **idle** timeout — reset forward on every refresh, so only an abandoned session ever hits it (BUILD_GUIDE.md Phase 14) |
+| `GUARDPIPE_SESSION_ABSOLUTE_TTL` | `12h` | no | Session **absolute** timeout — measured from the original login, independent of activity (BUILD_GUIDE.md Phase 14) |
 | `GUARDPIPE_CORS_ORIGINS` | `http://localhost:5173` | no | Comma-separated allowlist |
 
 ### 5.4 Scanning

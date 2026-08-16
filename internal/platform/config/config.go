@@ -63,8 +63,19 @@ type Security struct {
 	JWTSecret        string
 	EncryptionKeyRaw []byte
 	AccessTokenTTL   time.Duration
-	RefreshTokenTTL  time.Duration
-	CORSOrigins      []string
+	// RefreshTokenTTL doubles as the session idle timeout: Refresh resets a
+	// token's ExpiresAt another RefreshTokenTTL forward on every rotation
+	// (identity.service's issueTokenPairInFamily), so an actively-used
+	// session never hits it and an abandoned one dies exactly this long
+	// after the last request (BUILD_GUIDE.md Phase 14).
+	RefreshTokenTTL time.Duration
+	// SessionAbsoluteTTL (BUILD_GUIDE.md Phase 14) is the ceiling on top of
+	// RefreshTokenTTL's sliding idle timeout — a session dies this long
+	// after its original login regardless of activity, closing the gap
+	// where a continuously-refreshed session (legitimate or a stolen-cookie
+	// replay) never expired at all.
+	SessionAbsoluteTTL time.Duration
+	CORSOrigins        []string
 
 	// AuthRateLimit/AuthRateWindow bound /auth/register and /auth/login,
 	// shared one bucket per client IP (documentation/07-api-specification.md
@@ -206,12 +217,13 @@ func Load() (*Config, error) {
 			MigrateOnStart: getBool("GUARDPIPE_MIGRATE_ON_START", true, p),
 		},
 		Security: Security{
-			JWTSecret:       requireString("GUARDPIPE_JWT_SECRET", p),
-			AccessTokenTTL:  getDuration("GUARDPIPE_ACCESS_TOKEN_TTL", 15*time.Minute, p),
-			RefreshTokenTTL: getDuration("GUARDPIPE_REFRESH_TOKEN_TTL", 168*time.Hour, p),
-			CORSOrigins:     getCSV("GUARDPIPE_CORS_ORIGINS", []string{"http://localhost:5173"}),
-			AuthRateLimit:   getInt("GUARDPIPE_AUTH_RATE_LIMIT", 5, p),
-			AuthRateWindow:  getDuration("GUARDPIPE_AUTH_RATE_WINDOW", time.Minute, p),
+			JWTSecret:          requireString("GUARDPIPE_JWT_SECRET", p),
+			AccessTokenTTL:     getDuration("GUARDPIPE_ACCESS_TOKEN_TTL", 15*time.Minute, p),
+			RefreshTokenTTL:    getDuration("GUARDPIPE_REFRESH_TOKEN_TTL", 30*time.Minute, p),
+			SessionAbsoluteTTL: getDuration("GUARDPIPE_SESSION_ABSOLUTE_TTL", 12*time.Hour, p),
+			CORSOrigins:        getCSV("GUARDPIPE_CORS_ORIGINS", []string{"http://localhost:5173"}),
+			AuthRateLimit:      getInt("GUARDPIPE_AUTH_RATE_LIMIT", 5, p),
+			AuthRateWindow:     getDuration("GUARDPIPE_AUTH_RATE_WINDOW", time.Minute, p),
 		},
 		Scanning: Scanning{
 			WorkerCount:     getInt("GUARDPIPE_WORKER_COUNT", 4, p),

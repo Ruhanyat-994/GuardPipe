@@ -181,6 +181,23 @@ func (f *fakeTokenRepo) RevokeFamily(_ context.Context, familyID uuid.UUID, revo
 	return nil
 }
 
+// backdateAllFamiliesIssuedAt is a test-only helper (no production Service
+// method needs this — FamilyIssuedAt is only ever set at issuance) that
+// simulates every currently-stored token's family having originally been
+// issued at issuedAt, for the absolute-session-cap tests below. Safe to call
+// with "every" rather than a specific family ID because both call sites use
+// it right after a single Login, when exactly one row exists. A real
+// clock-injection seam isn't worth adding just for this one check, given
+// every other timestamp in this package already comes from time.Now()
+// directly.
+func (f *fakeTokenRepo) backdateAllFamiliesIssuedAt(issuedAt time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, rt := range f.byHash {
+		rt.FamilyIssuedAt = issuedAt
+	}
+}
+
 // --- test harness ---
 
 const testJWTSecret = "test-secret-at-least-32-bytes-long!!"
@@ -202,7 +219,7 @@ func newTestServiceWithAudit(t *testing.T) (identity.Service, *fakeUserRepo, *fa
 	tokens := newFakeTokenRepo()
 	auditSvc := &fakeAuditService{}
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
-	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 7*24*time.Hour)
+	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour)
 	return svc, users, tokens, auditSvc
 }
 
@@ -525,6 +542,74 @@ func TestRefresh_InvalidTokenIsRejected(t *testing.T) {
 	}
 }
 
+// TestRefresh_JustUnderAbsoluteSessionCapSucceeds is the near-miss half of
+// the absolute-session-cap table (BUILD_GUIDE.md Phase 14,
+// documentation/15-testing-strategy.md's "near-miss matters more" rule): a
+// session that's been continuously active right up to just under the
+// sessionAbsoluteTTL boundary (newTestServiceWithAudit uses 12h) must still
+// refresh normally — the cap isn't allowed to be so aggressive it clips a
+// legitimately still-active session a few seconds early.
+func TestRefresh_JustUnderAbsoluteSessionCapSucceeds(t *testing.T) {
+	svc, _, tokens, _ := newTestServiceWithAudit(t)
+	ctx := context.Background()
+	if _, err := svc.Register(ctx, identity.RegisterInput{
+		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	loginPair, err := svc.Login(ctx, "nadia@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+
+	tokens.backdateAllFamiliesIssuedAt(time.Now().UTC().Add(-(12*time.Hour - time.Minute)))
+
+	if _, err := svc.Refresh(ctx, loginPair.RefreshToken); err != nil {
+		t.Fatalf("Refresh() just under the absolute session cap: error = %v, want success", err)
+	}
+}
+
+// TestRefresh_PastAbsoluteSessionCapIsRejected is the true-positive half:
+// once a session's family is older than sessionAbsoluteTTL, Refresh must
+// reject it — even though the individual token's own ExpiresAt (the idle
+// timeout, reset forward on every prior rotation) hasn't been reached —
+// and revoke the whole family so no later presented token in the same chain
+// slips through either.
+func TestRefresh_PastAbsoluteSessionCapIsRejected(t *testing.T) {
+	svc, _, tokens, auditSvc := newTestServiceWithAudit(t)
+	ctx := context.Background()
+	if _, err := svc.Register(ctx, identity.RegisterInput{
+		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	loginPair, err := svc.Login(ctx, "nadia@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+
+	tokens.backdateAllFamiliesIssuedAt(time.Now().UTC().Add(-13 * time.Hour))
+
+	_, err = svc.Refresh(ctx, loginPair.RefreshToken)
+	if err == nil {
+		t.Fatal("Refresh() past the absolute session cap succeeded, want an error")
+	}
+	if got := appErrCode(t, err); got != "auth.session_expired" {
+		t.Errorf("error code = %q, want %q", got, "auth.session_expired")
+	}
+
+	actions := auditSvc.actions()
+	found := false
+	for _, a := range actions {
+		if a == "auth.session_expired" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("audit actions = %v, want \"auth.session_expired\" present", actions)
+	}
+}
+
 // --- Logout ---
 
 func TestLogout_RevokesTheSession(t *testing.T) {
@@ -592,7 +677,7 @@ func TestVerify_ValidAccessTokenRoundTrips(t *testing.T) {
 
 func TestVerify_ExpiredTokenReturnsTokenExpiredCode(t *testing.T) {
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), -1*time.Minute) // already expired
-	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, &fakeAuditService{}, -1*time.Minute, time.Hour)
+	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, &fakeAuditService{}, -1*time.Minute, time.Hour, 12*time.Hour)
 
 	token, err := issuer.Issue(id.New(), id.New(), domain.RoleMember)
 	if err != nil {
