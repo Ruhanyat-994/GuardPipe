@@ -162,9 +162,14 @@ func TestRefreshTokenRepo_CreateConsumeAndRevokeFamily(t *testing.T) {
 
 	tokens := repo.NewRefreshTokenRepo(pool)
 	familyID := id.New()
+	// Truncated to the second: Postgres TIMESTAMPTZ round-trips at
+	// microsecond precision, but time.Now() carries nanoseconds that would
+	// make an exact equality check flaky.
+	familyIssuedAt := time.Now().UTC().Truncate(time.Second)
 	rt := &identity.RefreshToken{
 		ID: id.New(), UserID: user.ID, TokenHash: "deadbeef", FamilyID: familyID,
-		ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour),
+		FamilyIssuedAt: familyIssuedAt,
+		ExpiresAt:      time.Now().UTC().Add(7 * 24 * time.Hour),
 	}
 	require.NoError(t, tokens.Create(ctx, rt))
 
@@ -172,6 +177,11 @@ func TestRefreshTokenRepo_CreateConsumeAndRevokeFamily(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, got.ConsumedAt)
 	require.Nil(t, got.RevokedAt)
+	// BUILD_GUIDE.md Phase 14: confirms family_issued_at actually round-trips
+	// through a real row, not just in-memory — this is the field the
+	// absolute session cap in identity.Service.Refresh depends on.
+	require.True(t, got.FamilyIssuedAt.Equal(familyIssuedAt), "FamilyIssuedAt = %v, want %v", got.FamilyIssuedAt, familyIssuedAt)
+	require.False(t, got.CreatedAt.IsZero(), "CreatedAt should default to now() on insert")
 
 	now := time.Now().UTC()
 	require.NoError(t, tokens.MarkConsumed(ctx, rt.ID, now))

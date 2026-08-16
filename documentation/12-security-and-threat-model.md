@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Security Design and Threat Model |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Status** | Draft |
 | **Method** | STRIDE · OWASP ASVS 4.0 |
 | **Owner** | Member 6 (with all) |
-| **Last updated** | 2026-08-01 |
+| **Last updated** | 2026-08-16 |
 
 ### Revision history
 
@@ -16,6 +16,7 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial threat model |
 | 1.1 | 2026-08-01 | Team | §11 risk #5 reworded after fixing the cross-account data leak it described — every account registering into one shared organisation was letting every user see every other user's projects. Fixed by giving each registration its own organisation (`internal/modules/identity/service.go`); the accepted-risk item is now narrower (an organisation can't yet gain a *second* member), not "no isolation at all" |
+| 1.2 | 2026-08-16 | Team | §7.1 gained two new rows: a session idle timeout (30 min, `GUARDPIPE_REFRESH_TOKEN_TTL`) and a session absolute timeout (12 h from login, `GUARDPIPE_SESSION_ABSOLUTE_TTL`, checked against a new `refresh_tokens.family_issued_at` column) — closing the gap where a continuously-refreshed session never expired at all, per OWASP's Session Management Cheat Sheet and NIST SP 800-63B §4.1.3. BUILD_GUIDE.md Phase 14 |
 
 ---
 
@@ -268,6 +269,8 @@ GuardPipe must pass GuardPipe. These are the standards our own code is held to �
 | Password policy | ≥ 12 characters, common-password rejection |
 | Access token | JWT HS256, 15 min, in-memory only |
 | Refresh token | Opaque 32 bytes, SHA-256 stored, single-use, rotating, family invalidation |
+| Session idle timeout | 30 min — the refresh token's own TTL, reset forward on every rotation, per OWASP's Session Management Cheat Sheet (BUILD_GUIDE.md Phase 14) |
+| Session absolute timeout | 12 h from original login, independent of activity, checked against `refresh_tokens.family_issued_at`; violating it revokes the whole rotation family, same as reuse detection (NIST SP 800-63B §4.1.3, BUILD_GUIDE.md Phase 14) |
 | Cookie flags | `HttpOnly`, `Secure`, `SameSite=Strict` |
 | Rate limits | 5/min/IP auth, 100/min/user general |
 | Lockout | Progressive delay after repeated failures |
