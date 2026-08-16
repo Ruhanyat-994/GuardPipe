@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
@@ -64,10 +65,29 @@ func (c *fakeCloner) ShallowClone(context.Context, string, string, string) error
 	return c.err
 }
 
-type fakeCloneInfo struct{}
+type fakeCloneInfo struct {
+	mu                    sync.Mutex
+	token                 string
+	invalidatedProjectIDs []uuid.UUID
+	invalidatedReasons    []string
+}
 
-func (fakeCloneInfo) GetCloneInfo(context.Context, uuid.UUID) (string, string, string, error) {
-	return "https://github.com/acme/example", "main", "", nil
+func (f *fakeCloneInfo) GetCloneInfo(context.Context, uuid.UUID) (string, string, string, error) {
+	return "https://github.com/acme/example", "main", f.token, nil
+}
+
+func (f *fakeCloneInfo) MarkCredentialInvalid(_ context.Context, projectID uuid.UUID, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.invalidatedProjectIDs = append(f.invalidatedProjectIDs, projectID)
+	f.invalidatedReasons = append(f.invalidatedReasons, reason)
+	return nil
+}
+
+func (f *fakeCloneInfo) invalidatedCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.invalidatedProjectIDs)
 }
 
 // scriptedEngine lets each test dictate exactly what Applicable/Run do —
@@ -108,7 +128,7 @@ func newTestPool(t *testing.T, engine domain.Engine, cloner *fakeCloner) (*orche
 	pool := &orchestrator.Pool{
 		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
 		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
-		Projects: fakeCloneInfo{}, Cloner: cloner,
+		Projects: &fakeCloneInfo{}, Cloner: cloner,
 		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
 		Log: discardLogger(),
 	}
@@ -191,6 +211,86 @@ func TestPool_ProcessJob_CloneFails_MarksFailed(t *testing.T) {
 	require.Equal(t, domain.JobStatusFailed, job.Status)
 	require.NotNil(t, job.ErrorReason)
 	require.Equal(t, "workspace_unavailable", *job.ErrorReason)
+}
+
+// TestPool_ProcessJob_CloneUnauthorized_FlagsCredentialInvalid is the
+// true-positive half of the credential-health table: a clone rejected with
+// github.ErrCloneUnauthorized (401/403 — the stored PAT is bad) must both
+// persist the specific "credential_invalid" job reason, distinct from a
+// generic clone failure, and call CloneInfoProvider.MarkCredentialInvalid so
+// the project carries that signal even after this one scan.
+func TestPool_ProcessJob_CloneUnauthorized_FlagsCredentialInvalid(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineDepScan, applicable: true}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+	projects := &fakeCloneInfo{token: "ghp_expiredtoken"}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
+		Projects:      projects,
+		Cloner:        &fakeCloner{err: github.ErrCloneUnauthorized},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log: discardLogger(),
+	}
+	_, jobID := seedScanAndJob(t, scans, jobs, domain.EngineDepScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	job, err := jobs.GetByID(context.Background(), jobID)
+	require.NoError(t, err)
+	require.Equal(t, domain.JobStatusFailed, job.Status)
+	require.NotNil(t, job.ErrorReason)
+	require.Equal(t, "credential_invalid", *job.ErrorReason)
+	require.Equal(t, 1, projects.invalidatedCalls(), "MarkCredentialInvalid must be called exactly once")
+}
+
+// TestPool_ProcessJob_CloneUnauthorized_NoTokenDoesNotFlagCredential is the
+// near-miss: a 401/403 with no credential attached at all (token == "") is
+// "no credential was ever configured," not "a credential went bad" — that
+// state is already surfaced at attach time (project.credential_required),
+// so this must not call MarkCredentialInvalid or use the credential_invalid
+// reason.
+func TestPool_ProcessJob_CloneUnauthorized_NoTokenDoesNotFlagCredential(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineDepScan, applicable: true}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+	projects := &fakeCloneInfo{token: ""}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
+		Projects:      projects,
+		Cloner:        &fakeCloner{err: github.ErrCloneUnauthorized},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log: discardLogger(),
+	}
+	_, jobID := seedScanAndJob(t, scans, jobs, domain.EngineDepScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	job, err := jobs.GetByID(context.Background(), jobID)
+	require.NoError(t, err)
+	require.Equal(t, domain.JobStatusFailed, job.Status)
+	require.NotNil(t, job.ErrorReason)
+	require.Equal(t, "workspace_unavailable", *job.ErrorReason)
+	require.Equal(t, 0, projects.invalidatedCalls(), "no credential was ever attached, so nothing should be flagged invalid")
 }
 
 func TestPool_ProcessJob_CancelledScan_MarksFailedWithoutRunningEngine(t *testing.T) {

@@ -126,6 +126,11 @@ export function RepositoryAttachForm({
               variant="ghost"
               size="sm"
               onClick={() => {
+                // Pre-fill the same URL rather than clearing it — the
+                // common case for clicking Replace (especially right after
+                // a credential-invalid banner) is "same repo, new token,"
+                // not actually pointing at a different repository.
+                setUrl(attached.url)
                 setAttached(null)
                 setJustAttached(false)
               }}

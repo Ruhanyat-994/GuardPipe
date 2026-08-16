@@ -46,6 +46,17 @@ type Service interface {
 	// authorized (CreateScan verified the actor owned the project). Token
 	// is "" when no credential is attached (a public repository).
 	GetCloneInfo(ctx context.Context, projectID uuid.UUID) (repoURL, branch, token string, err error)
+
+	// MarkCredentialInvalid is the worker-side counterpart to
+	// GetCloneInfo — same no-actor reasoning, called from the same
+	// background job-processing path when a clone comes back 401/403.
+	// Never deletes or archives anything; it only flags the existing
+	// repository row so the project (and its full scan history) keeps
+	// showing up exactly as before, with a clear "reattach your GitHub
+	// token" signal instead of every future scan silently failing with no
+	// visible cause. A project with no repository attached at all is not an
+	// error here — nothing to flag.
+	MarkCredentialInvalid(ctx context.Context, projectID uuid.UUID, reason string) error
 }
 
 // ProjectDetail is a Project plus the pieces the API returns alongside it
@@ -77,9 +88,15 @@ type ProjectRepository interface {
 type RepositoryRepository interface {
 	// Upsert inserts or replaces the one repository a project may have
 	// (`repositories.project_id` is UNIQUE — documentation/06-database-design.md
-	// §4.5).
+	// §4.5). Also clears CredentialInvalidAt/Reason back to nil — an attach
+	// or replace is exactly the "user just fixed it" signal.
 	Upsert(ctx context.Context, r *Repository) error
 	GetByProjectID(ctx context.Context, projectID uuid.UUID) (*Repository, error)
+	// MarkCredentialInvalid flags the project's repository row — called by
+	// the orchestrator worker (via Service.MarkCredentialInvalid) the moment
+	// a scan's clone is rejected with 401/403, so the state survives between
+	// scans instead of only ever showing up as one scan's failure reason.
+	MarkCredentialInvalid(ctx context.Context, projectID uuid.UUID, reason string, at time.Time) error
 }
 
 // CredentialRow is what CredentialRepository.Upsert writes — the encrypted
@@ -528,6 +545,21 @@ func (s *service) GetCloneInfo(ctx context.Context, projectID uuid.UUID) (repoUR
 	}
 
 	return repo.URL, repo.DefaultBranch, plaintext, nil
+}
+
+func (s *service) MarkCredentialInvalid(ctx context.Context, projectID uuid.UUID, reason string) error {
+	if err := s.repositories.MarkCredentialInvalid(ctx, projectID, reason, time.Now().UTC()); err != nil {
+		if isNotFound(err) {
+			return nil // no repository attached — nothing to flag
+		}
+		return apperrors.Internal(fmt.Errorf("mark credential invalid: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+		Action: "repository.credential_invalidated",
+		Detail: map[string]any{"reason": reason},
+	})
+	return nil
 }
 
 func (s *service) getOwnedProject(ctx context.Context, actor domain.Actor, projectID uuid.UUID) (*Project, error) {

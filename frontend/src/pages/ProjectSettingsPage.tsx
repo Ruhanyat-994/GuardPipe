@@ -117,12 +117,19 @@ export function ProjectSettingsPage() {
         />
       </div>
 
-      <Card className="mb-4">
+      <Card className={project.repository?.credential_invalid ? 'mb-4 border-danger/30' : 'mb-4'}>
         <CardTitle className="text-h3">Credential</CardTitle>
         <CardDescription className="mt-1">
-          {project.has_credential
-            ? 'A GitHub personal access token is attached to this project.'
-            : 'No credential attached. Required only for private repositories.'}
+          {project.repository?.credential_invalid ? (
+            <span className="text-danger">
+              This token was rejected on the last scan attempt and needs to be replaced — use the
+              Repository form above to reattach one.
+            </span>
+          ) : project.has_credential ? (
+            'A GitHub personal access token is attached to this project.'
+          ) : (
+            'No credential attached. Required only for private repositories.'
+          )}
         </CardDescription>
       </Card>
 

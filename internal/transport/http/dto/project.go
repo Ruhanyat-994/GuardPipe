@@ -43,15 +43,22 @@ type SetCredentialRequest struct {
 
 // RepositoryResponse matches the nested "repository" object in
 // documentation/07-api-specification.md §3's `POST /projects` example.
+// CredentialInvalid/CredentialInvalidReason are the "please reattach your
+// GitHub token" signal — set once the orchestrator hits a 401/403 cloning
+// with the stored credential, cleared the next time one is (re)attached.
+// The repository and every past scan/finding stay exactly where they are
+// either way; this never triggers a delete or archive.
 type RepositoryResponse struct {
-	ID            string `json:"id"`
-	Provider      string `json:"provider"`
-	URL           string `json:"url"`
-	Owner         string `json:"owner"`
-	Name          string `json:"name"`
-	DefaultBranch string `json:"default_branch"`
-	IsPrivate     bool   `json:"is_private"`
-	SizeKB        *int64 `json:"size_kb"`
+	ID                      string  `json:"id"`
+	Provider                string  `json:"provider"`
+	URL                     string  `json:"url"`
+	Owner                   string  `json:"owner"`
+	Name                    string  `json:"name"`
+	DefaultBranch           string  `json:"default_branch"`
+	IsPrivate               bool    `json:"is_private"`
+	SizeKB                  *int64  `json:"size_kb"`
+	CredentialInvalid       bool    `json:"credential_invalid"`
+	CredentialInvalidReason *string `json:"credential_invalid_reason"`
 }
 
 func FromRepository(r *project.Repository) *RepositoryResponse {
@@ -61,6 +68,8 @@ func FromRepository(r *project.Repository) *RepositoryResponse {
 	return &RepositoryResponse{
 		ID: r.ID.String(), Provider: r.Provider, URL: r.URL, Owner: r.Owner, Name: r.Name,
 		DefaultBranch: r.DefaultBranch, IsPrivate: r.IsPrivate, SizeKB: r.SizeKB,
+		CredentialInvalid:       r.CredentialInvalidAt != nil,
+		CredentialInvalidReason: r.CredentialInvalidReason,
 	}
 }
 

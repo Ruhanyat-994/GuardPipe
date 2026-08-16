@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | Database Design |
 | **Project** | GuardPipe |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Status** | Draft |
 | **Engine** | PostgreSQL 16 · Redis 7 |
 | **Authors** | GuardPipe Team |
@@ -17,6 +17,7 @@
 | 1.0 | 2026-07-29 | Team | Initial schema design |
 | 1.1 | 2026-08-01 | Team | §4.1/§13 corrected — description text only, no schema/DDL change — after fixing a real cross-account data leak caused by the previously-described single-shared-organisation model. **Needs its second reviewer per this doc's own change-control rule (§ above)**, since this file requires two approvals and only one person made this edit |
 | 1.2 | 2026-08-16 | Team | §4.3 gains `created_at`/`family_issued_at` on `refresh_tokens` (migration `00011`, BUILD_GUIDE.md Phase 14's session-timeout hardening); §11's planned sequence renumbered accordingly (indexes/triggers pushed to `00012`/`00013`). **Also needs its second reviewer** — same single-author caveat as 1.1, migration was built and merged same-session on explicit user request rather than waiting on the normal two-approval schema-PR flow |
+| 1.3 | 2026-08-16 | Team | §4.5 gains `credential_invalid_at`/`credential_invalid_reason` on `repositories` (migration `00012`) — a scan whose clone is rejected 401/403 now leaves a persisted signal on the project instead of only ever showing up as one scan's job failure reason; cleared by the existing attach/replace flow. §11's planned sequence renumbered again (indexes/triggers now `00013`/`00014`). **Also needs its second reviewer**, same caveat as 1.1/1.2 |
 
 > **Change control:** this is a shared contract across all six developers. Any schema change requires **two approvals** and follows the protocol in §12.
 
@@ -258,6 +259,8 @@ Each registration creates its own row here — GuardPipe is multi-tenant at the 
 | `is_private` | `BOOLEAN` | NOT NULL, default false | |
 | `size_kb` | `BIGINT` | NULL | from the GitHub API; used for the pre-clone size guard |
 | `last_validated_at` | `TIMESTAMPTZ` | NULL | |
+| `credential_invalid_at` | `TIMESTAMPTZ` | NULL | added migration `00012`. NULL = healthy; set by the orchestrator worker the moment a scan's clone is rejected 401/403 with the stored credential. Cleared back to NULL by the next `Upsert` (i.e. reattaching) — never by anything that touches `scans`/`findings`, so a stale credential never deletes or hides scan history |
+| `credential_invalid_reason` | `TEXT` | NULL | added migration `00012`, paired with the column above |
 
 ### 4.6 `project_credentials`
 
@@ -671,8 +674,9 @@ Tool: **goose** ([ADR-0009](17-adr/0009-goose-migrations.md)). Files: `internal/
 | 00009 | `dependencies`, `risk_assessments`, `scan_evidence` |
 | 00010 | `audit_log` |
 | 00011 | `refresh_tokens` session-timeout hardening (`created_at`, `family_issued_at`) — claimed this slot ahead of the originally-planned "indexes" migration below, per BUILD_GUIDE.md Phase 14's session hardening item (2026-08-16); every other table's indexes were already created inline in their own migration as they were built, so this slot was still unclaimed |
-| 00012 | indexes (renumbered from 00011) |
-| 00013 | `updated_at` trigger function + triggers (renumbered from 00012) |
+| 00012 | `repositories` credential-invalid tracking (`credential_invalid_at`, `credential_invalid_reason`) — claimed 2026-08-16, same reasoning as `00011` |
+| 00013 | indexes (renumbered from 00011) |
+| 00014 | `updated_at` trigger function + triggers (renumbered from 00012) |
 
 ---
 

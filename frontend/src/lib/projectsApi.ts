@@ -18,6 +18,11 @@ export interface Repository {
   default_branch: string
   is_private: boolean
   size_kb: number | null
+  /** True once a scan's clone was rejected (401/403) with the stored GitHub
+   * PAT — the project and every past scan/finding are unaffected; this is
+   * cleared the next time a credential is (re)attached (RepositoryAttachForm). */
+  credential_invalid: boolean
+  credential_invalid_reason: string | null
 }
 
 export interface Project {

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 )
 
@@ -26,7 +28,22 @@ type Cloner interface {
 // different code path (background processing, not a per-request check).
 type CloneInfoProvider interface {
 	GetCloneInfo(ctx context.Context, projectID uuid.UUID) (repoURL, branch, token string, err error)
+	// MarkCredentialInvalid is called the moment a clone comes back 401/403
+	// with the stored credential — see prepareWorkspace below.
+	MarkCredentialInvalid(ctx context.Context, projectID uuid.UUID, reason string) error
 }
+
+// errCredentialInvalid is what prepareWorkspace wraps its returned error
+// with when a clone failed specifically because the stored credential was
+// rejected (as opposed to a network blip, an oversized repo, or any other
+// clone failure) — processJob uses this to persist the specific
+// "credential_invalid" job reason instead of the generic
+// "workspace_unavailable", so a PartialResultBanner (and, from now on, the
+// project itself) can tell the user exactly what to fix. By the time this
+// is returned, CloneInfoProvider.MarkCredentialInvalid has already been
+// called — the project's repository row carries the same signal even
+// between scans, not just as one job's failure reason.
+var errCredentialInvalid = errors.New("orchestrator: repository credential invalid")
 
 // claimPollTimeout is how long each worker's Claim call blocks waiting for
 // a job before looping back to check ctx.Done() — bounds shutdown latency
@@ -152,8 +169,12 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 
 	workspaceDir, cleanup, err := p.prepareWorkspace(ctx, scan.ProjectID)
 	if err != nil {
+		reason := "workspace_unavailable"
+		if errors.Is(err, errCredentialInvalid) {
+			reason = "credential_invalid"
+		}
 		p.Log.Error("orchestrator: workspace preparation failed", "job_id", jobID, "error", err)
-		p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: "workspace_unavailable"})
+		p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: reason})
 		return
 	}
 	defer cleanup()
@@ -236,6 +257,17 @@ func (p *Pool) prepareWorkspace(ctx context.Context, projectID uuid.UUID) (dir s
 
 	if err := p.Cloner.ShallowClone(ctx, repoURL, token, dir); err != nil {
 		cleanup()
+		// A stored credential being rejected only means "this credential is
+		// bad" if one was actually supplied — a 401/403 on a public repo
+		// with no credential attached at all is "no credential was ever
+		// configured," a different (and already-handled, at attach time)
+		// state, not a credential that went bad after working before.
+		if token != "" && errors.Is(err, github.ErrCloneUnauthorized) {
+			if markErr := p.Projects.MarkCredentialInvalid(ctx, projectID, "github_credential_rejected"); markErr != nil {
+				p.Log.Error("orchestrator: mark credential invalid failed", "project_id", projectID, "error", markErr)
+			}
+			return "", nil, fmt.Errorf("%w: %v", errCredentialInvalid, err)
+		}
 		return "", nil, fmt.Errorf("clone repository: %w", err)
 	}
 

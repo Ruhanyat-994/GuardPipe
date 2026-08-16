@@ -118,6 +118,44 @@ func TestRepositoryRepo_UpsertReplaces(t *testing.T) {
 	require.True(t, got2.IsPrivate)
 }
 
+// TestRepositoryRepo_MarkCredentialInvalid_RoundTripsAndClearsOnReattach
+// confirms migration 00012's two new columns actually round-trip through a
+// real row, and that the existing attach/replace flow (Upsert) is what
+// clears the flag — the mechanism the "reconnect your GitHub token, your
+// scan history stays" feature depends on end to end.
+func TestRepositoryRepo_MarkCredentialInvalid_RoundTripsAndClearsOnReattach(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	orgID, userID := seedOrgAndUser(t, pool)
+	projects := repo.NewProjectRepo(pool)
+	repos := repo.NewRepositoryRepo(pool)
+
+	p := &project.Project{ID: id.New(), OrgID: orgID, Name: "Private API", Status: project.StatusActive, CreatedBy: &userID}
+	require.NoError(t, projects.Create(ctx, p))
+
+	r := &project.Repository{
+		ID: id.New(), ProjectID: p.ID, Provider: "github", URL: "https://github.com/acme/private-api",
+		Owner: "acme", Name: "private-api", DefaultBranch: "main", IsPrivate: true,
+	}
+	require.NoError(t, repos.Upsert(ctx, r))
+
+	require.NoError(t, repos.MarkCredentialInvalid(ctx, p.ID, "github_credential_rejected", time.Now().UTC()))
+
+	invalid, err := repos.GetByProjectID(ctx, p.ID)
+	require.NoError(t, err)
+	require.NotNil(t, invalid.CredentialInvalidAt)
+	require.NotNil(t, invalid.CredentialInvalidReason)
+	require.Equal(t, "github_credential_rejected", *invalid.CredentialInvalidReason)
+
+	// Reattaching (same URL, as the "connect a new token" flow does) must
+	// clear it back to healthy.
+	require.NoError(t, repos.Upsert(ctx, r))
+	healed, err := repos.GetByProjectID(ctx, p.ID)
+	require.NoError(t, err)
+	require.Nil(t, healed.CredentialInvalidAt)
+	require.Nil(t, healed.CredentialInvalidReason)
+}
+
 func TestCredentialRepo_UpsertAndDecrypt_RoundTrip(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
