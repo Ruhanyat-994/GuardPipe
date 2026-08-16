@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react'
-import { ExternalLink, GitBranch, KeyRound, Lock } from 'lucide-react'
+import { CheckCircle2, ExternalLink, GitBranch, KeyRound, Lock } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Card, CardDescription, CardTitle } from '../ui/Card'
 import { Input } from '../ui/Input'
@@ -29,13 +29,19 @@ export function RepositoryAttachForm({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [attached, setAttached] = useState<Repository | null>(existing ?? null)
+  // Set only on a successful attach *in this session* — distinct from
+  // `attached`, which is also true when `existing` was passed in on mount,
+  // so a page reload doesn't show a stale "just attached" confirmation.
+  const [justAttached, setJustAttached] = useState(false)
+  const [credentialSaved, setCredentialSaved] = useState(false)
 
   async function handleAttach(e: FormEvent) {
     e.preventDefault()
     setError(null)
     setSubmitting(true)
     try {
-      if (needsToken && token) {
+      const savingCredential = needsToken && !!token
+      if (savingCredential) {
         // The token is written straight to the credential endpoint and
         // never rendered back — no console.log, no state that lands in the
         // DOM outside this password input.
@@ -43,6 +49,14 @@ export function RepositoryAttachForm({
       }
       const repo = await attachRepository(projectId, url)
       setAttached(repo)
+      // Bug fix: `needsToken` must reset here — it previously stayed `true`
+      // forever once a private repo tripped the credential prompt, which
+      // kept the form (not the "attached" confirmation card) rendered even
+      // after a successful attach, so a working save looked like nothing
+      // had happened.
+      setNeedsToken(false)
+      setJustAttached(true)
+      setCredentialSaved(savingCredential)
       setToken('')
       onAttached?.(repo)
     } catch (err) {
@@ -70,38 +84,55 @@ export function RepositoryAttachForm({
       </CardDescription>
 
       {attached && !needsToken ? (
-        <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-border-default bg-bg-subtle p-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <GitHubMark className="h-7 w-7 shrink-0 text-text-primary" />
-            <div className="min-w-0">
-              <a
-                href={attached.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-body-sm font-medium text-text-primary hover:text-accent hover:underline"
-              >
-                <span className="truncate">
-                  {attached.owner}/{attached.name}
-                </span>
-                <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              </a>
-              <div className="mt-0.5 flex items-center gap-3 text-caption text-text-tertiary">
-                <span className="flex items-center gap-1">
-                  <GitBranch className="h-3 w-3" aria-hidden="true" />
-                  {attached.default_branch}
-                </span>
-                {attached.is_private && (
-                  <span className="flex items-center gap-1 text-warning">
-                    <Lock className="h-3 w-3" aria-hidden="true" />
-                    Private
+        <div className="mt-4 flex flex-col gap-2">
+          {justAttached && (
+            <p className="flex items-center gap-1.5 text-body-sm text-success">
+              <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+              {credentialSaved
+                ? 'Token saved and repository attached — you’re all set.'
+                : 'Repository attached — you’re all set.'}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border-default bg-bg-subtle p-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <GitHubMark className="h-7 w-7 shrink-0 text-text-primary" />
+              <div className="min-w-0">
+                <a
+                  href={attached.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-body-sm font-medium text-text-primary hover:text-accent hover:underline"
+                >
+                  <span className="truncate">
+                    {attached.owner}/{attached.name}
                   </span>
-                )}
+                  <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                </a>
+                <div className="mt-0.5 flex items-center gap-3 text-caption text-text-tertiary">
+                  <span className="flex items-center gap-1">
+                    <GitBranch className="h-3 w-3" aria-hidden="true" />
+                    {attached.default_branch}
+                  </span>
+                  {attached.is_private && (
+                    <span className="flex items-center gap-1 text-warning">
+                      <Lock className="h-3 w-3" aria-hidden="true" />
+                      Private
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setAttached(null)
+                setJustAttached(false)
+              }}
+            >
+              Replace
+            </Button>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => setAttached(null)}>
-            Replace
-          </Button>
         </div>
       ) : (
         <form onSubmit={handleAttach} className="mt-4 flex flex-col gap-4">
