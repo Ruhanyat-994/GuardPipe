@@ -36,18 +36,26 @@ type Project struct {
 
 // Repository mirrors the `repositories` table
 // (documentation/06-database-design.md §4.5). One per project in this
-// release — attaching a new one replaces it.
+// release — attaching a new one replaces it. CredentialInvalidAt is nil
+// while the credential is healthy (or has never been checked); the
+// orchestrator sets it the moment a scan's clone is rejected with 401/403,
+// and the existing attach/replace flow (RepositoryRepository.Upsert) clears
+// it back to nil the next time a credential is (re)attached — the project
+// and every past scan/finding are untouched either way, nothing here ever
+// deletes or archives anything.
 type Repository struct {
-	ID              uuid.UUID
-	ProjectID       uuid.UUID
-	Provider        string
-	URL             string
-	Owner           string
-	Name            string
-	DefaultBranch   string
-	IsPrivate       bool
-	SizeKB          *int64
-	LastValidatedAt *time.Time
+	ID                      uuid.UUID
+	ProjectID               uuid.UUID
+	Provider                string
+	URL                     string
+	Owner                   string
+	Name                    string
+	DefaultBranch           string
+	IsPrivate               bool
+	SizeKB                  *int64
+	LastValidatedAt         *time.Time
+	CredentialInvalidAt     *time.Time
+	CredentialInvalidReason *string
 }
 
 // CredentialKindGitHubPAT is the only credential kind this release supports

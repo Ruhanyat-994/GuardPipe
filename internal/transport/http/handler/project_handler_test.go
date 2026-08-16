@@ -73,6 +73,9 @@ func (f *fakeProjectService) RevokeTarget(context.Context, domain.Actor, uuid.UU
 func (f *fakeProjectService) GetCloneInfo(context.Context, uuid.UUID) (string, string, string, error) {
 	return "", "", "", f.err
 }
+func (f *fakeProjectService) MarkCredentialInvalid(context.Context, uuid.UUID, string) error {
+	return f.err
+}
 
 func newProjectRouter(svc project.Service) *gin.Engine {
 	r := gin.New()

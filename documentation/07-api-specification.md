@@ -4,18 +4,19 @@
 |---|---|
 | **Document** | API Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Style** | REST · JSON · OpenAPI 3.1 conventions · RFC 9457 errors |
 | **Base URL** | `http://localhost:8080/api/v1` |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-08-16 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial API contract |
+| 1.1 | 2026-08-16 | Team | `POST /projects`'s example `repository` object gains `credential_invalid`/`credential_invalid_reason` (also present on every other endpoint returning a repository) — set once a scan's clone is rejected with the stored credential, cleared by the existing attach/replace flow (`documentation/06-database-design.md` §4.5, migration `00012`). **Needs its second reviewer** per this doc's own change-control rule, since this file requires two approvals and only one person made this edit |
 
 > **Change control:** this is the frontend/backend contract. Breaking changes require **two approvals** and a note to the frontend owner. Freeze target: end of Sprint 0.
 
@@ -245,7 +246,8 @@ Failure is always `401 auth.invalid_credentials` with an identical message for u
   "repository": {
     "id": "3a7e…", "provider": "github", "url": "https://github.com/acme/payments-api",
     "owner": "acme", "name": "payments-api", "default_branch": "main",
-    "is_private": false, "size_kb": 18432
+    "is_private": false, "size_kb": 18432,
+    "credential_invalid": false, "credential_invalid_reason": null
   },
   "has_credential": false,
   "latest_scan": null,

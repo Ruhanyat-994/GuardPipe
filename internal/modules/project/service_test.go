@@ -107,6 +107,11 @@ func newFakeRepositoryRepo() *fakeRepositoryRepo {
 func (f *fakeRepositoryRepo) Upsert(_ context.Context, r *project.Repository) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Mirrors the real RepositoryRepo.Upsert: an attach/replace always
+	// clears a prior credential-invalid flag, regardless of what the
+	// caller's struct happened to carry in.
+	r.CredentialInvalidAt = nil
+	r.CredentialInvalidReason = nil
 	cp := *r
 	f.byProjectID[r.ProjectID] = &cp
 	return nil
@@ -121,6 +126,18 @@ func (f *fakeRepositoryRepo) GetByProjectID(_ context.Context, projectID uuid.UU
 	}
 	cp := *r
 	return &cp, nil
+}
+
+func (f *fakeRepositoryRepo) MarkCredentialInvalid(_ context.Context, projectID uuid.UUID, reason string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.byProjectID[projectID]
+	if !ok {
+		return apperrors.NotFound("project.repository_not_found", "not found")
+	}
+	r.CredentialInvalidAt = &at
+	r.CredentialInvalidReason = &reason
+	return nil
 }
 
 type credKey struct {
@@ -551,6 +568,81 @@ func TestSetCredential_NeverExposesRawToken_ButRoundTripsCorrectly(t *testing.T)
 	plain, err := d.credentials.GetPlaintext(context.Background(), detail.ID, project.CredentialKindGitHubPAT, make([]byte, crypto.KeySize))
 	require.NoError(t, err)
 	require.Equal(t, "ghp_abcdefghijklmnop3f9a", plain)
+}
+
+// TestMarkCredentialInvalid_PersistsAndSurfacesOnProjectDetail is the
+// true-positive half: once the orchestrator flags a credential invalid, that
+// must survive independently of any particular scan — a later GET on the
+// project (composeDetail) has to carry it, not just that one scan's job
+// result.
+func TestMarkCredentialInvalid_PersistsAndSurfacesOnProjectDetail(t *testing.T) {
+	d := newTestDeps()
+	d.vcs.info = &vcs.RepoInfo{Owner: "acme", Name: "private-api", NormalizedURL: "https://github.com/acme/private-api", DefaultBranch: "main", IsPrivate: true, SizeKB: 50}
+	svc := d.build()
+	actor := newActor()
+
+	url := "https://github.com/acme/private-api"
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Private API", RepositoryURL: &url})
+	require.NoError(t, err)
+	require.Nil(t, detail.Repository.CredentialInvalidAt)
+
+	require.NoError(t, svc.MarkCredentialInvalid(context.Background(), detail.ID, "github_credential_rejected"))
+
+	got, err := svc.Get(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.Repository.CredentialInvalidAt)
+	require.NotNil(t, got.Repository.CredentialInvalidReason)
+	require.Equal(t, "github_credential_rejected", *got.Repository.CredentialInvalidReason)
+
+	// The project itself, and the repository row, are still exactly there —
+	// this must never delete or archive anything.
+	require.Equal(t, project.StatusActive, got.Status)
+}
+
+// TestMarkCredentialInvalid_NoRepositoryAttached_IsNoop is the near-miss: a
+// project with no repository at all has nothing to flag, so this must
+// succeed quietly rather than surfacing an internal error the orchestrator
+// worker would otherwise have to specially ignore.
+func TestMarkCredentialInvalid_NoRepositoryAttached_IsNoop(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "No Repo Yet"})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.MarkCredentialInvalid(context.Background(), detail.ID, "github_credential_rejected"))
+}
+
+// TestAttachRepository_ReplacingRepo_ClearsCredentialInvalid is the other
+// true-positive half: reattaching (the "connect a new token" flow) is
+// exactly the user action that should clear a previously-invalid
+// credential — this is what lets the project pick back up in place rather
+// than needing to be recreated.
+func TestAttachRepository_ReplacingRepo_ClearsCredentialInvalid(t *testing.T) {
+	d := newTestDeps()
+	d.vcs.info = &vcs.RepoInfo{Owner: "acme", Name: "private-api", NormalizedURL: "https://github.com/acme/private-api", DefaultBranch: "main", IsPrivate: true, SizeKB: 50}
+	svc := d.build()
+	actor := newActor()
+
+	url := "https://github.com/acme/private-api"
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Private API", RepositoryURL: &url})
+	require.NoError(t, err)
+	require.NoError(t, svc.MarkCredentialInvalid(context.Background(), detail.ID, "github_credential_rejected"))
+
+	invalid, err := svc.Get(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.NotNil(t, invalid.Repository.CredentialInvalidAt)
+
+	_, err = svc.SetCredential(context.Background(), actor, detail.ID, project.CredentialKindGitHubPAT, "ghp_freshrotatedtoken1234")
+	require.NoError(t, err)
+	_, err = svc.AttachRepository(context.Background(), actor, detail.ID, project.RepositoryInput{URL: url})
+	require.NoError(t, err)
+
+	healed, err := svc.Get(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Nil(t, healed.Repository.CredentialInvalidAt, "reattaching must clear the invalid flag")
+	require.Nil(t, healed.Repository.CredentialInvalidReason)
 }
 
 func TestRegisterTarget_BlockedAddress(t *testing.T) {

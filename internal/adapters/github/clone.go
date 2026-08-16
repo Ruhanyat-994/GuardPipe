@@ -19,7 +19,16 @@ import (
 // destDir has already been removed by the time this is returned.
 var ErrRepoTooLarge = errors.New("github: repository exceeds the configured size limit")
 
-// ErrCloneFailed wraps any other clone failure (auth, network, not found).
+// ErrCloneUnauthorized means the server rejected the credential — GitHub
+// returns 401 when go-git supplies no/bad auth for a private repo and 403
+// when the credential is valid but lacks access, both surfaced by go-git's
+// http transport as one of transport.ErrAuthenticationRequired/
+// ErrAuthorizationFailed. Distinguished from ErrCloneFailed so a caller can
+// tell "this stored credential is bad" (worth flagging for the user to fix)
+// from "something else went wrong" (network blip, repo genuinely gone).
+var ErrCloneUnauthorized = errors.New("github: credential rejected")
+
+// ErrCloneFailed wraps any other clone failure (network, not found).
 var ErrCloneFailed = errors.New("github: clone failed")
 
 // ShallowClone clones cloneURL into destDir with `--depth 1
@@ -65,6 +74,9 @@ func ShallowClone(ctx context.Context, cloneURL, token, destDir string, maxBytes
 		_ = os.RemoveAll(destDir)
 		if errors.Is(err, ErrRepoTooLarge) {
 			return ErrRepoTooLarge
+		}
+		if errors.Is(err, transport.ErrAuthenticationRequired) || errors.Is(err, transport.ErrAuthorizationFailed) {
+			return fmt.Errorf("%w: %v", ErrCloneUnauthorized, err)
 		}
 		return fmt.Errorf("%w: %v", ErrCloneFailed, err)
 	}

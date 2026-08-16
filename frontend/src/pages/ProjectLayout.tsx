@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useParams } from 'react-router-dom'
+import { CredentialInvalidBanner } from '../components/project/CredentialInvalidBanner'
 import { ProjectContext } from '../components/project/ProjectContext'
 import { ProjectTabBar } from '../components/project/ProjectTabBar'
 import { ApiError } from '../lib/apiClient'
@@ -67,6 +68,9 @@ export function ProjectLayout() {
   return (
     <ProjectContext.Provider value={{ project, refetch }}>
       <ProjectTabBar project={project} />
+      <div className="pt-4">
+        <CredentialInvalidBanner project={project} />
+      </div>
       <Outlet />
     </ProjectContext.Provider>
   )
