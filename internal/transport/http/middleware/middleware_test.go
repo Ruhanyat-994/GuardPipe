@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +209,28 @@ func TestCORS_HandlesPreflight(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Errorf("preflight status = %d, want 204", rec.Code)
+	}
+}
+
+// TestCORS_AllowsPUT guards the `PUT /projects/{id}/credential` endpoint
+// (the private-repo PAT flow) — PUT was missing from Access-Control-Allow-Methods,
+// so a browser's preflight silently blocked the actual request even though
+// the handler itself worked fine (curl doesn't preflight, so that path was
+// never caught without a real browser).
+func TestCORS_AllowsPUT(t *testing.T) {
+	r := gin.New()
+	r.Use(middleware.CORS([]string{"https://app.example.com"}))
+	r.PUT("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	r.ServeHTTP(rec, req)
+
+	allowed := rec.Header().Get("Access-Control-Allow-Methods")
+	if !strings.Contains(allowed, "PUT") {
+		t.Errorf("Access-Control-Allow-Methods = %q, want it to include PUT", allowed)
 	}
 }
 
