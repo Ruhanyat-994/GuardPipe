@@ -23,9 +23,12 @@ export function CredentialInvalidBanner({ project }: { project: Project }) {
       <div className="text-body-sm text-text-primary">
         <p className="font-medium">This project's GitHub access token is no longer valid.</p>
         <p className="mt-0.5 text-text-secondary">
-          Scans against <span className="font-medium">{repo.owner}/{repo.name}</span> will keep
-          failing until you reattach one — every past scan and finding is untouched, and once a
-          new token is connected the project picks back up exactly where it left off.{' '}
+          Scans against{' '}
+          <span className="font-medium">
+            {repo.owner}/{repo.name}
+          </span>{' '}
+          will keep failing until you reattach one — every past scan and finding is untouched, and
+          once a new token is connected the project picks back up exactly where it left off.{' '}
           <Link
             to={`/projects/${project.id}/settings`}
             className="font-medium text-danger underline hover:no-underline"
