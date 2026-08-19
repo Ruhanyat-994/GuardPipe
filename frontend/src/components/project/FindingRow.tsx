@@ -129,6 +129,15 @@ export function FindingRow({
         >
           {finding.severity}
         </span>
+        {finding.source === 'ai' && (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-ai/30 bg-ai/10 px-2 py-0.5 text-caption font-medium text-ai"
+            title="AI-generated — review before applying"
+          >
+            <Sparkles className="h-3 w-3" aria-hidden="true" />
+            AI-generated
+          </span>
+        )}
         <span className="flex-1 text-body-sm text-text-primary">{finding.title}</span>
         <span className="hidden text-caption text-text-tertiary sm:inline">{finding.rule_id}</span>
         <ChevronDown

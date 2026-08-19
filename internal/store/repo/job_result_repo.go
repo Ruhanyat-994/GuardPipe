@@ -79,7 +79,7 @@ func insertFindings(ctx context.Context, pgxTx pgx.Tx, result orchestrator.JobRe
 		INSERT INTO findings (id, scan_id, job_id, project_id, engine, rule_id, source, fingerprint,
 			title, description, severity, confidence, cwe, cve, owasp, cvss_score, cvss_vector,
 			location, remediation, status, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, 'rule', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		ON CONFLICT (scan_id, fingerprint) DO NOTHING`
 
 	const evidenceQ = `
@@ -97,7 +97,7 @@ func insertFindings(ctx context.Context, pgxTx pgx.Tx, result orchestrator.JobRe
 		}
 
 		tag, err := pgxTx.Exec(ctx, findingQ,
-			f.ID, result.ScanID, result.JobID, result.ProjectID, string(result.Engine), f.RuleID, f.Fingerprint,
+			f.ID, result.ScanID, result.JobID, result.ProjectID, string(result.Engine), f.RuleID, string(f.Source.Effective()), f.Fingerprint,
 			f.Title, f.Description, string(f.Severity), string(f.Confidence),
 			nonNilStrings(f.CWE), nonNilStrings(f.CVE), nonNilStrings(f.OWASP),
 			f.CVSSScore, f.CVSSVector, locationJSON, f.Remediation, string(domain.StatusOpen), metadataJSON,

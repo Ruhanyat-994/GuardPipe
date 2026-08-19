@@ -263,6 +263,11 @@ type FindingListItemResponse struct {
 	CVSSScore   *float64           `json:"cvss_score"`
 	Location    LocationResponse   `json:"location"`
 	Evidence    []EvidenceResponse `json:"evidence"`
+	// Source is "rule" or "ai" — cicdscan (Phase 10) is the first engine
+	// whose findings can be AI-authored (documentation/05-module-specifications.md
+	// §10's semantic pass); the frontend uses this to render the
+	// "AI-generated" chip. Always "rule" for every earlier engine.
+	Source string `json:"source"`
 	// Metadata is engine-specific extra context — never a load-bearing
 	// field for any core behaviour (documentation/06-database-design.md's
 	// own "JSONB only for genuinely variable data" rule), just narrative
@@ -285,7 +290,7 @@ func FromFinding(f domain.Finding) FindingListItemResponse {
 		Severity: string(f.Severity), Confidence: string(f.Confidence), Status: string(f.Status),
 		CWE: emptyIfNilStrings(f.CWE), CVE: emptyIfNilStrings(f.CVE), OWASP: emptyIfNilStrings(f.OWASP),
 		CVSSScore: f.CVSSScore, Location: fromLocation(f.Location), Evidence: evidence,
-		Metadata: f.Metadata,
+		Metadata: f.Metadata, Source: string(f.Source.Effective()),
 	}
 }
 

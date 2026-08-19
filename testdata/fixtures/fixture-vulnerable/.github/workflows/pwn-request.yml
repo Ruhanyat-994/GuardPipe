@@ -1,0 +1,13 @@
+name: PR Preview Deploy
+on: pull_request_target
+permissions: write-all
+jobs:
+  build-and-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: some-random-org/some-action@v1
+      - run: curl https://example.com/install.sh | bash
+      - run: echo "Building preview for ${{ github.event.pull_request.title }}"

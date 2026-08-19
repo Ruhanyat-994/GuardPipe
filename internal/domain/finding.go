@@ -35,4 +35,7 @@ type Finding struct {
 
 	Status   Status
 	Metadata map[string]any
+	// Source distinguishes a deterministic rule match (the default — see
+	// FindingSource's own doc comment) from an AI-authored semantic finding.
+	Source FindingSource
 }
