@@ -216,12 +216,26 @@ var terminalJobStatuses = map[domain.JobStatus]bool{
 	domain.JobStatusSkipped: true, domain.JobStatusCancelled: true,
 }
 
+// PersistJobResult serialises every call via f.mu (so only one call runs at
+// a time, mirroring the real repo's one-transaction-per-job-completion
+// contract) — but that alone doesn't protect f.jobs.byID/f.scans.byID
+// against fakeScanJobRepo.MarkRunning or any other fake method called
+// concurrently from a *different* code path (the orchestrator's own worker
+// goroutines, one per job, calling MarkRunning for a different job while
+// this one is mid-flight): those maps are owned by fakeScanJobRepo/
+// fakeScanRepo and guarded by their own mutexes, not f.mu. Every access
+// below explicitly takes the owning fake's lock, the same discipline the
+// findings block already used — a real, `-race`-caught bug the first time
+// a test (TestPool_ProcessJob_SameScanConcurrentJobs_ClonesWorkspaceOnce)
+// actually exercised two jobs of the same scan running concurrently.
 func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestrator.JobResult) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.jobs.mu.Lock()
 	job, ok := f.jobs.byID[result.JobID]
 	if !ok {
+		f.jobs.mu.Unlock()
 		return apperrors.NotFound("job.not_found", "job not found")
 	}
 	job.Status = result.Status
@@ -233,13 +247,6 @@ func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestra
 		reason := result.SkipReason
 		job.SkipReason = &reason
 	}
-
-	f.findings.mu.Lock()
-	for _, fnd := range result.Findings {
-		f.findings.findings = append(f.findings.findings, storedFinding{JobID: result.JobID, Finding: fnd})
-	}
-	f.findings.mu.Unlock()
-
 	allTerminal := true
 	for _, j := range f.jobs.byID {
 		if j.ScanID == result.ScanID && !terminalJobStatuses[j.Status] {
@@ -247,10 +254,20 @@ func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestra
 			break
 		}
 	}
+	f.jobs.mu.Unlock()
+
+	f.findings.mu.Lock()
+	for _, fnd := range result.Findings {
+		f.findings.findings = append(f.findings.findings, storedFinding{JobID: result.JobID, Finding: fnd})
+	}
+	f.findings.mu.Unlock()
+
 	if !allTerminal {
 		return nil
 	}
 
+	f.scans.mu.Lock()
+	defer f.scans.mu.Unlock()
 	scan, ok := f.scans.byID[result.ScanID]
 	if !ok {
 		return apperrors.NotFound("scan.not_found", "scan not found")
