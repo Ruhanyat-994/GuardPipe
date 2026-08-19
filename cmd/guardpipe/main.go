@@ -20,16 +20,19 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver, used only to run goose migrations
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/dockerx"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/gemini"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/sonarqube"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/trivy"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/cicdscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/codescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/containerscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/depscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/k8sscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
@@ -139,6 +142,7 @@ func run() error {
 	ruleRegistry := advisory.NewRuleRegistry()
 	ruleRegistry.Register(depscan.Rules...)
 	ruleRegistry.Register(k8sscan.Rules...)
+	ruleRegistry.Register(cicdscan.Rules...)
 
 	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
 	advisorySvc := advisory.NewService(
@@ -195,6 +199,21 @@ func run() error {
 	// function of the manifests/Helm charts found in the workspace, unlike
 	// depscan (advisory lookups) or codescan/containerscan (a wrapped tool).
 	registry.Register(k8sscan.New())
+	// cicdscan (Phase 10) is the first engine to call modules/ai — aiSvc is
+	// nil when GUARDPIPE_AI_ENABLED is false or no Gemini key is configured,
+	// which cicdscan.Engine treats as documentation/05-module-specifications.md
+	// §10's own "Gemini unavailable" failure mode (rule findings only, job
+	// still succeeds), never as a reason to skip registering the engine
+	// itself — the 16 deterministic Core rules need no AI at all.
+	var aiSvc ai.Service
+	if cfg.AI.Enabled {
+		geminiClient, err := gemini.NewClient("", nil, cfg.AI.KeyPool())
+		if err != nil {
+			return fmt.Errorf("create gemini client: %w", err)
+		}
+		aiSvc = ai.NewService(geminiClient, ai.NewMemoryCache(), cfg.AI.CacheTTL, cfg.AI.ModelFast, cfg.AI.ModelSmart)
+	}
+	registry.Register(cicdscan.New(aiSvc))
 
 	orchestratorSvc := orchestrator.NewService(
 		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),

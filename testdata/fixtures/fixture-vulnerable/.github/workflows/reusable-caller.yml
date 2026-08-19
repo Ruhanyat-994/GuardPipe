@@ -1,0 +1,5 @@
+on: push
+jobs:
+  call-reusable:
+    uses: ./.github/workflows/reusable.yml
+    secrets: inherit

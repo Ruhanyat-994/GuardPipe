@@ -112,6 +112,10 @@ export interface FindingListItem {
   cvss_score: number | null
   location: Location
   evidence: Evidence[]
+  // "rule" or "ai" — cicdscan (Phase 10) is the first engine whose findings
+  // can be AI-authored (its review_workflow semantic pass). Always "rule"
+  // for every earlier engine.
+  source: 'rule' | 'ai' | string
   // Engine-specific extra context, never load-bearing — today: k8sscan's
   // and containerscan's optional `impact` (a short why-this-matters
   // sentence) and `attack_path` (an ordered escalation-chain string

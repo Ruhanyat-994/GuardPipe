@@ -1,0 +1,9 @@
+on: pull_request
+jobs:
+  test:
+    runs-on: self-hosted
+    container:
+      image: node:18
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install -g some-cli-tool

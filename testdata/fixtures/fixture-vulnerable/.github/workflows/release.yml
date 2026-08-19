@@ -1,0 +1,17 @@
+name: Release
+on: push
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install requests
+      - run: echo ${{ secrets.NPM_TOKEN }}
+      - if: "secrets.PUBLISH_KEY != ''"
+        run: echo "publishing"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-config
+          path: .env

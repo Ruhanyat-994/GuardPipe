@@ -26,7 +26,7 @@ func NewFindingRepo(db Querier) *FindingRepo {
 
 const findingSelectColumns = `
 	SELECT id, scan_id, engine, rule_id, fingerprint, title, description, severity, confidence,
-		cwe, cve, owasp, cvss_score, cvss_vector, location, remediation, status, metadata
+		cwe, cve, owasp, cvss_score, cvss_vector, location, remediation, status, metadata, source
 	FROM findings`
 
 func (r *FindingRepo) ListByScan(ctx context.Context, scanID uuid.UUID, page orchestrator.Page) ([]domain.Finding, int, error) {
@@ -157,13 +157,13 @@ func (r *FindingRepo) CountByJob(ctx context.Context, jobID uuid.UUID) (int, err
 
 func findingRowScan(row pgx.Row) (domain.Finding, error) {
 	var f domain.Finding
-	var engine, severity, confidence, status string
+	var engine, severity, confidence, status, source string
 	var locationJSON, metadataJSON []byte
 
 	err := row.Scan(
 		&f.ID, &f.ScanID, &engine, &f.RuleID, &f.Fingerprint, &f.Title, &f.Description,
 		&severity, &confidence, &f.CWE, &f.CVE, &f.OWASP, &f.CVSSScore, &f.CVSSVector,
-		&locationJSON, &f.Remediation, &status, &metadataJSON,
+		&locationJSON, &f.Remediation, &status, &metadataJSON, &source,
 	)
 	if err != nil {
 		return domain.Finding{}, err
@@ -173,6 +173,7 @@ func findingRowScan(row pgx.Row) (domain.Finding, error) {
 	f.Severity = domain.Severity(severity)
 	f.Confidence = domain.Confidence(confidence)
 	f.Status = domain.Status(status)
+	f.Source = domain.FindingSource(source)
 
 	if len(locationJSON) > 0 {
 		if err := json.Unmarshal(locationJSON, &f.Location); err != nil {

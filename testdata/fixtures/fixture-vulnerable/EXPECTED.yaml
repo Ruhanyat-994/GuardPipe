@@ -107,3 +107,69 @@ rules:
 #   a dangerous capability, hostPID, or hostIPC
 # - k8sscan.network.allow-all-egress/nodeport-service/loadbalancer-no-source-ranges:
 #   no NetworkPolicy or Service manifest is planted at all
+
+# cicdscan (BUILD_GUIDE.md Phase 10). Six workflow files under
+# .github/workflows/ each plant a focused subset of the 16 Core rules —
+# counts below are the real engine's own output (New(nil), no AI service,
+# so only the deterministic rule pass runs), not hand-computed; several
+# rules fire more than once because the same broad grant/pattern is
+# deliberately repeated across more than one file (documented per rule
+# below, not a bug in either the fixture or the rule).
+  - id: cicdscan.supply-chain.unpinned-action
+    count: 8
+    reason: "every uses: in this fixture is pinned by a mutable tag (@v4/@v1), never a full SHA — pwn-request.yml(2) + self-hosted.yml(1) + release.yml(2) + excessive-permissions.yml(1) + workflow-run.yml(1) + injection-attempt.yml(1)"
+  - id: cicdscan.supply-chain.unverified-action
+    count: 1
+    reason: "pwn-request.yml's some-random-org/some-action@v1 — not on the trusted-publisher list"
+  - id: cicdscan.supply-chain.curl-pipe-shell
+    count: 1
+    reason: "pwn-request.yml pipes a downloaded install.sh straight into bash"
+  - id: cicdscan.supply-chain.unpinned-install
+    count: 2
+    reason: "release.yml's pip install requests (no ==) + self-hosted.yml's npm install -g some-cli-tool (no @version)"
+  - id: cicdscan.trigger.pull-request-target-checkout
+    count: 1
+    reason: "pwn-request.yml's checkout step sets ref: github.event.pull_request.head.sha under a pull_request_target trigger"
+  - id: cicdscan.trigger.workflow-run-untrusted
+    count: 1
+    reason: "workflow-run.yml downloads an artifact referencing github.event.workflow_run.id"
+  - id: cicdscan.injection.script-injection
+    count: 1
+    reason: "pwn-request.yml's last step interpolates github.event.pull_request.title directly into run:"
+  - id: cicdscan.permissions.missing-block
+    count: 2
+    reason: "self-hosted.yml and reusable-caller.yml declare no top-level permissions: block at all"
+  - id: cicdscan.permissions.write-all
+    count: 1
+    reason: "pwn-request.yml's top-level permissions: write-all"
+  - id: cicdscan.permissions.excessive-token
+    count: 2
+    reason: "excessive-permissions.yml's job.permissions.contents:write with no write-like step, plus pwn-request.yml's workflow-level write-all inherited by its job, whose steps (checkout/some-action/curl/echo) also don't look like they write"
+  - id: cicdscan.secrets.echoed
+    count: 1
+    reason: "release.yml echoes secrets.NPM_TOKEN directly"
+  - id: cicdscan.secrets.inherit
+    count: 1
+    reason: "reusable-caller.yml's job calls a reusable workflow with secrets: inherit"
+  - id: cicdscan.secrets.in-condition
+    count: 1
+    reason: "release.yml's if: references secrets.PUBLISH_KEY"
+  - id: cicdscan.runner.self-hosted-public
+    count: 1
+    reason: "self-hosted.yml runs on: self-hosted under the fork-reachable pull_request trigger"
+  - id: cicdscan.runner.unpinned-image
+    count: 1
+    reason: "self-hosted.yml's container: image: node:18 has no @sha256 digest"
+  - id: cicdscan.artifact.upload-sensitive
+    count: 1
+    reason: "release.yml uploads path: .env as a build artifact"
+
+# cicdscan near-misses deliberately absent from this repo:
+# - cicdscan.ai.semantic-finding/cicdscan.security.prompt-injection-attempt:
+#   both require a real or faked AI provider call — golden-fixture tests run
+#   with New(nil) (no AI service) precisely to stay deterministic; both are
+#   covered instead by internal/engines/cicdscan/aipass_test.go's dedicated
+#   fake-provider tests (TestEngine_Run_AIPass_AddsASemanticFinding,
+#   TestEngine_Run_AIPass_PromptInjectionAttempt). injection-attempt.yml's
+#   planted comment ("ignore previous instructions...") is there for a real
+#   live-AI manual verification pass, documented in the file itself.

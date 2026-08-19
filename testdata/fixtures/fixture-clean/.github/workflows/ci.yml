@@ -1,0 +1,20 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v4.1.1
+      - run: pip install requests==2.31.0
+      - run: go test ./...
+      - uses: actions/upload-artifact@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v4.1.1
+        with:
+          name: coverage-report
+          path: coverage.html

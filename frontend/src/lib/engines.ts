@@ -23,6 +23,7 @@ export const ENGINE_META: Record<
     hasOsvMark?: boolean
     hasSonarQubeMark?: boolean
     hasKubernetesMark?: boolean
+    hasGitHubMark?: boolean
   }
 > = {
   docreview: { label: 'Docs', icon: FileText },
@@ -36,7 +37,12 @@ export const ENGINE_META: Record<
   // (ADR-0010 unreversed) — hasKubernetesMark names the standards its rules
   // are grounded in, the same attribution role hasOsvMark plays for depscan.
   k8sscan: { label: 'K8s', icon: Boxes, hasKubernetesMark: true },
-  cicdscan: { label: 'CI/CD', icon: Workflow },
+  // cicdscan (Phase 10) analyses GitHub Actions workflows specifically —
+  // GitHub Actions is part of the GitHub product, so this reuses the
+  // already-built GitHubMark rather than a new CI/CD-specific icon
+  // (documentation/09-ui-ux-design-system.md's own reasoning, BUILD_GUIDE.md
+  // Phase 10's frontend checklist).
+  cicdscan: { label: 'CI/CD', icon: Workflow, hasGitHubMark: true },
   pentest: { label: 'Pentest', icon: ShieldAlert },
 }
 
@@ -69,7 +75,13 @@ export const ALL_ENGINES: Engine[] = [
  * `scan.engine_unavailable` (422) regardless, so this is a UI convenience
  * (disable what can't run), not the source of truth.
  */
-export const ENABLED_ENGINES: Engine[] = ['depscan', 'codescan', 'containerscan', 'k8sscan']
+export const ENABLED_ENGINES: Engine[] = [
+  'depscan',
+  'codescan',
+  'containerscan',
+  'k8sscan',
+  'cicdscan',
+]
 
 export function isEngineEnabled(engine: Engine): boolean {
   return ENABLED_ENGINES.includes(engine)
