@@ -84,11 +84,8 @@ spec: {template: {spec: {containers: [{name: app, image: nginx}]}}}`)
 	if err != nil {
 		t.Fatalf("renderedChartManifests() error = %v", err)
 	}
-	if skip == nil {
-		t.Fatal("renderedChartManifests() skip = nil, want helm_dependency_unresolved")
-	}
-	if skip.Reason != "helm_dependency_unresolved" {
-		t.Errorf("skip.Reason = %q, want helm_dependency_unresolved", skip.Reason)
+	if skip == nil || skip.Reason != "helm_dependency_unresolved" {
+		t.Fatalf("renderedChartManifests() skip = %+v, want helm_dependency_unresolved", skip)
 	}
 	if len(manifests) != 0 {
 		t.Errorf("got %d manifests from a chart with an unresolved dependency, want 0", len(manifests))
