@@ -249,24 +249,22 @@ type serviceAccountSpec struct {
 }
 
 // ResourceGraph is every parsed manifest from one scan, indexed the way the
-// RBAC and network rule families need to cross-reference resources (a
-// RoleBinding needs its Role/ClusterRole's rules; a workload's "does a
-// NetworkPolicy cover it" check needs every NetworkPolicy in its namespace).
+// network rule family needs to cross-reference resources (a workload's
+// "does a NetworkPolicy cover it" check needs every NetworkPolicy in its
+// namespace). The Core RBAC rules (rbac.go) don't need a Role/ClusterRole
+// cross-reference the way this graph was originally designed to support —
+// each evaluates a Role's own PolicyRules or a binding's own RoleRef/subject
+// fields directly, never needing to resolve one from the other (that
+// resolution is what the Stretch k8sscan.rbac.escalation-path rule would
+// need, per rbac.go's own evaluateRBAC doc comment — not built this pass).
 type ResourceGraph struct {
 	Manifests []Manifest
-
-	// Namespace -> Role/ClusterRole name -> Manifest, split because
-	// ClusterRole names are only unique cluster-wide but Role names are
-	// only unique per-namespace — "" is the cluster scope key for
-	// ClusterRoles.
-	rolesByNamespace map[string]map[string]Manifest
 
 	networkPoliciesByNamespace map[string][]Manifest
 }
 
 func newResourceGraph() *ResourceGraph {
 	return &ResourceGraph{
-		rolesByNamespace:           map[string]map[string]Manifest{},
 		networkPoliciesByNamespace: map[string][]Manifest{},
 	}
 }
@@ -274,32 +272,9 @@ func newResourceGraph() *ResourceGraph {
 func (g *ResourceGraph) add(m Manifest) {
 	g.Manifests = append(g.Manifests, m)
 
-	if m.Role != nil {
-		scope := m.Namespace
-		if m.Kind == "ClusterRole" {
-			scope = ""
-		}
-		if g.rolesByNamespace[scope] == nil {
-			g.rolesByNamespace[scope] = map[string]Manifest{}
-		}
-		g.rolesByNamespace[scope][m.Name] = m
-	}
 	if m.NetworkPolicy != nil {
 		g.networkPoliciesByNamespace[m.Namespace] = append(g.networkPoliciesByNamespace[m.Namespace], m)
 	}
-}
-
-// roleFor resolves a RoleBinding's RoleRef to the Role/ClusterRole it
-// points at. A ClusterRole can be referenced from any namespace (that's
-// what makes cluster-admin-binding dangerous regardless of where the
-// binding itself lives); a Role is only visible within its own namespace.
-func (g *ResourceGraph) roleFor(bindingNamespace, refKind, refName string) (Manifest, bool) {
-	if refKind == "ClusterRole" {
-		m, ok := g.rolesByNamespace[""][refName]
-		return m, ok
-	}
-	m, ok := g.rolesByNamespace[bindingNamespace][refName]
-	return m, ok
 }
 
 // networkPoliciesFor returns every NetworkPolicy in namespace — the
