@@ -17,7 +17,13 @@ import type { Engine } from './rulesApi'
  */
 export const ENGINE_META: Record<
   Engine,
-  { label: string; icon: LucideIcon; hasOsvMark?: boolean; hasSonarQubeMark?: boolean }
+  {
+    label: string
+    icon: LucideIcon
+    hasOsvMark?: boolean
+    hasSonarQubeMark?: boolean
+    hasKubernetesMark?: boolean
+  }
 > = {
   docreview: { label: 'Docs', icon: FileText },
   // codescan wraps a self-hosted SonarQube instance (Phase 7, ADR-0011)
@@ -26,7 +32,10 @@ export const ENGINE_META: Record<
   codescan: { label: 'Code', icon: Code2, hasSonarQubeMark: true },
   depscan: { label: 'Deps', icon: Package, hasOsvMark: true },
   containerscan: { label: 'Containers', icon: ContainerIcon },
-  k8sscan: { label: 'K8s', icon: Boxes },
+  // k8sscan (Phase 9) is GuardPipe's own rule engine, not a wrapped tool
+  // (ADR-0010 unreversed) — hasKubernetesMark names the standards its rules
+  // are grounded in, the same attribution role hasOsvMark plays for depscan.
+  k8sscan: { label: 'K8s', icon: Boxes, hasKubernetesMark: true },
   cicdscan: { label: 'CI/CD', icon: Workflow },
   pentest: { label: 'Pentest', icon: ShieldAlert },
 }
@@ -60,7 +69,7 @@ export const ALL_ENGINES: Engine[] = [
  * `scan.engine_unavailable` (422) regardless, so this is a UI convenience
  * (disable what can't run), not the source of truth.
  */
-export const ENABLED_ENGINES: Engine[] = ['depscan', 'codescan', 'containerscan']
+export const ENABLED_ENGINES: Engine[] = ['depscan', 'codescan', 'containerscan', 'k8sscan']
 
 export function isEngineEnabled(engine: Engine): boolean {
   return ENABLED_ENGINES.includes(engine)

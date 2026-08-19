@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,6 +68,8 @@ type Pool struct {
 	EngineTimeouts map[domain.EngineID]time.Duration
 	DefaultTimeout time.Duration
 	Log            *slog.Logger
+
+	workspaces workspaceCache
 }
 
 // jobQueueClaimer is the subset of adapters/queue.JobQueue the worker
@@ -167,7 +170,16 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		return
 	}
 
-	workspaceDir, cleanup, err := p.prepareWorkspace(ctx, scan.ProjectID)
+	// acquire, not prepareWorkspace directly: every job for the same scan
+	// shares one clone (documentation/05-module-specifications.md §5's
+	// pipeline diagram draws one "workspace prep" node feeding every
+	// engine) — the first job for this scan.ID actually clones, every other
+	// job concurrently or later in the same scan reuses that same
+	// directory instead of re-cloning the repository from scratch.
+	workspaceDir, releaseWorkspace, err := p.workspaces.acquire(ctx, scan.ID, func() (string, error) {
+		dir, _, prepErr := p.prepareWorkspace(ctx, scan.ProjectID)
+		return dir, prepErr
+	})
 	if err != nil {
 		reason := "workspace_unavailable"
 		if errors.Is(err, errCredentialInvalid) {
@@ -177,7 +189,7 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: reason})
 		return
 	}
-	defer cleanup()
+	defer releaseWorkspace()
 
 	scanInput := domain.ScanInput{ScanID: scan.ID, JobID: jobID, ProjectID: scan.ProjectID, WorkspaceDir: workspaceDir}
 
@@ -240,6 +252,12 @@ func (p *Pool) runEngine(ctx context.Context, engine domain.Engine, in domain.Sc
 	return engine.Run(ctx, in, emit)
 }
 
+// prepareWorkspace clones one repository into a fresh temp directory. Its
+// cleanup return value only ever removes a partially-written directory on a
+// failure path within this function — on success, the caller (processJob,
+// via workspaceCache.acquire) owns removal instead, since a workspace this
+// function creates may now be shared by every job in a scan, not just the
+// one that happened to trigger the clone.
 func (p *Pool) prepareWorkspace(ctx context.Context, projectID uuid.UUID) (dir string, cleanup func(), err error) {
 	repoURL, _, token, err := p.Projects.GetCloneInfo(ctx, projectID)
 	if err != nil {
@@ -282,21 +300,56 @@ func (p *Pool) prepareWorkspace(ctx context.Context, projectID uuid.UUID) (dir s
 	// content, never run it — see domain.Engine's own doc comment), so
 	// flattening every file to 0644 and every directory to 0755 is always
 	// safe here, not just for this specific clone.
-	if err := makeWorldReadable(dir); err != nil {
+	if err := hardenWorkspace(dir); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("relax workspace permissions: %w", err)
+		return "", nil, fmt.Errorf("harden workspace: %w", err)
 	}
 	return dir, cleanup, nil
 }
 
-func makeWorldReadable(root string) error {
+// hardenWorkspace walks a freshly-cloned workspace once, both relaxing
+// permissions (see prepareWorkspace's call site) and finally enforcing
+// documentation/05-module-specifications.md §5's "Symlinks that escape the
+// workspace root are removed before engines run (path-traversal defence)"
+// rule — previously documented but never actually implemented, which a real
+// clone surfaced two ways: os.Chmod follows symlinks (unlike WalkDir's own
+// traversal, which does not), so a symlink cycle inside the cloned
+// repository — e.g. github.com/madhuakula/kubernetes-goat's
+// scenarios/metadata-db content — made a plain chmod pass fail outright
+// with ELOOP ("too many levels of symbolic links") on every job for that
+// scan, and even a well-behaved symlink pointing outside root was never
+// being removed at all.
+func hardenWorkspace(root string) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return sanitizeSymlink(root, path)
 		}
 		if d.IsDir() {
 			return os.Chmod(path, 0o755)
 		}
 		return os.Chmod(path, 0o644)
 	})
+}
+
+// sanitizeSymlink removes path if it cannot be safely resolved (a dangling
+// target or a symlink cycle — either way, nothing can read it safely
+// either, so an engine should never see it) or if it resolves to somewhere
+// outside root. A symlink that resolves cleanly inside root is left alone
+// and, deliberately, not chmod'd: on every platform this matters for, a
+// symlink's own mode bits are ignored — what governs whether its target is
+// readable is the target's own mode, and the target gets its turn in this
+// same walk.
+func sanitizeSymlink(root, path string) error {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return os.Remove(path)
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return os.Remove(path)
+	}
+	return nil
 }

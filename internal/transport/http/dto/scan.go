@@ -189,7 +189,12 @@ type LocationResponse struct {
 	Kind         string `json:"kind,omitempty"`
 	Name         string `json:"name,omitempty"`
 	Namespace    string `json:"namespace,omitempty"`
+	Container    string `json:"container,omitempty"`
 	FieldPath    string `json:"field_path,omitempty"`
+	Value        string `json:"value,omitempty"`
+	FromHelm     bool   `json:"from_helm,omitempty"`
+	ChartName    string `json:"chart_name,omitempty"`
+	TemplateFile string `json:"template_file,omitempty"`
 	Host         string `json:"host,omitempty"`
 	IP           string `json:"ip,omitempty"`
 	Port         int    `json:"port,omitempty"`
@@ -206,7 +211,9 @@ func fromLocation(l domain.Location) LocationResponse {
 	return LocationResponse{
 		Type: string(l.Type), Path: l.Path, LineStart: l.LineStart, LineEnd: l.LineEnd, Column: l.Column,
 		Image: l.Image, LayerDigest: l.LayerDigest, LayerIndex: l.LayerIndex,
-		File: l.File, Kind: l.Kind, Name: l.Name, Namespace: l.Namespace, FieldPath: l.FieldPath,
+		File: l.File, Kind: l.Kind, Name: l.Name, Namespace: l.Namespace, Container: l.Container,
+		FieldPath: l.FieldPath, Value: l.Value,
+		FromHelm: l.FromHelm, ChartName: l.ChartName, TemplateFile: l.TemplateFile,
 		Host: l.Host, IP: l.IP, Port: l.Port, Protocol: l.Protocol, Service: l.Service, URL: l.URL,
 		Ecosystem: l.Ecosystem, Package: l.Package, Version: l.Version, ManifestPath: l.ManifestPath,
 	}
@@ -256,6 +263,15 @@ type FindingListItemResponse struct {
 	CVSSScore   *float64           `json:"cvss_score"`
 	Location    LocationResponse   `json:"location"`
 	Evidence    []EvidenceResponse `json:"evidence"`
+	// Metadata is engine-specific extra context — never a load-bearing
+	// field for any core behaviour (documentation/06-database-design.md's
+	// own "JSONB only for genuinely variable data" rule), just narrative
+	// detail: e.g. k8sscan/containerscan's "impact"/"attack_path" (a short
+	// why-this-matters sentence and an ordered escalation-chain array, see
+	// each engine's own attackpath.go), or depscan/containerscan's
+	// "osv_id"/"trivy_check_id" upstream references. Absent keys are
+	// absent, never faked with empty strings.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 func FromFinding(f domain.Finding) FindingListItemResponse {
@@ -269,6 +285,7 @@ func FromFinding(f domain.Finding) FindingListItemResponse {
 		Severity: string(f.Severity), Confidence: string(f.Confidence), Status: string(f.Status),
 		CWE: emptyIfNilStrings(f.CWE), CVE: emptyIfNilStrings(f.CVE), OWASP: emptyIfNilStrings(f.OWASP),
 		CVSSScore: f.CVSSScore, Location: fromLocation(f.Location), Evidence: evidence,
+		Metadata: f.Metadata,
 	}
 }
 

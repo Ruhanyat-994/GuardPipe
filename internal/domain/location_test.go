@@ -44,6 +44,16 @@ func TestLocation_MarshalJSON_MatchesDocumentedContract(t *testing.T) {
 			want: `{"type":"k8s","file":"deploy/api.yaml","kind":"Deployment","name":"api","namespace":"prod","field_path":"spec.template.spec.containers[0].securityContext.privileged"}`,
 		},
 		{
+			name: "k8s location from a rendered Helm chart",
+			loc: domain.Location{
+				Type: domain.LocationTypeK8s, File: "charts/api/templates/deployment.yaml", Kind: "Deployment",
+				Name: "api", Namespace: "prod",
+				FieldPath: "spec.template.spec.containers[0].securityContext.privileged",
+				FromHelm:  true, ChartName: "api", TemplateFile: "templates/deployment.yaml",
+			},
+			want: `{"type":"k8s","file":"charts/api/templates/deployment.yaml","kind":"Deployment","name":"api","namespace":"prod","field_path":"spec.template.spec.containers[0].securityContext.privileged","from_helm":true,"chart_name":"api","template_file":"templates/deployment.yaml"}`,
+		},
+		{
 			name: "network location",
 			loc: domain.Location{
 				Type: domain.LocationTypeNetwork, Host: "example.com", IP: "203.0.113.10",

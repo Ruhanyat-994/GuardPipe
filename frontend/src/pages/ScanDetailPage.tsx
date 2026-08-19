@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
-import { Card, CardDescription, CardTitle } from '../components/ui/Card'
-import { FindingsList } from '../components/project/FindingsList'
+import { Card, CardDescription } from '../components/ui/Card'
+import { EngineFindingsSection } from '../components/project/EngineFindingsSection'
 import { PartialResultBanner } from '../components/project/PartialResultBanner'
 import { SupplyChainPipeline } from '../components/project/SupplyChainPipeline'
 import { ApiError } from '../lib/apiClient'
@@ -129,31 +129,45 @@ export function ScanDetailPage() {
         <SupplyChainPipeline progress={progress} jobs={scan.jobs} scan={scan} />
       </div>
 
-      <Card>
-        <CardTitle className="text-h3">Findings</CardTitle>
+      <div>
+        <h2 className="mb-3 text-h3 text-text-primary">Findings</h2>
         {!TERMINAL_STATUSES.has(scan.status) && (
-          <CardDescription className="mt-2">
-            Findings will appear once the scan finishes.
-          </CardDescription>
+          <Card>
+            <CardDescription>Findings will appear once the scan finishes.</CardDescription>
+          </Card>
         )}
         {TERMINAL_STATUSES.has(scan.status) && findings === null && (
-          <CardDescription className="mt-2">Loading findings…</CardDescription>
+          <Card>
+            <CardDescription>Loading findings…</CardDescription>
+          </Card>
         )}
-        {findings !== null && findings.length === 0 && (
-          <CardDescription className="mt-2">
-            No findings — this scan came back clean.
-          </CardDescription>
-        )}
-        {findings !== null && findings.length > 0 && (
-          <div className="mt-4">
-            <FindingsList
-              findings={findings}
-              repository={project?.repository ?? null}
-              gitRef={scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null}
-            />
+        {findings !== null && (
+          // One section per engine that actually ran, not a flat mixed
+          // list — the same grouping ProjectFindingsPanel already uses, so
+          // it's immediately clear which engine (Kubernetes, Code, Deps,
+          // Containers, ...) a given finding came from, rather than having
+          // to read every rule_id to tell them apart.
+          <div className="flex flex-col gap-3">
+            {scan.jobs.map((job) => (
+              <EngineFindingsSection
+                key={job.id}
+                engine={job.engine}
+                status={job.status}
+                findingCount={job.finding_count}
+                findings={findings.filter((f) => f.engine === job.engine)}
+                scanId={scan.id}
+                repository={project?.repository ?? null}
+                gitRef={
+                  scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null
+                }
+                errorReason={job.error_reason}
+                skipReason={job.skip_reason}
+                defaultExpanded={scan.jobs.length === 1}
+              />
+            ))}
           </div>
         )}
-      </Card>
+      </div>
     </main>
   )
 }

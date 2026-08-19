@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -82,7 +83,11 @@ func countByRule(findings []domain.Finding) map[string]int {
 // TestEngine_FixtureVulnerable_MatchesGoldenCatalogue is the golden-fixture
 // gate documentation/15-testing-strategy.md §5 names: every planted
 // deterministic rule case in testdata/fixtures/fixture-vulnerable must
-// fire, exactly as many times as EXPECTED.yaml says.
+// fire, exactly as many times as EXPECTED.yaml says. EXPECTED.yaml is
+// shared across every engine's own fixture content in the same repo (Phase
+// 9 added k8sscan.* entries alongside these depscan.* ones) — filtered to
+// this engine's own prefix, since each engine's test only ever runs its own
+// engine against the fixture.
 func TestEngine_FixtureVulnerable_MatchesGoldenCatalogue(t *testing.T) {
 	fixtureDir := filepath.Join("..", "..", "..", "testdata", "fixtures", "fixture-vulnerable")
 	expectedBytes, err := os.ReadFile(filepath.Join(fixtureDir, "EXPECTED.yaml"))
@@ -94,6 +99,9 @@ func TestEngine_FixtureVulnerable_MatchesGoldenCatalogue(t *testing.T) {
 	counts := countByRule(findings)
 
 	for _, rule := range expected.Rules {
+		if !strings.HasPrefix(rule.ID, "depscan.") {
+			continue
+		}
 		require.Equalf(t, rule.Count, counts[rule.ID], "rule %s: got %d findings, want %d", rule.ID, counts[rule.ID], rule.Count)
 	}
 

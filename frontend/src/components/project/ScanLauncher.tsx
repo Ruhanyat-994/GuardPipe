@@ -7,6 +7,7 @@ import { ALL_ENGINES, ENABLED_ENGINES, ENGINE_META, isEngineEnabled } from '../.
 import type { Engine } from '../../lib/rulesApi'
 import { ApiError } from '../../lib/apiClient'
 import { createScan, type Scan } from '../../lib/scansApi'
+import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
 import { SonarQubeMark } from '../icons/SonarQubeMark'
 
@@ -111,6 +112,7 @@ export function ScanLauncher({
                 <span className="text-body-sm font-medium text-text-primary">{meta.label}</span>
                 {meta.hasOsvMark && <OsvMark />}
                 {meta.hasSonarQubeMark && <SonarQubeMark />}
+                {meta.hasKubernetesMark && <KubernetesMark />}
               </div>
               <span className="text-caption text-text-tertiary">
                 {enabled ? 'Available' : 'Coming soon'}

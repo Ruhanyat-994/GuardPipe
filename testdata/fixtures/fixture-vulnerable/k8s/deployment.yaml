@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      volumes:
+      - name: dockersock
+        hostPath:
+          path: /var/run/docker.sock
+      containers:
+      - name: web
+        image: nginx:latest
+        securityContext:
+          privileged: true
+        envFrom:
+        - secretRef:
+            name: web-secrets

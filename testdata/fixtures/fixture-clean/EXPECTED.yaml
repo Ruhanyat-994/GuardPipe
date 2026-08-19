@@ -2,4 +2,17 @@
 # non-informational findings on fixture-clean" is one of the two CI gates
 # named there. Every dependency here is pinned and lockfile-backed, and
 # there are no secrets — depscan should emit nothing.
-rules: []
+#
+# k8sscan (BUILD_GUIDE.md Phase 9): k8s/deployment.yaml is deliberately
+# hardened against every Core rule (dedicated ServiceAccount, automount
+# disabled, non-root, seccomp RuntimeDefault, no privilege escalation,
+# read-only root filesystem, all capabilities dropped, resource limits,
+# both probes, an image pinned by digest, its one secret imported via a
+# single env.valueFrom.secretKeyRef rather than envFrom) and
+# k8s/networkpolicy.yaml covers the namespace with a real, narrowly-scoped
+# policy — so every rule stays quiet except the always-present informational
+# PSA-level summary, confirmed against a live engine run, not hand-computed.
+rules:
+  - id: k8sscan.workload.psa-level
+    count: 1
+    reason: "informational — always emitted once per workload; this one reaches level \"restricted\""
