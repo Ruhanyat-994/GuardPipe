@@ -1,0 +1,4 @@
+apiVersion: v2
+name: api
+description: Fixture chart with a planted k8sscan.workload.allow-priv-escalation-style violation, rendered offline by k8sscan (BUILD_GUIDE.md Phase 9).
+version: 0.1.0

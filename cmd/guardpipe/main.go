@@ -28,6 +28,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/codescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/containerscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/depscan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/k8sscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
@@ -137,6 +138,7 @@ func run() error {
 	// this registry means every finding it would produce fails to persist.
 	ruleRegistry := advisory.NewRuleRegistry()
 	ruleRegistry.Register(depscan.Rules...)
+	ruleRegistry.Register(k8sscan.Rules...)
 
 	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
 	advisorySvc := advisory.NewService(
@@ -189,6 +191,10 @@ func run() error {
 	// rule at runtime instead (their own engine.go).
 	registry.Register(codescan.New(sonarqubeClient, sonarqubeScanner, advisorySvc, cfg.External.SonarQubeAnalysisTimeout))
 	registry.Register(containerscan.New(trivyScanner, dockerClient, advisorySvc))
+	// k8sscan (Phase 9) needs no dependencies — every rule is a pure
+	// function of the manifests/Helm charts found in the workspace, unlike
+	// depscan (advisory lookups) or codescan/containerscan (a wrapped tool).
+	registry.Register(k8sscan.New())
 
 	orchestratorSvc := orchestrator.NewService(
 		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),

@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | Module Specifications |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Status** | Draft |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-14 |
+| **Last updated** | 2026-08-16 |
 
 ### Revision history
 
@@ -15,6 +15,7 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial module specifications |
 | 1.1 | 2026-08-14 | Team | §6 `codescan` rewritten: wraps a self-hosted SonarQube CE instance via `adapters/sonarqube` instead of implementing its own SAST engine, per external requirement — see [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md). §7's secret-sweep note and §16's rule-count summary updated to match; `depscan`'s secret sweep is now standalone rather than a planned shared package with `codescan` |
+| 1.2 | 2026-08-16 | Team | §9 `k8sscan` expanded ahead of Phase 9 starting: named the specific standards each rule family is grounded in (Pod Security Standards, CIS Kubernetes Benchmark's workload-level controls, NSA/CISA hardening guidance); Helm chart rendering promoted from Stretch to Core (offline template rendering only, vendored chart dependencies only, no cluster/network access — matches `02-srs.md` rev 1.3's FR-K8S-014), with new failure modes for unresolved dependencies and render errors that skip one chart rather than the whole engine |
 
 > **How to use this document.** Read §1–2 fully, then read *your* module's section in full and skim the rest. Each engine section has a **Core / Stretch rule table** — Core rules are what you must have working on demo day. If time runs out, cut Stretch without asking.
 
@@ -565,13 +566,14 @@ This is unrelated to the existing `container-scan` CI job (`13-devops-and-enviro
 **Owner:** Member 3 · **Requirements:** FR-K8S-001..015 · **Sprint:** 2
 
 ### Responsibility
-Manifest-level policy analysis only. No cluster connection, no kubeconfig, no live API access (out of scope per charter).
+Manifest-level policy analysis only. No cluster connection, no kubeconfig, no live API access (out of scope per charter). Every rule is grounded in a named, publicly-published standard rather than invented severity judgement calls — primarily the Kubernetes project's own [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/) (baseline/restricted profiles), supplemented by the workload-level controls from the [CIS Kubernetes Benchmark](https://www.cisecurity.org/benchmark/kubernetes) and the [NSA/CISA Kubernetes Hardening Guidance](https://www.cisa.gov/news-events/cybersecurity-advisories/aa22-257a) — each rule's doc comment in `engines/k8sscan/rules.go` cites which one it implements. The CIS Benchmark also defines node/control-plane-level checks (kubelet config, etcd, API server flags); those need live cluster/host access and are explicitly **out of scope** for a static manifest analyzer — `k8sscan` only ever implements the subset expressible from YAML alone.
 
 ### Discovery and parsing
 1. Find `*.yaml`/`*.yml`; split multi-document files on `---`.
 2. Reject documents lacking both `apiVersion` and `kind` — they are not Kubernetes resources (avoids flagging CI configs and Helm values files).
-3. Build a resource graph: workloads → ServiceAccounts → Roles/ClusterRoles → RoleBindings, and namespaces → NetworkPolicies.
-4. Record for every finding: file, `kind`, `name`, `namespace`, and the **YAML field path** (e.g. `spec.template.spec.containers[0].securityContext.privileged`) — FR-K8S-012.
+3. **Helm charts are rendered first, offline, then fed into the same pipeline as step 1's output** (FR-K8S-014, promoted to Core — see `02-srs.md` rev 1.3): every `Chart.yaml` found in the repository marks a chart root; each is rendered independently via Helm's own Go template engine used as a library (`helm.sh/helm/v3/pkg/chart` + `pkg/engine`, `action.Install` with `DryRun`/`ClientOnly` — the exact equivalent of `helm template`, never `helm install`), using the chart's default `values.yaml` only. This is a pure templating operation — Go's `text/template` plus the `sprig` function library, not a general-purpose interpreter — so it never shells out, never touches the filesystem outside the chart directory, and never opens a network connection, which is why this runs in-process with no sandbox, the same reasoning already applied to every other pure-parsing engine (`codescan`/`k8sscan` "read files, never execute scanned code" — `CLAUDE.md`'s security posture section). A chart's Helm-declared `dependencies` are only resolved from what's already vendored under that chart's own `charts/` subdirectory (i.e. already committed to the repo, e.g. via `helm dependency vendor`) — **never** fetched from a chart repository over the network. A chart with unresolved dependencies is skipped individually (`ErrorReason`/`SkipReason` `helm_dependency_unresolved`) rather than failing the whole engine; other charts and any raw manifests elsewhere in the repo are still scanned. Findings from a rendered manifest carry both the rendered location and the originating template file/line so the remediation is actionable (telling a user to edit an auto-generated temp file is useless — they need the template).
+4. Build a resource graph: workloads → ServiceAccounts → Roles/ClusterRoles → RoleBindings, and namespaces → NetworkPolicies.
+5. Record for every finding: file, `kind`, `name`, `namespace`, and the **YAML field path** (e.g. `spec.template.spec.containers[0].securityContext.privileged`) — FR-K8S-012.
 
 ### Rule families
 
@@ -622,7 +624,7 @@ Manifest-level policy analysis only. No cluster connection, no kubeconfig, no li
 | `k8sscan.secrets.literal-in-manifest` | Secret value inline in a manifest or `stringData` | critical | Core |
 | `k8sscan.secrets.env-from-secret-all` | `envFrom` importing an entire Secret | low | Core |
 
-**Core total: 31 rules** (10 RBAC + 15 workload + 6 network/secrets). Stretch: RBAC escalation-path analysis, Helm/Kustomize rendering, CIS control mapping.
+**Core total: 31 rules** (10 RBAC + 15 workload + 6 network/secrets) — applied identically to raw manifests and Helm-rendered manifests, no separate rule set for each. Stretch: RBAC escalation-path analysis, Kustomize overlay rendering, formal per-finding CIS control-ID mapping.
 
 ### Pod Security Standards evaluation (FR-K8S-008)
 Each workload is evaluated against the three PSS profiles; the result is the **highest level it satisfies**, reported as an informational finding with the list of controls that blocked a higher level. This is the single most legible output for a demo — one line per workload saying "this pod cannot meet `restricted` because X, Y, Z".
@@ -631,8 +633,10 @@ Each workload is evaluated against the three PSS profiles; the result is the **h
 | Failure | Handling |
 |---|---|
 | Invalid YAML | Skip document, record `parse_error` with file and line |
-| Helm templates (`{{ … }}`) | Detected and skipped with reason `templated_manifest`; Stretch adds rendering |
-| No K8s manifests | `Applicable` false → `skipped` |
+| Un-rendered Helm template markup (`{{ … }}`) found outside a recognised chart root (no sibling `Chart.yaml`) | Skipped with reason `templated_manifest` — it's template source, not a real manifest, and there's no chart context to render it with |
+| Chart found, but declared dependencies aren't vendored locally | That chart skipped with reason `helm_dependency_unresolved`; never fetched over the network. Other charts/manifests in the repo are still scanned |
+| Chart template rendering error (invalid Go template syntax, missing required value) | That chart skipped with reason `helm_render_failed`, engine error logged; other charts/manifests still scanned |
+| No K8s manifests and no Helm charts | `Applicable` false → `skipped` |
 | CRDs / unknown kinds | Generic rules only (image tags, resource limits); no false claims about unknown schemas |
 
 ---

@@ -6,6 +6,7 @@ import { ENGINE_META } from '../../lib/engines'
 import type { Repository } from '../../lib/projectsApi'
 import type { Engine } from '../../lib/rulesApi'
 import type { FindingListItem, JobStatus } from '../../lib/scansApi'
+import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
 import { SonarQubeMark } from '../icons/SonarQubeMark'
 import { FindingsList } from './FindingsList'
@@ -115,6 +116,7 @@ export function EngineFindingsSection({
             <span className="font-semibold text-text-primary">{meta.label}</span>
             {meta.hasOsvMark && <OsvMark />}
             {meta.hasSonarQubeMark && <SonarQubeMark />}
+            {meta.hasKubernetesMark && <KubernetesMark />}
           </div>
           <span className="text-caption" style={{ color }}>
             {subtitle(status, findingCount)}

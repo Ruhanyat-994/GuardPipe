@@ -26,3 +26,84 @@ rules:
 # - .env.example (the safe template convention)
 # - requirements.txt is pinned (==), so it counts as its own lockfile —
 #   no depscan.hygiene.no-lockfile for the pypi ecosystem
+
+# k8sscan (BUILD_GUIDE.md Phase 9). Two workloads exist here: k8s/deployment.yaml
+# (raw) and charts/api's rendered Deployment (Helm) — neither hardens beyond
+# what each planted violation needs, so the "fires by default when a field
+# is simply absent" rules (allow-priv-escalation, runs-as-root,
+# caps-not-dropped, writable-root-fs, no-resource-limits, automount-sa-token,
+# default-sa-used, mutable-image-tag, no-probes, psa-level) correctly fire
+# on *both*, count 2 — that's not double-counting a bug, it's two genuinely
+# unhardened workloads. Counts below are the real output of a live engine
+# run against this fixture, not hand-computed.
+  - id: k8sscan.workload.privileged
+    count: 1
+    reason: "k8s/deployment.yaml's container sets privileged: true"
+  - id: k8sscan.workload.host-network
+    count: 1
+    reason: "k8s/deployment.yaml's pod sets hostNetwork: true"
+  - id: k8sscan.workload.hostpath-mount
+    count: 1
+    reason: "k8s/deployment.yaml mounts /var/run/docker.sock via hostPath"
+  - id: k8sscan.workload.allow-priv-escalation
+    count: 2
+    reason: "raw: unset (defaults to allowed); Helm chart: values.yaml sets it true"
+  - id: k8sscan.workload.runs-as-root
+    count: 2
+    reason: "neither workload sets runAsNonRoot"
+  - id: k8sscan.workload.caps-not-dropped
+    count: 2
+    reason: "neither workload sets capabilities.drop: [ALL]"
+  - id: k8sscan.workload.writable-root-fs
+    count: 2
+    reason: "neither workload sets readOnlyRootFilesystem: true"
+  - id: k8sscan.workload.no-resource-limits
+    count: 2
+    reason: "neither workload sets resources.limits"
+  - id: k8sscan.workload.automount-sa-token
+    count: 2
+    reason: "neither workload disables automountServiceAccountToken"
+  - id: k8sscan.workload.default-sa-used
+    count: 2
+    reason: "neither workload sets serviceAccountName"
+  - id: k8sscan.workload.mutable-image-tag
+    count: 2
+    reason: "both images are tag-only (nginx:latest, myorg/api:latest) — no @sha256 digest"
+  - id: k8sscan.workload.no-probes
+    count: 2
+    reason: "neither workload configures liveness/readiness probes"
+  - id: k8sscan.workload.psa-level
+    count: 2
+    reason: "informational — always emitted once per workload, both land at level \"privileged\""
+  - id: k8sscan.rbac.wildcard-verbs
+    count: 1
+    reason: "k8s/rbac.yaml's ClusterRole grants verbs: [\"*\"]"
+  - id: k8sscan.rbac.wildcard-resources
+    count: 1
+    reason: "k8s/rbac.yaml's ClusterRole grants resources: [\"*\"]"
+  - id: k8sscan.rbac.wildcard-apigroups
+    count: 1
+    reason: "k8s/rbac.yaml's ClusterRole grants apiGroups: [\"*\"]"
+  - id: k8sscan.rbac.cluster-admin-binding
+    count: 1
+    reason: "k8s/rbac.yaml's ClusterRoleBinding grants cluster-admin"
+  - id: k8sscan.rbac.default-sa-bound
+    count: 1
+    reason: "the same binding's subject is the default ServiceAccount"
+  - id: k8sscan.network.no-networkpolicy
+    count: 2
+    reason: "no NetworkPolicy exists anywhere in this fixture — both workloads' namespace is unprotected"
+  - id: k8sscan.secrets.literal-in-manifest
+    count: 1
+    reason: "k8s/secret.yaml carries data inline"
+  - id: k8sscan.secrets.env-from-secret-all
+    count: 1
+    reason: "k8s/deployment.yaml's container uses envFrom.secretRef instead of a single secretKeyRef"
+
+# k8sscan near-misses deliberately absent from this repo:
+# - k8sscan.rbac.secrets-read-cluster-wide/pod-create/escalate-bind/impersonate/exec-attach:
+#   the planted ClusterRole only grants the three wildcard rules above
+# - k8sscan.workload.dangerous-capabilities/host-pid-ipc: neither workload sets
+#   a dangerous capability, hostPID, or hostIPC
+# - k8sscan.network.allow-all-egress/nodeport-service/loadbalancer-no-source-ranges:
+#   no NetworkPolicy or Service manifest is planted at all

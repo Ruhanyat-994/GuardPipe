@@ -55,15 +55,36 @@ export interface Progress {
 
 export interface Location {
   type: string
+  // file — codescan, depscan, cicdscan, docreview. Also reused by the k8s
+  // shape below (line_start/line_end against `file`, not `path`, there).
   path?: string
   line_start?: number
   line_end?: number
+  // image — containerscan's Trivy-sourced vulnerability/secret findings.
+  image?: string
+  layer_digest?: string
+  // k8s — k8sscan. from_helm/chart_name/template_file are set only when the
+  // manifest came from rendering a Helm chart rather than a raw YAML file;
+  // `file` is a real, navigable path either way (see repoLink.ts's usage).
+  // `container` is set only for a per-container finding. `value` is the
+  // literal offending value at field_path, e.g. "/var/run/docker.sock".
+  file?: string
+  kind?: string
+  name?: string
+  namespace?: string
+  container?: string
+  field_path?: string
+  value?: string
+  from_helm?: boolean
+  chart_name?: string
+  template_file?: string
+  // dependency — depscan's version/CVE findings. Deliberately no line —
+  // the vulnerability is in the resolved package's own code, not at a
+  // specific line of this repository, so there is nothing to redirect to.
   ecosystem?: string
   package?: string
   version?: string
   manifest_path?: string
-  image?: string
-  layer_digest?: string
   [key: string]: unknown
 }
 
@@ -91,6 +112,15 @@ export interface FindingListItem {
   cvss_score: number | null
   location: Location
   evidence: Evidence[]
+  // Engine-specific extra context, never load-bearing — today: k8sscan's
+  // and containerscan's optional `impact` (a short why-this-matters
+  // sentence) and `attack_path` (an ordered escalation-chain string
+  // array), see FindingRow's AttackContext. Absent keys are absent.
+  metadata?: {
+    impact?: string
+    attack_path?: string[]
+    [key: string]: unknown
+  }
 }
 
 export interface Pagination {

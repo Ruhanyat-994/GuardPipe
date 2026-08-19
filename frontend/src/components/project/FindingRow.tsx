@@ -36,6 +36,58 @@ function locationSummary(f: FindingListItem): string | null {
 }
 
 /**
+ * A Kubernetes finding isn't "at a line" the way SAST is — it's about a
+ * resource, in a namespace, in a container, at a config field. Rather than
+ * force it through the same file:line model, this builds the breadcrumb a
+ * "Resource Inspector" needs: namespace -> Kind/name -> container ->
+ * field path, each segment only present when the Location actually carries
+ * it. `value` (the literal offending setting, e.g. "/var/run/docker.sock")
+ * is deliberately kept separate — callers render it as evidence, not as
+ * one more breadcrumb segment, since it's what was found, not where.
+ */
+function k8sResourcePath(loc: FindingListItem['location']): string[] {
+  if (loc.type !== 'k8s' || !loc.kind || !loc.name) return []
+  const segments: string[] = []
+  if (loc.namespace) segments.push(`namespace/${loc.namespace}`)
+  segments.push(`${loc.kind}/${loc.name}`)
+  if (loc.container) segments.push(`container/${loc.container}`)
+  if (loc.field_path) segments.push(loc.field_path)
+  return segments
+}
+
+/**
+ * A finding only gets a "View in repository" link when its Location names a
+ * real, navigable line in the checkout: `file` (codescan, depscan,
+ * containerscan's Dockerfile-misconfig findings — both share the same
+ * file-type shape) or `k8s` (k8sscan; File is real for both a raw manifest
+ * and a Helm-rendered one — see domain.Location's own doc comment).
+ * Deliberately no link for `dependency` (a CVE lives in the resolved
+ * package's own code, not at a line of this repository) or `image`
+ * (containerscan's Trivy vulnerability/secret findings point at an image
+ * layer, not a source file) — those are architectural findings, shown via
+ * locationSummary above instead of a link that would point somewhere
+ * wrong or nowhere.
+ */
+function buildFindingBlobUrl(
+  loc: FindingListItem['location'],
+  repository: Repository | null,
+  gitRef: string | null,
+): string | null {
+  if (!repository || !gitRef) return null
+  if (loc.type === 'file' && loc.path) {
+    return buildRepoBlobUrl(repository.url, gitRef, loc.path, loc.line_start, loc.line_end)
+  }
+  if (loc.type === 'k8s' && loc.file) {
+    // line_start is only ever set for a raw manifest (a document's real
+    // start line in `file`) — 0/absent for a Helm-sourced finding, so this
+    // degrades to a plain link to the template file with no line anchor
+    // rather than an anchor pointing at the wrong (rendered-output) line.
+    return buildRepoBlobUrl(repository.url, gitRef, loc.file, loc.line_start, loc.line_end)
+  }
+  return null
+}
+
+/**
  * One expandable finding row. Collapsed, it's the flat badge+title+rule-id
  * view this replaces; "More" reveals exactly where the fault is (file:line,
  * plus a link straight to that line in the repository when one can be
@@ -58,16 +110,10 @@ export function FindingRow({
   const [tab, setTab] = useState<'description' | 'remediation'>('description')
 
   const summary = locationSummary(finding)
-  const blobUrl =
-    repository && gitRef && finding.location.type === 'file' && finding.location.path
-      ? buildRepoBlobUrl(
-          repository.url,
-          gitRef,
-          finding.location.path,
-          finding.location.line_start,
-          finding.location.line_end,
-        )
-      : null
+  const resourcePath = k8sResourcePath(finding.location)
+  const blobUrl = buildFindingBlobUrl(finding.location, repository, gitRef)
+  const impact = finding.metadata?.impact
+  const attackPath = finding.metadata?.attack_path
 
   return (
     <li className="py-3">
@@ -96,21 +142,86 @@ export function FindingRow({
 
       {expanded && (
         <div className="mt-3 ml-1 flex flex-col gap-3 border-l-2 border-border-default pl-4">
-          {summary && (
-            <div className="flex flex-wrap items-center gap-2 text-body-sm">
-              <code className="rounded bg-bg-subtle px-1.5 py-0.5 font-mono text-caption text-text-secondary">
-                {summary}
-              </code>
-              {blobUrl && (
-                <a
-                  href={blobUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-caption font-medium text-accent hover:underline"
-                >
-                  View in repository
-                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                </a>
+          {resourcePath.length > 0 ? (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5 text-body-sm">
+                {resourcePath.map((segment, i) => (
+                  <span key={i} className="flex items-center gap-1.5">
+                    {i > 0 && (
+                      <span className="text-text-tertiary" aria-hidden="true">
+                        →
+                      </span>
+                    )}
+                    <code className="rounded bg-bg-subtle px-1.5 py-0.5 font-mono text-caption text-text-secondary">
+                      {segment}
+                    </code>
+                  </span>
+                ))}
+                {blobUrl && (
+                  <a
+                    href={blobUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-caption font-medium text-accent hover:underline"
+                  >
+                    View manifest
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
+              {finding.location.value && (
+                <pre className="overflow-x-auto rounded-md bg-bg-subtle px-3 py-2 font-mono text-caption text-text-primary">
+                  {finding.location.value}
+                </pre>
+              )}
+            </div>
+          ) : (
+            summary && (
+              <div className="flex flex-wrap items-center gap-2 text-body-sm">
+                <code className="rounded bg-bg-subtle px-1.5 py-0.5 font-mono text-caption text-text-secondary">
+                  {summary}
+                </code>
+                {blobUrl && (
+                  <a
+                    href={blobUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-caption font-medium text-accent hover:underline"
+                  >
+                    View in repository
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
+            )
+          )}
+
+          {(impact || (attackPath && attackPath.length > 0)) && (
+            <div className="flex flex-col gap-2 rounded-md bg-bg-subtle px-3 py-2.5">
+              {impact && (
+                <div>
+                  <p className="text-caption font-semibold text-text-secondary">Why this matters</p>
+                  <p className="mt-0.5 text-body-sm text-text-primary">{impact}</p>
+                </div>
+              )}
+              {attackPath && attackPath.length > 0 && (
+                <div>
+                  <p className="text-caption font-semibold text-text-secondary">Attack path</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-body-sm text-text-primary">
+                    {attackPath.map((stage, i) => (
+                      <span key={i} className="flex items-center gap-1.5">
+                        {i > 0 && (
+                          <span className="text-text-tertiary" aria-hidden="true">
+                            →
+                          </span>
+                        )}
+                        <span className="rounded-full bg-bg-surface px-2 py-0.5 text-caption">
+                          {stage}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}

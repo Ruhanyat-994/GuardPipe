@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Software Requirements Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.3 |
 | **Status** | Draft |
 | **Standard** | ISO/IEC/IEEE 29148:2018 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-14 |
+| **Last updated** | 2026-08-16 |
 
 ### Revision history
 
@@ -17,6 +17,7 @@
 | 1.0 | 2026-07-29 | Team | Initial SRS |
 | 1.1 | 2026-08-14 | Team | FR-CODE-001 reversed: `codescan` now wraps a self-hosted SonarQube Community Edition instance instead of implementing its own SAST analyzer, per explicit external requirement. See [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md) for rationale; supersedes the codescan-specific portion of [ADR-0010](17-adr/0010-own-scanners.md) |
 | 1.2 | 2026-08-14 | Team | FR-CNT-004..008 reversed: `containerscan` now wraps Trivy for image vulnerability/misconfiguration/secret scanning instead of implementing its own layer-walking and package-database matching. See [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md) for rationale; supersedes the containerscan-specific portion of [ADR-0010](17-adr/0010-own-scanners.md) |
+| 1.3 | 2026-08-16 | Team | FR-K8S-014 promoted Stretch → Core, ahead of Phase 9 starting: Helm chart rendering (offline only, vendored dependencies only, no cluster/network access) is now required before `k8sscan`'s policy engine runs, not deferred. `k8sscan` itself stays GuardPipe's own rule engine either way — this does **not** invoke ADR-0010/0011/0012 (no external tool is being wrapped; Helm's own template renderer is used as a library the same way `go-git` already is elsewhere, purely to turn chart+values into plain manifests). Kustomize overlay rendering (also named in the old FR-K8S-014) is split out and remains Stretch — only Helm was requested. **Needs its second reviewer** per this doc's own change-control status, since only one person made this edit |
 
 > **Change control:** this document is a shared contract. Any modification requires **two approvals** (see [14 — GitHub Workflow](14-github-workflow.md)).
 
@@ -304,7 +305,7 @@ flowchart TB
 | FR-K8S-011 | The system **shall** report missing liveness/readiness probes as `informational`. | Core |
 | FR-K8S-012 | Every `k8sscan` finding **shall** identify the file, the resource `kind`/`name`/`namespace`, and the YAML path of the offending field. | Core |
 | FR-K8S-013 | The system **should** map findings to CIS Kubernetes Benchmark control identifiers. | Stretch |
-| FR-K8S-014 | The system **should** render Helm charts and Kustomize overlays before analysis. | Stretch |
+| FR-K8S-014 | The system **shall** render Helm charts (via offline template rendering — no cluster connection, no chart-repository network access; a chart whose declared dependencies aren't already vendored under `charts/` is skipped per-chart, not treated as a whole-engine failure) before analysis, applying the same rule engine as a raw manifest. Kustomize overlay rendering remains Stretch. | Core |
 | FR-K8S-015 | The system **should** perform an RBAC reachability analysis showing which ServiceAccounts can reach `cluster-admin` through a chain of permissions. | Stretch |
 
 ### 3.9 CI/CD pipeline scanning — `cicdscan`

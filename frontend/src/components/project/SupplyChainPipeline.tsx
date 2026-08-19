@@ -14,6 +14,7 @@ import { cn } from '../../lib/cn'
 import { ENGINE_META } from '../../lib/engines'
 import type { Engine } from '../../lib/rulesApi'
 import type { Job, JobStatus, Progress, Scan } from '../../lib/scansApi'
+import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
 import { SonarQubeMark } from '../icons/SonarQubeMark'
 
@@ -148,6 +149,7 @@ function Node({
   status,
   osvMark,
   sonarQubeMark,
+  kubernetesMark,
   tooltip,
 }: {
   label: string
@@ -155,6 +157,7 @@ function Node({
   status: NodeStatus
   osvMark?: boolean
   sonarQubeMark?: boolean
+  kubernetesMark?: boolean
   tooltip?: string | null
 }) {
   const color = STATUS_COLOR[status]
@@ -180,6 +183,7 @@ function Node({
         <span className="text-body-sm font-semibold text-text-primary">{label}</span>
         {osvMark && <OsvMark />}
         {sonarQubeMark && <SonarQubeMark />}
+        {kubernetesMark && <KubernetesMark />}
       </div>
       <span
         className="flex items-center gap-1 text-caption font-medium capitalize"
@@ -321,6 +325,7 @@ export function SupplyChainPipeline({
                         status={state.status}
                         osvMark={meta.hasOsvMark}
                         sonarQubeMark={meta.hasSonarQubeMark}
+                        kubernetesMark={meta.hasKubernetesMark}
                         tooltip={state.reason}
                       />
                     </div>

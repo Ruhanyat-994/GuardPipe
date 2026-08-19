@@ -1,0 +1,4 @@
+image:
+  repository: myorg/api
+  tag: latest
+allowPrivilegeEscalation: true

@@ -22,6 +22,16 @@ func misconfigFinding(scanID uuid.UUID, target string, m trivy.Misconfig) domain
 		LineEnd:   m.CauseMetadata.EndLine,
 	}
 
+	metadata := map[string]any{"trivy_check_id": m.ID}
+	if impact, path := attackContext(m.ID); impact != "" || len(path) > 0 {
+		if impact != "" {
+			metadata["impact"] = impact
+		}
+		if len(path) > 0 {
+			metadata["attack_path"] = path
+		}
+	}
+
 	return domain.Finding{
 		ID: id.New(), ScanID: scanID, Engine: domain.EngineContainerScan, RuleID: ruleID,
 		Fingerprint: id.Fingerprint(ruleID, target, normalizeEvidence(m.Message)),
@@ -31,7 +41,7 @@ func misconfigFinding(scanID uuid.UUID, target string, m trivy.Misconfig) domain
 		Location:    location,
 		Remediation: firstNonEmpty(m.Resolution, "See the corresponding Trivy check for detailed remediation guidance."),
 		Status:      domain.StatusOpen,
-		Metadata:    map[string]any{"trivy_check_id": m.ID},
+		Metadata:    metadata,
 	}
 }
 

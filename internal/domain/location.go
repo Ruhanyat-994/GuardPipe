@@ -22,7 +22,12 @@ type Location struct {
 	Type LocationType `json:"type"`
 
 	// file — codescan, depscan, cicdscan, docreview.
-	// Path is also reused by the image shape below.
+	// Path is also reused by the image shape below. LineStart/LineEnd are
+	// also reused by the k8s shape below (against File, not Path there) —
+	// present whenever a finding can point at a specific navigable line,
+	// absent when it can't (a dependency's CVE, an image-layer vulnerability
+	// — nothing to redirect to in the repository, only architectural
+	// context to display; see the dependency/image shapes' own fields).
 	Path      string `json:"path,omitempty"`
 	LineStart int    `json:"line_start,omitempty"`
 	LineEnd   int    `json:"line_end,omitempty"`
@@ -33,12 +38,24 @@ type Location struct {
 	LayerDigest string `json:"layer_digest,omitempty"`
 	LayerIndex  int    `json:"layer_index,omitempty"`
 
-	// k8s — k8sscan.
-	File      string `json:"file,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	FieldPath string `json:"field_path,omitempty"`
+	// k8s — k8sscan. FromHelm/ChartName/TemplateFile are set only when the
+	// manifest came from rendering a Helm chart rather than a raw YAML
+	// file — File still names a real, navigable path (the template's own
+	// path under the chart root), so these three are extra context, not a
+	// second location. LineStart (above) is the document's start line
+	// within File for a raw manifest; deliberately 0/absent for a
+	// Helm-sourced finding, since a rendered document's line numbers don't
+	// correspond to TemplateFile's — better no anchor than a wrong one.
+	File         string `json:"file,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Namespace    string `json:"namespace,omitempty"`
+	Container    string `json:"container,omitempty"` // set only for a per-container finding
+	FieldPath    string `json:"field_path,omitempty"`
+	Value        string `json:"value,omitempty"` // the literal offending value at FieldPath, e.g. "/var/run/docker.sock"
+	FromHelm     bool   `json:"from_helm,omitempty"`
+	ChartName    string `json:"chart_name,omitempty"`
+	TemplateFile string `json:"template_file,omitempty"`
 
 	// network — pentest.
 	Host     string `json:"host,omitempty"`

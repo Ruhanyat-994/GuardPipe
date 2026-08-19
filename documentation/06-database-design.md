@@ -533,6 +533,15 @@ One column serves five kinds of location because the engines find issues in fund
   "namespace": "prod",
   "field_path": "spec.template.spec.containers[0].securityContext.privileged" }
 
+// kubernetes resource, sourced from a rendered Helm chart — k8sscan
+// (BUILD_GUIDE.md Phase 9). "file" still names a real path (the template
+// under the chart root) — from_helm/chart_name/template_file are extra
+// context, not a second location.
+{ "type": "k8s", "file": "charts/api/templates/deployment.yaml", "kind": "Deployment",
+  "name": "api", "namespace": "prod",
+  "field_path": "spec.template.spec.containers[0].securityContext.privileged",
+  "from_helm": true, "chart_name": "api", "template_file": "templates/deployment.yaml" }
+
 // network service — pentest
 { "type": "network", "host": "example.com", "ip": "203.0.113.10",
   "port": 443, "protocol": "tcp", "service": "https", "url": "https://example.com/admin" }
