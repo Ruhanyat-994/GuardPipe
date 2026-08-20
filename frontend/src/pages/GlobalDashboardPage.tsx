@@ -105,7 +105,11 @@ export function GlobalDashboardPage() {
           candidates.map((s) =>
             listFindings(s.id)
               .then((res) =>
-                res.data.map((f) => ({ ...f, projectName: s.project_name, projectId: s.project_id })),
+                res.data.map((f) => ({
+                  ...f,
+                  projectName: s.project_name,
+                  projectId: s.project_id,
+                })),
               )
               .catch(() => []),
           ),
