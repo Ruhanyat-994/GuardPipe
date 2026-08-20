@@ -14,10 +14,10 @@ import (
 
 func TestParseGoogleDocLink_AcceptsSupportedShapes(t *testing.T) {
 	tests := []struct {
-		name        string
-		url         string
-		wantExport  string
-		wantPrefix  string
+		name       string
+		url        string
+		wantExport string
+		wantPrefix string
 	}{
 		{
 			name:       "docs edit link with sharing query",
