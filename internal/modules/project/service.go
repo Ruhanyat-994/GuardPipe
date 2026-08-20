@@ -163,7 +163,7 @@ type DocumentRepository interface {
 // per project, not per scan: a document is uploaded once and reused by
 // every scan against that project, not re-uploaded each time.
 const (
-	maxDocumentSizeBytes = 100 * 1024
+	maxDocumentSizeBytes   = 100 * 1024
 	maxDocumentsPerProject = 20
 )
 
