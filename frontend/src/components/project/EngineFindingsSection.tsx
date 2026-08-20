@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, ChevronDown } from 'lucide-react'
+import { AlertTriangle, ArrowRight, ChevronDown, Inbox } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { ENGINE_META } from '../../lib/engines'
+import { humanizeErrorReason } from '../../lib/engineRunMessages'
 import type { Repository } from '../../lib/projectsApi'
 import type { Engine } from '../../lib/rulesApi'
 import type { FindingListItem, JobStatus } from '../../lib/scansApi'
@@ -10,6 +11,7 @@ import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
 import { SonarQubeMark } from '../icons/SonarQubeMark'
+import { EmptyState } from '../ui/EmptyState'
 import { FindingsList } from './FindingsList'
 
 const STATUS_COLOR: Record<JobStatus, string> = {
@@ -150,9 +152,29 @@ export function EngineFindingsSection({
             </Link>
           </div>
           {findings.length === 0 ? (
-            <p className="pb-4 text-body-sm text-text-secondary">
-              {emptyMessage(status, errorReason, skipReason)}
-            </p>
+            status === 'skipped' ? (
+              <EmptyState
+                icon={Inbox}
+                title={`Nothing for ${meta.label} to check`}
+                description={skipReason ?? 'This engine was skipped for this scan.'}
+                tone="neutral"
+                size="compact"
+                className="pb-4"
+              />
+            ) : status === 'failed' ? (
+              <EmptyState
+                icon={AlertTriangle}
+                title="This check didn't finish"
+                description={humanizeErrorReason(errorReason)}
+                tone="danger"
+                size="compact"
+                className="pb-4"
+              />
+            ) : (
+              <p className="pb-4 text-body-sm text-text-secondary">
+                {emptyMessage(status, errorReason, skipReason)}
+              </p>
+            )
           ) : (
             <FindingsList findings={findings} repository={repository} gitRef={gitRef} />
           )}

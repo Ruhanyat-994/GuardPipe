@@ -114,7 +114,7 @@ export function ScanDetailPage() {
 
   if (error) {
     return (
-      <main className="mx-auto max-w-3xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         <p role="alert" className="text-body-sm text-danger">
           {error}
         </p>
@@ -124,14 +124,14 @@ export function ScanDetailPage() {
 
   if (!scan) {
     return (
-      <main className="mx-auto max-w-3xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         <p className="text-body-sm text-text-secondary">Loading scan…</p>
       </main>
     )
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-8">
+    <main className="mx-auto max-w-[1440px] px-6 py-8">
       <Link
         to={`/projects/${scan.project_id}/scans`}
         className="mb-4 inline-flex items-center gap-1.5 text-body-sm text-text-secondary hover:text-text-primary"

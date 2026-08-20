@@ -4,16 +4,18 @@
 |---|---|
 | **Document** | UI/UX Design and Design System |
 | **Project** | GuardPipe |
-| **Version** | 1.8 |
+| **Version** | 1.11 |
 | **Status** | Draft |
 | **Tool** | Figma |
 | **Owner** | Member 6 (design) with Member 5 (frontend) |
-| **Last updated** | 2026-08-14 |
+| **Last updated** | 2026-08-20 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
+| 1.11 | 2026-08-20 | Team | **Implemented in code, same day as rev 1.10, on direct user feedback with a screenshot.** §4.8's `SupplyChainPipeline` redrawn left-to-right (`Scan start → Workspace prep → [parallel engines] → AI enrichment → Scoring`, new `HConnector`, replacing the vertical `TrunkLine`/`JointDot`/`FanOutBar` trio) rather than top-to-bottom — the vertical form read as a tall, narrow, "weird" column even after rev 1.10's interactivity, matching GitHub Actions' own reference screenshot (cited in the original ask) more literally. The six parallel engines now sit in a 2-column grid inside one bordered group with a single connector in and out, the same shape GH Actions uses for a box of stacked parallel jobs, instead of each engine getting its own drop line. `Pentest` — independent of the workspace chain — is its own row below the trunk with a plain-language caption rather than a geometrically exact branch line. Screen 6 (§5.4)'s `ScanDetailPage` host container widened from `max-w-3xl`/`max-w-4xl` to `max-w-[1440px]`, matching the wide-page convention every sibling authenticated page (`DashboardPage`, `GlobalDashboardPage`, `ProjectsListPage`) already used — `ScanDetailPage` had simply never been revisited since Phase 6 and was narrower than the rest of the app by construction, not by design intent |
+| 1.10 | 2026-08-20 | Team | **Implemented in code.** §4.8's `SupplyChainPipeline` nodes are now clickable (every parallel-engine node plus `Pentest`, gated the same way as `ScanLauncher`'s per-engine checkboxes — `isEngineEnabled`) and open a new inline drill-down, `EngineRunDetail`: three honest lifecycle stages (queued → the engine's own short `activity` phrase, e.g. "Checking dependencies against known advisories" → collect results), plus whatever generic stats the engine already reported (`files_scanned`/`rules_evaluated`/finding count, `stats`/`RulesEvaluated`/`FilesScanned` on `domain.EngineResult` — already persisted and already reaching `JobResponse`, no backend change needed). Deliberately stops at "what category of thing happened, generically" and never surfaces a specific rule/pattern — the interactivity users asked for without exposing detection logic. §4.2's `EmptyState` (icon + title + description, spec'd since rev 1.0 but never built) is now real (`components/ui/EmptyState.tsx`) and used wherever a skip is the honest outcome — `EngineRunDetail`, `EngineFindingsSection` — replacing a bare sentence of raw `skip_reason` text with a calm, neutral-toned illustrated state. **Fixed a real "not eye soothing" bug found while building this**: `PartialResultBanner` rendered a skipped engine (e.g. `containerscan` finding no Dockerfile — a correct, honest `Applicable()` result) with the exact same `AlertTriangle`-on-`--warning` treatment as a genuine failure, violating principle 7 ("calm, not alarming"). Split into two banners — failures keep the warning treatment, skips get a neutral `Info`-icon block reading "N checks had nothing to look at," never framed as degraded |
 | 1.9 | 2026-08-14 | Team | §4.5: `containerscan` now gets `TrivyMark` (planned, Phase 8), replacing the generic `DockerMark` this section previously planned — `containerscan` wraps Trivy instead of running its own layer-walking pipeline (`documentation/05-module-specifications.md` §8, ADR-0012). §4.8's node→mark list updated to match |
 | 1.8 | 2026-08-14 | Team | §4.5: `codescan` now gets `SonarQubeMark` (planned, Phase 7), reversing the earlier "no external brand mark" note — `codescan` wraps SonarQube instead of running its own SAST (`documentation/05-module-specifications.md` §6, ADR-0011). §4.8's node→mark list updated to match |
 | 1.0 | 2026-07-29 | Team | Initial design system and screen specification |
@@ -236,7 +238,7 @@ The public site borrows the base palette and spacing scale above but adds its ow
 | `EngineIcon` | 7 engines | Consistent glyph per engine, used in tables, filters, and the pipeline |
 | `RiskGauge` | 0–100 arc, verdict band, delta arrow, 3 sizes | Hero element of the dashboard |
 | `SupplyChainPipeline` | 7 stages × (succeeded / failed / skipped / running / not_run) | The signature visual (FR-UI-004). **Live graph form specified in §4.8** (Phase 6) |
-| `StageCard` | Per-engine node: status, worst severity, count, duration, provider brand mark if applicable (§4.5) | One node of `SupplyChainPipeline` (§4.8). Clickable → filters findings |
+| `StageCard` | Per-engine node: status, worst severity, count, duration, provider brand mark if applicable (§4.5) | One node of `SupplyChainPipeline` (§4.8). **Built (rev 1.10): clickable → opens `EngineRunDetail`** (a live/generic run drill-down), not "filters findings" as originally written here — a filter-only click has nothing useful to do while the scan is still running, which is exactly when a click is most useful |
 | `FindingRow` | default · hover · selected · suppressed (dimmed) | Virtualised list row |
 | `CodeBlock` | With line numbers, highlighted range, copy button | Shiki-rendered |
 | `PatchDiff` | unified · split; verified · unverified badge | Always carries the AI banner |
@@ -245,9 +247,9 @@ The public site borrows the base palette and spacing scale above but adds its ow
 | `CweChip` / `CveChip` | Links to MITRE / NVD | |
 | `TrendChart` | Line, score over time, verdict bands | Recharts |
 | `SeverityDonut` | 5-segment distribution with a centre total | Recharts |
-| `EmptyState` | icon + title + description + action | 6 written variants |
+| `EmptyState` | icon + title + description + action | **Built (rev 1.10)** — tone-aware (`neutral`/`warning`/`danger`), `default`/`compact` sizes; first real uses are `EngineRunDetail` and `EngineFindingsSection`'s skip/fail states |
 | `ErrorState` | message + retry + `request_id` | |
-| `PartialResultBanner` | names the failed/skipped engines | The state people forget |
+| `PartialResultBanner` | names the failed/skipped engines | The state people forget. **Built (rev 1.10): split into two banners** — failed engines keep the `--warning` treatment, skipped engines get a neutral `Info`-icon block, since a skip is a correct `Applicable()` result, not a degraded one |
 
 ### 4.3 Public-site components (Landing, Blog, Guides — §5.9)
 

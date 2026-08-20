@@ -25,30 +25,67 @@ export const ENGINE_META: Record<
     hasKubernetesMark?: boolean
     hasGitHubMark?: boolean
     hasGeminiMark?: boolean
+    // A short, deliberately generic present-tense phrase for "what this
+    // engine is doing right now" — used by SupplyChainPipeline's live node
+    // detail and EngineRunDetail (documentation/09-ui-ux-design-system.md
+    // §4.8). Names the category of check only (already public via this same
+    // label/icon and the Rules catalogue page), never a specific rule ID,
+    // pattern, or detection technique — the whole point is a scanner can
+    // show it's genuinely working without narrating its own rule logic.
+    activity: string
   }
 > = {
   // docreview (Phase 11) is the one engine where AI review is the entire
   // output, not an enrichment layered on top of a rule pass — hasGeminiMark
   // is the most load-bearing brand mark in the product for exactly that
   // reason (documentation/09-ui-ux-design-system.md §4.5).
-  docreview: { label: 'Docs', icon: FileText, hasGeminiMark: true },
+  docreview: {
+    label: 'Docs',
+    icon: FileText,
+    hasGeminiMark: true,
+    activity: 'Reviewing design and documentation content',
+  },
   // codescan wraps a self-hosted SonarQube instance (Phase 7, ADR-0011)
   // rather than running its own SAST — hasSonarQubeMark reverses the
   // earlier "no external brand mark" note now that one applies.
-  codescan: { label: 'Code', icon: Code2, hasSonarQubeMark: true },
-  depscan: { label: 'Deps', icon: Package, hasOsvMark: true },
-  containerscan: { label: 'Containers', icon: ContainerIcon },
+  codescan: {
+    label: 'Code',
+    icon: Code2,
+    hasSonarQubeMark: true,
+    activity: 'Scanning source code for security issues',
+  },
+  depscan: {
+    label: 'Deps',
+    icon: Package,
+    hasOsvMark: true,
+    activity: 'Checking dependencies against known advisories',
+  },
+  containerscan: {
+    label: 'Containers',
+    icon: ContainerIcon,
+    activity: 'Analyzing the Dockerfile and container image',
+  },
   // k8sscan (Phase 9) is GuardPipe's own rule engine, not a wrapped tool
   // (ADR-0010 unreversed) — hasKubernetesMark names the standards its rules
   // are grounded in, the same attribution role hasOsvMark plays for depscan.
-  k8sscan: { label: 'K8s', icon: Boxes, hasKubernetesMark: true },
+  k8sscan: {
+    label: 'K8s',
+    icon: Boxes,
+    hasKubernetesMark: true,
+    activity: 'Evaluating Kubernetes manifests and Helm charts',
+  },
   // cicdscan (Phase 10) analyses GitHub Actions workflows specifically —
   // GitHub Actions is part of the GitHub product, so this reuses the
   // already-built GitHubMark rather than a new CI/CD-specific icon
   // (documentation/09-ui-ux-design-system.md's own reasoning, BUILD_GUIDE.md
   // Phase 10's frontend checklist).
-  cicdscan: { label: 'CI/CD', icon: Workflow, hasGitHubMark: true },
-  pentest: { label: 'Pentest', icon: ShieldAlert },
+  cicdscan: {
+    label: 'CI/CD',
+    icon: Workflow,
+    hasGitHubMark: true,
+    activity: 'Auditing CI/CD workflow configuration',
+  },
+  pentest: { label: 'Pentest', icon: ShieldAlert, activity: 'Probing the attested target' },
 }
 
 /** Every engine the product will eventually have, in execution-graph order
