@@ -66,4 +66,9 @@ type Scan struct {
 	// the same transaction that finalises the scan, so the scan list can
 	// render severity badges without an N+1 aggregate query.
 	FindingCounts map[Severity]int
+	// ScanNumber is this scan's 1-based ordinal among its project's own
+	// scans (oldest = 1), computed at read time by ScanRepo rather than
+	// stored — a human-readable "Scan #3" in place of a meaningless UUID
+	// prefix in the UI.
+	ScanNumber int
 }

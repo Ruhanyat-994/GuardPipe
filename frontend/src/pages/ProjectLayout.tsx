@@ -59,7 +59,7 @@ export function ProjectLayout() {
 
   if (!project) {
     return (
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         <p className="text-body-sm text-text-secondary">Loading project…</p>
       </main>
     )

@@ -350,7 +350,7 @@ func TestPool_ProcessJob_CloneUnauthorized_NoTokenDoesNotFlagCredential(t *testi
 	require.Equal(t, 0, projects.invalidatedCalls(), "no credential was ever attached, so nothing should be flagged invalid")
 }
 
-func TestPool_ProcessJob_CancelledScan_MarksFailedWithoutRunningEngine(t *testing.T) {
+func TestPool_ProcessJob_CancelledScan_MarksCancelledWithoutRunningEngine(t *testing.T) {
 	engine := &scriptedEngine{id: domain.EngineDepScan, applicable: true}
 	pool, scans, jobs, findings, q := newTestPool(t, engine, &fakeCloner{})
 	scanID, jobID := seedScanAndJob(t, scans, jobs, domain.EngineDepScan)
@@ -364,7 +364,7 @@ func TestPool_ProcessJob_CancelledScan_MarksFailedWithoutRunningEngine(t *testin
 	require.Empty(t, findings.findings, "a cancelled scan's job must never reach the engine, so it emits nothing")
 	job, err := jobs.GetByID(context.Background(), jobID)
 	require.NoError(t, err)
-	require.Equal(t, domain.JobStatusFailed, job.Status)
+	require.Equal(t, domain.JobStatusCancelled, job.Status)
 
 	scan, err := scans.GetByID(context.Background(), scanID)
 	require.NoError(t, err)

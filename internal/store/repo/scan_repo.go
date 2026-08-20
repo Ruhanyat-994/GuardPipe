@@ -32,14 +32,18 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 		return fmt.Errorf("repo: encode finding counts: %w", err)
 	}
 
+	// The scan_number subquery runs against the row this statement just
+	// inserted (visible to RETURNING within the same statement) — since
+	// that row is by definition the newest for this project, count(*)
+	// against project_id is exactly its own 1-based ordinal.
 	const q = `
 		INSERT INTO scans (id, project_id, triggered_by, type, status, requested_engines, branch, finding_counts, queued_at)
 		VALUES ($1, $2, $3, $4, $5, $6::engine_id[], $7, $8, now())
-		RETURNING queued_at`
+		RETURNING queued_at, (SELECT count(*) FROM scans WHERE project_id = $2)`
 	err = r.db.QueryRow(ctx, q,
 		s.ID, s.ProjectID, s.TriggeredBy, string(s.Type), string(s.Status),
 		engineIDsToStrings(s.RequestedEngines), s.Branch, countsJSON,
-	).Scan(&s.QueuedAt)
+	).Scan(&s.QueuedAt, &s.ScanNumber)
 	if err != nil {
 		return fmt.Errorf("repo: insert scan: %w", err)
 	}
@@ -49,7 +53,8 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 func (r *ScanRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Scan, error) {
 	const q = `
 		SELECT id, project_id, triggered_by, type, status, requested_engines, commit_sha, branch,
-			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts
+			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts,
+			(SELECT count(*) FROM scans s2 WHERE s2.project_id = scans.project_id AND s2.created_at <= scans.created_at)
 		FROM scans WHERE id = $1`
 	return scanRowScan(r.db.QueryRow(ctx, q, id))
 }
@@ -64,9 +69,13 @@ func (r *ScanRepo) ListByProject(ctx context.Context, projectID uuid.UUID, page 
 		return nil, 0, fmt.Errorf("repo: count scans: %w", err)
 	}
 
+	// scan_number is a window function over every row this project's WHERE
+	// clause matches — it's computed before the outer ORDER BY/LIMIT trims
+	// down to one page, so pagination never skews the numbering.
 	const listQ = `
 		SELECT id, project_id, triggered_by, type, status, requested_engines, commit_sha, branch,
-			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts
+			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts,
+			ROW_NUMBER() OVER (ORDER BY created_at ASC)
 		FROM scans WHERE project_id = $1
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3`
@@ -106,9 +115,13 @@ func (r *ScanRepo) ListByOrg(ctx context.Context, orgID uuid.UUID, page orchestr
 		return nil, 0, fmt.Errorf("repo: count org scans: %w", err)
 	}
 
+	// scan_number is partitioned per project — the global list mixes scans
+	// from every project, but "Scan #N" still needs to mean "the Nth scan
+	// of that particular project," never a shared cross-project counter.
 	const listQ = `
 		SELECT s.id, s.project_id, s.triggered_by, s.type, s.status, s.requested_engines, s.commit_sha, s.branch,
-			s.cancel_requested, s.error_reason, s.queued_at, s.started_at, s.finished_at, s.finding_counts, p.name
+			s.cancel_requested, s.error_reason, s.queued_at, s.started_at, s.finished_at, s.finding_counts, p.name,
+			ROW_NUMBER() OVER (PARTITION BY s.project_id ORDER BY s.created_at ASC)
 		FROM scans s
 		JOIN projects p ON p.id = s.project_id
 		WHERE p.org_id = $1
@@ -131,7 +144,7 @@ func (r *ScanRepo) ListByOrg(ctx context.Context, orgID uuid.UUID, page orchestr
 		if err := rows.Scan(
 			&s.ID, &s.ProjectID, &s.TriggeredBy, &scanType, &status, &requestedEngines,
 			&s.CommitSHA, &s.Branch, &s.CancelRequested, &s.ErrorReason,
-			&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &projectName,
+			&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &projectName, &s.ScanNumber,
 		); err != nil {
 			return nil, 0, fmt.Errorf("repo: scan org scan row: %w", err)
 		}
@@ -169,7 +182,7 @@ func scanRowScan(row pgx.Row) (*domain.Scan, error) {
 	err := row.Scan(
 		&s.ID, &s.ProjectID, &s.TriggeredBy, &scanType, &status, &requestedEngines,
 		&s.CommitSHA, &s.Branch, &s.CancelRequested, &s.ErrorReason,
-		&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts,
+		&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &s.ScanNumber,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

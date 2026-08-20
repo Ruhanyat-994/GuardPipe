@@ -155,7 +155,7 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		return
 	}
 	if scan.CancelRequested {
-		p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: "cancelled"})
+		p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusCancelled})
 		return
 	}
 

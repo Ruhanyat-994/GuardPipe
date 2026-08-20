@@ -30,6 +30,14 @@ const DONUT_COLORS: Record<TileSeverity, string> = {
 }
 
 // backend keys are "informational"; the tile/donut components use "info".
+const SEVERITY_QUERY: Record<TileSeverity, string> = {
+  critical: 'critical',
+  high: 'high',
+  medium: 'medium',
+  low: 'low',
+  info: 'informational',
+}
+
 function toTileCounts(counts: Record<string, number>): Record<TileSeverity, number> {
   return {
     critical: counts.critical ?? 0,
@@ -65,7 +73,7 @@ export function GlobalDashboardPage() {
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [scans, setScans] = useState<OrgScanSummary[] | null>(null)
   const [topFindings, setTopFindings] = useState<
-    (FindingListItem & { projectName: string })[] | null
+    (FindingListItem & { projectName: string; projectId: string })[] | null
   >(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -96,7 +104,9 @@ export function GlobalDashboardPage() {
         const findingsPerScan = await Promise.all(
           candidates.map((s) =>
             listFindings(s.id)
-              .then((res) => res.data.map((f) => ({ ...f, projectName: s.project_name })))
+              .then((res) =>
+                res.data.map((f) => ({ ...f, projectName: s.project_name, projectId: s.project_id })),
+              )
               .catch(() => []),
           ),
         )
@@ -126,7 +136,7 @@ export function GlobalDashboardPage() {
 
   if (error) {
     return (
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         <Card className="border-danger/30 bg-danger/5">
           <p role="alert" className="text-body-sm text-danger">
             {error}
@@ -138,7 +148,7 @@ export function GlobalDashboardPage() {
 
   if (projects === null || scans === null) {
     return (
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         <p className="text-body-sm text-text-secondary">Loading dashboard…</p>
       </main>
     )
@@ -159,7 +169,7 @@ export function GlobalDashboardPage() {
   const hasAnyFindings = Object.values(tileCounts).some((c) => c > 0)
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-8">
+    <main className="mx-auto max-w-[1440px] px-6 py-8">
       <div className="mb-6">
         <h1 className="text-h1 text-text-primary">Welcome back, {user?.displayName ?? ''}</h1>
         <p className="text-body-sm text-text-secondary">
@@ -203,7 +213,13 @@ export function GlobalDashboardPage() {
               <CardTitle>Findings across your projects</CardTitle>
               <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
                 {SEVERITY_TILES.map((sev) => (
-                  <SeverityStatTile key={sev} severity={sev} count={tileCounts[sev]} />
+                  <Link
+                    key={sev}
+                    to={`/findings?severity=${SEVERITY_QUERY[sev]}`}
+                    className="rounded-lg transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+                  >
+                    <SeverityStatTile severity={sev} count={tileCounts[sev]} />
+                  </Link>
                 ))}
               </div>
 
@@ -258,7 +274,12 @@ export function GlobalDashboardPage() {
                     <span className="flex-1 truncate text-body-sm text-text-primary">
                       {f.title}
                     </span>
-                    <span className="text-caption text-text-tertiary">{f.projectName}</span>
+                    <Link
+                      to={`/projects/${f.projectId}`}
+                      className="text-caption text-text-tertiary hover:text-accent hover:underline"
+                    >
+                      {f.projectName}
+                    </Link>
                   </li>
                 ))}
               </ul>

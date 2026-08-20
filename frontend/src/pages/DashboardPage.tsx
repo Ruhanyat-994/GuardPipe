@@ -44,6 +44,15 @@ function toTileCounts(counts: Record<string, number>): Record<TileSeverity, numb
   }
 }
 
+// backend keys are "informational"; the tile/donut components use "info".
+const SEVERITY_QUERY: Record<TileSeverity, string> = {
+  critical: 'critical',
+  high: 'high',
+  medium: 'medium',
+  low: 'low',
+  info: 'informational',
+}
+
 /**
  * `/projects/:id` — this project's own dashboard. Was the hardcoded "Screen
  * 4" preview since Phase 2; now real, using this project's own scan
@@ -85,7 +94,7 @@ export function DashboardPage() {
 
   if (error) {
     return (
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         <Card className="border-danger/30 bg-danger/5">
           <p role="alert" className="text-body-sm text-danger">
             {error}
@@ -117,7 +126,7 @@ export function DashboardPage() {
 
   if (recentScans === null) {
     return (
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         {header}
         <p className="text-body-sm text-text-secondary">Loading…</p>
       </main>
@@ -126,7 +135,7 @@ export function DashboardPage() {
 
   if (recentScans.length === 0) {
     return (
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         {header}
         <Card>
           <CardDescription>
@@ -153,7 +162,7 @@ export function DashboardPage() {
     }))
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-8">
+    <main className="mx-auto max-w-[1440px] px-6 py-8">
       {header}
 
       {recentScans[0].status !== 'completed' ? (
@@ -181,7 +190,13 @@ export function DashboardPage() {
               <CardTitle>Current findings</CardTitle>
               <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
                 {SEVERITY_TILES.map((sev) => (
-                  <SeverityStatTile key={sev} severity={sev} count={tileCounts[sev]} />
+                  <Link
+                    key={sev}
+                    to={`/projects/${project.id}/findings?severity=${SEVERITY_QUERY[sev]}`}
+                    className="rounded-lg transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+                  >
+                    <SeverityStatTile severity={sev} count={tileCounts[sev]} />
+                  </Link>
                 ))}
               </div>
 
