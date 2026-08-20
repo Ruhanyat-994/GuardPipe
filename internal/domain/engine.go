@@ -54,6 +54,18 @@ type PentestTarget struct {
 	IPs  []string
 }
 
+// DocumentRef is one document available to the docreview engine (Phase 11)
+// — a design/requirements document the user uploaded directly to the
+// project, not part of the git checkout. Path is a display name only (the
+// uploaded filename), not a real filesystem path; full storage/metadata
+// lives in modules/project. Documents discovered inside the repository
+// checkout itself (WorkspaceDir) are a separate, secondary source the
+// engine reads on its own — this field only ever carries the uploaded set.
+type DocumentRef struct {
+	Path    string
+	Content string
+}
+
 // ScanInput is everything an Engine needs to do its job, and nothing more —
 // no database handle, no HTTP context. This is what keeps engines trivially
 // unit-testable in isolation (documentation/05-module-specifications.md §2.1).
@@ -64,6 +76,7 @@ type ScanInput struct {
 	WorkspaceDir string // ephemeral checkout root; read-only to engines
 	Repository   *RepositoryRef
 	Target       *PentestTarget
+	Documents    []DocumentRef
 	Options      map[string]any // engine-specific, validated by the engine
 }
 

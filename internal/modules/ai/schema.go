@@ -264,6 +264,7 @@ func decodeAndValidate(p Prompt, raw json.RawMessage) (any, error) {
 		if err := dec(&v); err != nil {
 			return nil, err
 		}
+		v.Confidence = normalizeEnum(v.Confidence)
 		if err := v.validate(); err != nil {
 			return nil, err
 		}
@@ -274,6 +275,7 @@ func decodeAndValidate(p Prompt, raw json.RawMessage) (any, error) {
 		if err := dec(&v); err != nil {
 			return nil, err
 		}
+		v.Confidence = normalizeEnum(v.Confidence)
 		if err := v.validate(); err != nil {
 			return nil, err
 		}
@@ -284,6 +286,9 @@ func decodeAndValidate(p Prompt, raw json.RawMessage) (any, error) {
 		if err := dec(&v); err != nil {
 			return nil, err
 		}
+		for i := range v {
+			v[i].Severity = normalizeEnum(v[i].Severity)
+		}
 		if err := v.validate(); err != nil {
 			return nil, err
 		}
@@ -293,6 +298,9 @@ func decodeAndValidate(p Prompt, raw json.RawMessage) (any, error) {
 		var v WorkflowReviewResponse
 		if err := dec(&v); err != nil {
 			return nil, err
+		}
+		for i := range v {
+			v[i].Severity = normalizeEnum(v[i].Severity)
 		}
 		if err := v.validate(); err != nil {
 			return nil, err
@@ -322,6 +330,18 @@ func requireNonEmpty(field, value string, maxLen int) error {
 		return fmt.Errorf("%w: %s is %d characters, longer than the %d-character limit", ErrSchemaViolation, field, len(value), maxLen)
 	}
 	return nil
+}
+
+// normalizeEnum canonicalizes an enum-constrained field before it's checked
+// against requireEnum's allowed list — reproduced live against the real
+// Gemini API: generationConfig.responseSchema's enum constraint is a hint,
+// not a hard guarantee, and the model has been observed returning "High"
+// where the schema lists only "high". The allowed lists themselves
+// (requireEnum's call sites) are always lowercase, so this is the one place
+// case/whitespace gets normalized rather than every call site needing to
+// know that.
+func normalizeEnum(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 func requireEnum(field, value string, allowed ...string) error {

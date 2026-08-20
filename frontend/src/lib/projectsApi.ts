@@ -67,6 +67,22 @@ export interface TargetList {
   data: Target[]
 }
 
+/** A document uploaded for `docreview`'s AI architecture/security review
+ * (Phase 11) — content itself is never returned by the API, only this
+ * metadata. */
+export interface Document {
+  id: string
+  filename: string
+  mime_type: string
+  size_bytes: number
+  uploaded_by: string | null
+  created_at: string
+}
+
+export interface DocumentList {
+  data: Document[]
+}
+
 export function listProjects(): Promise<ProjectList> {
   return apiClient.get<ProjectList>('/projects')
 }
@@ -116,4 +132,26 @@ export function listTargets(projectId: string): Promise<TargetList> {
 
 export function registerTarget(projectId: string, target: string): Promise<Target> {
   return apiClient.post<Target>(`/projects/${projectId}/targets`, { target })
+}
+
+export function listDocuments(projectId: string): Promise<DocumentList> {
+  return apiClient.get<DocumentList>(`/projects/${projectId}/documents`)
+}
+
+export function uploadDocument(projectId: string, file: File): Promise<Document> {
+  const form = new FormData()
+  form.append('file', file)
+  return apiClient.postForm<Document>(`/projects/${projectId}/documents`, form)
+}
+
+/** `project.Service.ImportDocumentFromURL` — the "paste a link" counterpart
+ * to `uploadDocument`: the backend fetches a Google Docs/Drive share link
+ * itself (must be shared "anyone with the link can view"), no OAuth or
+ * Google Cloud credentials involved on either side. */
+export function importDocument(projectId: string, url: string): Promise<Document> {
+  return apiClient.post<Document>(`/projects/${projectId}/documents/import`, { url })
+}
+
+export function deleteDocument(documentId: string): Promise<void> {
+  return apiClient.delete<void>(`/documents/${documentId}`)
 }

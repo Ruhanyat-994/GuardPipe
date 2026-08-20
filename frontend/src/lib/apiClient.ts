@@ -77,7 +77,11 @@ async function request<T>(path: string, init: RequestInit = {}, isRetry = false)
   const token = getAccessToken()
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
-  if (init.body && !headers.has('Content-Type')) {
+  // A FormData body (postForm, below) must NOT get a Content-Type set here
+  // — the browser sets its own `multipart/form-data; boundary=...` when it
+  // sees the body is a FormData instance, and forcing `application/json`
+  // over it would break the upload entirely.
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
   if (token) {
@@ -133,4 +137,8 @@ export const apiClient = {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  /** Multipart upload (e.g. a document attach) — skips JSON.stringify and
+   * lets the browser set its own Content-Type/boundary for the FormData
+   * body (see request()'s own guard above). */
+  postForm: <T>(path: string, form: FormData) => request<T>(path, { method: 'POST', body: form }),
 }

@@ -24,9 +24,14 @@ export const ENGINE_META: Record<
     hasSonarQubeMark?: boolean
     hasKubernetesMark?: boolean
     hasGitHubMark?: boolean
+    hasGeminiMark?: boolean
   }
 > = {
-  docreview: { label: 'Docs', icon: FileText },
+  // docreview (Phase 11) is the one engine where AI review is the entire
+  // output, not an enrichment layered on top of a rule pass — hasGeminiMark
+  // is the most load-bearing brand mark in the product for exactly that
+  // reason (documentation/09-ui-ux-design-system.md §4.5).
+  docreview: { label: 'Docs', icon: FileText, hasGeminiMark: true },
   // codescan wraps a self-hosted SonarQube instance (Phase 7, ADR-0011)
   // rather than running its own SAST — hasSonarQubeMark reverses the
   // earlier "no external brand mark" note now that one applies.
@@ -81,6 +86,7 @@ export const ENABLED_ENGINES: Engine[] = [
   'containerscan',
   'k8sscan',
   'cicdscan',
+  'docreview',
 ]
 
 export function isEngineEnabled(engine: Engine): boolean {

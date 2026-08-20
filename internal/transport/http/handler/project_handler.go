@@ -2,6 +2,8 @@ package handler
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -268,6 +270,112 @@ func (h *ProjectHandler) RevokeTarget(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RevokeTarget(c.Request.Context(), actor, targetID); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// maxUploadBytes is a generous transport-layer sanity ceiling, not the real
+// limit — project.Service.UploadDocument's own 100 KB cap is the actual
+// business rule and produces the user-facing "too large" error; this just
+// stops an egregiously oversized request from being buffered in full first.
+const maxUploadBytes = 1 << 20 // 1 MiB
+
+func (h *ProjectHandler) ListDocuments(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	docs, err := h.svc.ListDocuments(c.Request.Context(), actor, projectID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.DocumentResponse, len(docs))
+	for i, d := range docs {
+		items[i] = dto.FromDocument(&d)
+	}
+	c.JSON(http.StatusOK, dto.DocumentListResponse{Data: items})
+}
+
+func (h *ProjectHandler) UploadDocument(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadBytes)
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.Error(apperrors.Validation("document.invalid_input", "a \"file\" multipart field is required", nil))
+		return
+	}
+	f, err := fileHeader.Open()
+	if err != nil {
+		c.Error(apperrors.Internal(fmt.Errorf("open uploaded file: %w", err)))
+		return
+	}
+	defer f.Close()
+	content, err := io.ReadAll(f)
+	if err != nil {
+		c.Error(apperrors.Validation("document.invalid_input", "could not read the uploaded file — it may exceed the size limit", nil))
+		return
+	}
+
+	doc, err := h.svc.UploadDocument(c.Request.Context(), actor, projectID, fileHeader.Filename, fileHeader.Header.Get("Content-Type"), content)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.Header("Location", "/api/v1/documents/"+doc.ID.String())
+	c.JSON(http.StatusCreated, dto.FromDocument(doc))
+}
+
+func (h *ProjectHandler) ImportDocument(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var req dto.ImportDocumentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.Validation("document.invalid_input", "url is required", nil))
+		return
+	}
+
+	doc, err := h.svc.ImportDocumentFromURL(c.Request.Context(), actor, projectID, req.URL)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.Header("Location", "/api/v1/documents/"+doc.ID.String())
+	c.JSON(http.StatusCreated, dto.FromDocument(doc))
+}
+
+func (h *ProjectHandler) DeleteDocument(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	documentID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteDocument(c.Request.Context(), actor, documentID); err != nil {
 		c.Error(err)
 		return
 	}

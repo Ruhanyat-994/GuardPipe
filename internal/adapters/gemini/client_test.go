@@ -187,6 +187,36 @@ func TestClient_Complete_SchemaAndResponseMimeTypeAreSentWhenSet(t *testing.T) {
 	require.NotNil(t, genConfig["responseSchema"])
 }
 
+// TestClient_Complete_DisablesThinking guards against a real failure mode
+// reproduced against the live API: Gemini 2.5's "thinking" tokens count
+// against generationConfig.maxOutputTokens, and by default can consume the
+// entire budget before the model ever writes its (JSON-schema-constrained)
+// answer — the response then comes back truncated mid-object with
+// finishReason "MAX_TOKENS", which schema.Validate correctly rejects as
+// invalid JSON. None of this adapter's callers want chain-of-thought for a
+// structured classification/generation task, so thinking must always be
+// disabled (thinkingBudget: 0) rather than left at its default.
+func TestClient_Complete_DisablesThinking(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		writeJSON(t, w, http.StatusOK, successBody(`{}`))
+	}))
+	defer srv.Close()
+
+	client, err := gemini.NewClient(srv.URL, nil, []string{"k"})
+	require.NoError(t, err)
+
+	_, err = client.Complete(context.Background(), ai.LLMRequest{User: "u", Model: "gemini-2.5-flash"})
+	require.NoError(t, err)
+
+	genConfig, ok := gotBody["generationConfig"].(map[string]any)
+	require.True(t, ok)
+	thinkingConfig, ok := genConfig["thinkingConfig"].(map[string]any)
+	require.True(t, ok, "generationConfig.thinkingConfig must be set")
+	require.Equal(t, float64(0), thinkingConfig["thinkingBudget"])
+}
+
 func TestClient_Complete_NoCandidatesIsAnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{"candidates": []any{}})

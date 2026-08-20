@@ -204,3 +204,41 @@ func FromAttestation(t *project.Target, a *project.TargetAttestation) AttestTarg
 type TargetListResponse struct {
 	Data []TargetResponse `json:"data"`
 }
+
+// --- documents — documentation/07-api-specification.md §3 (Phase 11) ---
+
+// DocumentResponse matches `POST/GET /projects/{id}/documents`'s item
+// shape. Content is never serialized back — the API never echoes an
+// uploaded file's bytes.
+type DocumentResponse struct {
+	ID         string    `json:"id"`
+	Filename   string    `json:"filename"`
+	MIMEType   string    `json:"mime_type"`
+	SizeBytes  int       `json:"size_bytes"`
+	UploadedBy *string   `json:"uploaded_by"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func FromDocument(d *project.Document) DocumentResponse {
+	var uploadedBy *string
+	if d.UploadedBy != nil {
+		s := d.UploadedBy.String()
+		uploadedBy = &s
+	}
+	return DocumentResponse{
+		ID: d.ID.String(), Filename: d.Filename, MIMEType: d.MIMEType, SizeBytes: d.SizeBytes,
+		UploadedBy: uploadedBy, CreatedAt: d.CreatedAt,
+	}
+}
+
+// DocumentListResponse matches `GET /projects/{id}/documents`.
+type DocumentListResponse struct {
+	Data []DocumentResponse `json:"data"`
+}
+
+// ImportDocumentRequest is `POST /projects/{id}/documents/import`'s body —
+// a Google Docs/Drive share link, fetched server-side
+// (project.Service.ImportDocumentFromURL) rather than uploaded as bytes.
+type ImportDocumentRequest struct {
+	URL string `json:"url" binding:"required"`
+}

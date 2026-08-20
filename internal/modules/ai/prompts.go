@@ -120,7 +120,12 @@ Categories: {{.categories}}`,
     }
   }
 }`),
-		MaxTokens:   4096,
+		// 4096 wasn't enough headroom for a document with many real findings
+		// even with thinking disabled (adapters/gemini's thinkingConfig) —
+		// reproduced against the live API, a genuinely dense document's JSON
+		// array truncated mid-object at finishReason "MAX_TOKENS" with the
+		// full 4096 tokens spent on legitimate output, not wasted thinking.
+		MaxTokens:   8192,
 		Temperature: 0.1,
 	},
 

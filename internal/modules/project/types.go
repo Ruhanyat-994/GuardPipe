@@ -119,6 +119,26 @@ type TargetAttestation struct {
 	AttestedByName string
 }
 
+// Document mirrors the `documents` table (Phase 11, docreview) — a design/
+// requirements document uploaded directly to a project, reviewed alongside
+// anything docreview discovers inside the repository checkout itself.
+// Content is the raw file bytes for every text-based extension (.md/.txt/
+// .adoc/.rst/.csv); for a .pdf upload it's the extracted plain text
+// instead — the original PDF binary is never stored (service.go's
+// UploadDocument runs it through PDFTextExtractor before this is written).
+// Never returned over the API, only read by the orchestrator worker at scan
+// time.
+type Document struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	UploadedBy *uuid.UUID
+	Filename   string
+	MIMEType   string
+	SizeBytes  int
+	Content    []byte
+	CreatedAt  time.Time
+}
+
 // Page is a 1-based page request (documentation/07-api-specification.md
 // §1.5).
 type Page struct {

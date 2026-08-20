@@ -32,20 +32,28 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 		return fmt.Errorf("repo: encode finding counts: %w", err)
 	}
 
-	// The scan_number subquery runs against the row this statement just
-	// inserted (visible to RETURNING within the same statement) — since
-	// that row is by definition the newest for this project, count(*)
-	// against project_id is exactly its own 1-based ordinal.
 	const q = `
 		INSERT INTO scans (id, project_id, triggered_by, type, status, requested_engines, branch, finding_counts, queued_at)
 		VALUES ($1, $2, $3, $4, $5, $6::engine_id[], $7, $8, now())
-		RETURNING queued_at, (SELECT count(*) FROM scans WHERE project_id = $2)`
+		RETURNING queued_at`
 	err = r.db.QueryRow(ctx, q,
 		s.ID, s.ProjectID, s.TriggeredBy, string(s.Type), string(s.Status),
 		engineIDsToStrings(s.RequestedEngines), s.Branch, countsJSON,
-	).Scan(&s.QueuedAt, &s.ScanNumber)
+	).Scan(&s.QueuedAt)
 	if err != nil {
 		return fmt.Errorf("repo: insert scan: %w", err)
+	}
+
+	// A genuinely separate statement, not a RETURNING subquery on the INSERT
+	// above: Postgres takes a command's snapshot before its own effects
+	// apply, so a self-referential count(*) inside that INSERT's own
+	// RETURNING silently undercounts by exactly the row just inserted
+	// (verified against a real database — it returned 0 for a project's
+	// first scan, not 1). This second query runs after the INSERT has
+	// committed, so it sees the row correctly.
+	const countQ = `SELECT count(*) FROM scans WHERE project_id = $1`
+	if err := r.db.QueryRow(ctx, countQ, s.ProjectID).Scan(&s.ScanNumber); err != nil {
+		return fmt.Errorf("repo: count scans for scan_number: %w", err)
 	}
 	return nil
 }
