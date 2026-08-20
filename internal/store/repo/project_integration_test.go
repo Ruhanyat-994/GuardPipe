@@ -237,3 +237,66 @@ func TestTargetAndAttestationRepo_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, project.TargetAttested, reGot.Status)
 }
+
+func TestDocumentRepo_CreateListCountDelete_RoundTrip(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	orgID, userID := seedOrgAndUser(t, pool)
+	projects := repo.NewProjectRepo(pool)
+	documents := repo.NewDocumentRepo(pool)
+
+	p := &project.Project{ID: id.New(), OrgID: orgID, Name: "Payments API", Status: project.StatusActive, CreatedBy: &userID}
+	require.NoError(t, projects.Create(ctx, p))
+
+	d := &project.Document{
+		ID: id.New(), ProjectID: p.ID, UploadedBy: &userID,
+		Filename: "srs.md", MIMEType: "text/markdown", SizeBytes: 5, Content: []byte("# SRS"),
+	}
+	require.NoError(t, documents.Create(ctx, d))
+	require.False(t, d.CreatedAt.IsZero())
+
+	got, err := documents.GetByID(ctx, d.ID)
+	require.NoError(t, err)
+	require.Equal(t, "srs.md", got.Filename)
+	require.Equal(t, []byte("# SRS"), got.Content)
+	require.NotNil(t, got.UploadedBy)
+	require.Equal(t, userID, *got.UploadedBy)
+
+	list, err := documents.ListByProject(ctx, p.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	count, err := documents.CountByProject(ctx, p.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	require.NoError(t, documents.Delete(ctx, d.ID))
+	_, err = documents.GetByID(ctx, d.ID)
+	require.Error(t, err)
+
+	countAfter, err := documents.CountByProject(ctx, p.ID)
+	require.NoError(t, err)
+	require.Equal(t, 0, countAfter)
+}
+
+// TestDocumentRepo_CascadeDeletesWithProject confirms the documents table's
+// ON DELETE CASCADE (migration 00013) actually behaves that way against a
+// real database, not just as SQL text nobody's run.
+func TestDocumentRepo_CascadeDeletesWithProject(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	orgID, userID := seedOrgAndUser(t, pool)
+	projects := repo.NewProjectRepo(pool)
+	documents := repo.NewDocumentRepo(pool)
+
+	p := &project.Project{ID: id.New(), OrgID: orgID, Name: "Payments API", Status: project.StatusActive, CreatedBy: &userID}
+	require.NoError(t, projects.Create(ctx, p))
+
+	d := &project.Document{ID: id.New(), ProjectID: p.ID, Filename: "srs.md", MIMEType: "text/markdown", SizeBytes: 5, Content: []byte("# SRS")}
+	require.NoError(t, documents.Create(ctx, d))
+
+	require.NoError(t, projects.Delete(ctx, p.ID))
+
+	_, err := documents.GetByID(ctx, d.ID)
+	require.Error(t, err)
+}

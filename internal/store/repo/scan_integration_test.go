@@ -47,6 +47,7 @@ func TestScanRepo_CreateAndGet_RoundTrip(t *testing.T) {
 	}
 	require.NoError(t, scans.Create(ctx, scan))
 	require.False(t, scan.QueuedAt.IsZero(), "Create() must populate QueuedAt from the DB default")
+	require.Equal(t, 1, scan.ScanNumber, "the first scan for a project must be numbered 1")
 
 	got, err := scans.GetByID(ctx, scan.ID)
 	require.NoError(t, err)
@@ -54,6 +55,7 @@ func TestScanRepo_CreateAndGet_RoundTrip(t *testing.T) {
 	require.Equal(t, []domain.EngineID{domain.EngineDepScan}, got.RequestedEngines)
 	require.Equal(t, "main", *got.Branch)
 	require.False(t, got.CancelRequested)
+	require.Equal(t, 1, got.ScanNumber, "GetByID must return the same scan_number Create did")
 }
 
 // TestScanRepo_ListByProject_NewestFirstAndScopedToProject exercises the

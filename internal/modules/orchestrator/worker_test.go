@@ -17,6 +17,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
+	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 )
 
@@ -105,11 +106,15 @@ func (c *fakeCloner) callCount() int {
 type fakeCloneInfo struct {
 	mu                    sync.Mutex
 	token                 string
+	noRepository          bool
 	invalidatedProjectIDs []uuid.UUID
 	invalidatedReasons    []string
 }
 
 func (f *fakeCloneInfo) GetCloneInfo(context.Context, uuid.UUID) (string, string, string, error) {
+	if f.noRepository {
+		return "", "", "", apperrors.NotFound("project.repository_not_found", "no repository attached to this project")
+	}
 	return "https://github.com/acme/example", "main", f.token, nil
 }
 
@@ -348,6 +353,87 @@ func TestPool_ProcessJob_CloneUnauthorized_NoTokenDoesNotFlagCredential(t *testi
 	require.NotNil(t, job.ErrorReason)
 	require.Equal(t, "workspace_unavailable", *job.ErrorReason)
 	require.Equal(t, 0, projects.invalidatedCalls(), "no credential was ever attached, so nothing should be flagged invalid")
+}
+
+// TestPool_ProcessJob_DocReview_NoRepositoryAttached_RunsAnyway is
+// docreview's own carve-out from TestPool_ProcessJob_CloneFails_MarksFailed:
+// unlike every other engine, it can review uploaded documents alone with no
+// repository ever attached to the project at all
+// (documentation/05-module-specifications.md §11) — GetCloneInfo's
+// "project.repository_not_found" must not fail this job the way any other
+// workspace-prep failure correctly does; it should just mean "nothing to add
+// from a repo checkout," leaving WorkspaceDir empty rather than failing.
+func TestPool_ProcessJob_DocReview_NoRepositoryAttached_RunsAnyway(t *testing.T) {
+	var seenWorkspaceDir string
+	ranEngine := false
+	engine := &recordingEngine{id: domain.EngineDocReview, check: func(in domain.ScanInput) {
+		ranEngine = true
+		seenWorkspaceDir = in.WorkspaceDir
+	}}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
+		Projects:      &fakeCloneInfo{noRepository: true},
+		Cloner:        &fakeCloner{},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log: discardLogger(),
+	}
+	_, jobID := seedScanAndJob(t, scans, jobs, domain.EngineDocReview)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	job, err := jobs.GetByID(context.Background(), jobID)
+	require.NoError(t, err)
+	require.Equal(t, domain.JobStatusSucceeded, job.Status)
+	require.True(t, ranEngine, "engine.Run should have been called despite no repository")
+	require.Empty(t, seenWorkspaceDir)
+}
+
+// TestPool_ProcessJob_OtherEngine_NoRepositoryAttached_StillFails is the
+// near-miss: the carve-out above is docreview-specific — every other engine
+// still genuinely needs a repository, so "no repository attached" must keep
+// failing them with workspace_unavailable exactly as before.
+func TestPool_ProcessJob_OtherEngine_NoRepositoryAttached_StillFails(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineDepScan, applicable: true}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
+		Projects:      &fakeCloneInfo{noRepository: true},
+		Cloner:        &fakeCloner{},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log: discardLogger(),
+	}
+	_, jobID := seedScanAndJob(t, scans, jobs, domain.EngineDepScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	job, err := jobs.GetByID(context.Background(), jobID)
+	require.NoError(t, err)
+	require.Equal(t, domain.JobStatusFailed, job.Status)
+	require.NotNil(t, job.ErrorReason)
+	require.Equal(t, "workspace_unavailable", *job.ErrorReason)
 }
 
 func TestPool_ProcessJob_CancelledScan_MarksCancelledWithoutRunningEngine(t *testing.T) {

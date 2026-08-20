@@ -7,6 +7,8 @@ import { ALL_ENGINES, ENABLED_ENGINES, ENGINE_META, isEngineEnabled } from '../.
 import type { Engine } from '../../lib/rulesApi'
 import { ApiError } from '../../lib/apiClient'
 import { createScan, type Scan } from '../../lib/scansApi'
+import { DocumentUploadForm } from './DocumentUploadForm'
+import { GeminiMark } from '../icons/GeminiMark'
 import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
@@ -115,6 +117,7 @@ export function ScanLauncher({
                 {meta.hasSonarQubeMark && <SonarQubeMark />}
                 {meta.hasKubernetesMark && <KubernetesMark />}
                 {meta.hasGitHubMark && <GitHubMark className="h-3 w-3" />}
+                {meta.hasGeminiMark && <GeminiMark />}
               </div>
               <span className="text-caption text-text-tertiary">
                 {enabled ? 'Available' : 'Coming soon'}
@@ -123,6 +126,10 @@ export function ScanLauncher({
           )
         })}
       </div>
+
+      {selected.has('docreview') && isEngineEnabled('docreview') && (
+        <DocumentUploadForm projectId={projectId} variant="embedded" />
+      )}
 
       {error && (
         <p role="alert" className="mt-4 text-body-sm text-danger">

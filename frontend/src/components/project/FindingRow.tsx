@@ -129,15 +129,6 @@ export function FindingRow({
         >
           {finding.severity}
         </span>
-        {finding.source === 'ai' && (
-          <span
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-ai/30 bg-ai/10 px-2 py-0.5 text-caption font-medium text-ai"
-            title="AI-generated — review before applying"
-          >
-            <Sparkles className="h-3 w-3" aria-hidden="true" />
-            AI-generated
-          </span>
-        )}
         <span className="flex-1 text-body-sm text-text-primary">{finding.title}</span>
         <span className="hidden text-caption text-text-tertiary sm:inline">{finding.rule_id}</span>
         <ChevronDown
@@ -179,7 +170,7 @@ export function FindingRow({
                 )}
               </div>
               {finding.location.value && (
-                <pre className="overflow-x-auto rounded-md bg-bg-subtle px-3 py-2 font-mono text-caption text-text-primary">
+                <pre className="rounded-md bg-bg-subtle px-4 py-3 font-mono text-code whitespace-pre-wrap break-words text-text-primary">
                   {finding.location.value}
                 </pre>
               )}
@@ -240,7 +231,7 @@ export function FindingRow({
               {finding.evidence.map((ev, i) => (
                 <pre
                   key={i}
-                  className="overflow-x-auto rounded-md bg-bg-subtle px-3 py-2 font-mono text-caption text-text-primary"
+                  className="rounded-md bg-bg-subtle px-4 py-3 font-mono text-code whitespace-pre-wrap break-words text-text-primary"
                 >
                   {ev.value}
                 </pre>

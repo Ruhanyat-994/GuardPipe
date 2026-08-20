@@ -3,7 +3,9 @@ package project_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -259,6 +261,68 @@ func (f *fakeAttestationRepo) Create(_ context.Context, a *project.Attestation) 
 	return nil
 }
 
+type fakeDocumentRepo struct {
+	mu   sync.Mutex
+	byID map[uuid.UUID]*project.Document
+}
+
+func newFakeDocumentRepo() *fakeDocumentRepo {
+	return &fakeDocumentRepo{byID: map[uuid.UUID]*project.Document{}}
+}
+
+func (f *fakeDocumentRepo) Create(_ context.Context, d *project.Document) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := *d
+	f.byID[d.ID] = &cp
+	return nil
+}
+
+func (f *fakeDocumentRepo) GetByID(_ context.Context, id uuid.UUID) (*project.Document, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.byID[id]
+	if !ok {
+		return nil, apperrors.NotFound("document.not_found", "not found")
+	}
+	cp := *d
+	return &cp, nil
+}
+
+func (f *fakeDocumentRepo) ListByProject(_ context.Context, projectID uuid.UUID) ([]project.Document, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []project.Document
+	for _, d := range f.byID {
+		if d.ProjectID == projectID {
+			out = append(out, *d)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeDocumentRepo) CountByProject(_ context.Context, projectID uuid.UUID) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, d := range f.byID {
+		if d.ProjectID == projectID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeDocumentRepo) Delete(_ context.Context, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.byID[id]; !ok {
+		return apperrors.NotFound("document.not_found", "not found")
+	}
+	delete(f.byID, id)
+	return nil
+}
+
 type fakeUserLookup struct{ name string }
 
 func (f *fakeUserLookup) GetDisplayName(context.Context, uuid.UUID) (string, error) {
@@ -302,10 +366,13 @@ type testDeps struct {
 	credentials  *fakeCredentialRepo
 	targets      *fakeTargetRepo
 	attestations *fakeAttestationRepo
+	documents    *fakeDocumentRepo
 	users        *fakeUserLookup
 	vcs          *fakeVCS
 	resolver     fakeResolver
 	audit        *fakeAuditService
+	urlFetcher   *fakeURLFetcher
+	pdfExtractor *fakePDFExtractor
 	allowlist    []string
 }
 
@@ -341,17 +408,45 @@ func newTestDeps() *testDeps {
 		credentials:  newFakeCredentialRepo(),
 		targets:      newFakeTargetRepo(),
 		attestations: &fakeAttestationRepo{},
+		documents:    newFakeDocumentRepo(),
 		users:        &fakeUserLookup{name: "Nadia R."},
 		vcs:          &fakeVCS{},
 		resolver:     fakeResolver{},
 		audit:        &fakeAuditService{},
+		urlFetcher:   &fakeURLFetcher{contentType: "text/plain", body: []byte("Imported document content.")},
+		pdfExtractor: &fakePDFExtractor{text: "Extracted PDF content."},
 		allowlist:    []string{"acme.example"},
 	}
 }
 
 func (d *testDeps) build() project.Service {
 	key := make([]byte, crypto.KeySize)
-	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.users, d.vcs, d.resolver, d.audit, key, false, d.allowlist)
+	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.documents, d.users, d.vcs, d.resolver, d.audit, d.urlFetcher, d.pdfExtractor, key, false, d.allowlist)
+}
+
+// fakeURLFetcher is a hand-written fake for project.URLFetcher — no
+// mocking framework, and no live network call to Google.
+type fakeURLFetcher struct {
+	contentType string
+	body        []byte
+	err         error
+}
+
+func (f *fakeURLFetcher) Fetch(context.Context, string) (string, []byte, error) {
+	return f.contentType, f.body, f.err
+}
+
+// fakePDFExtractor is a hand-written fake for project.PDFTextExtractor —
+// the real github.com/ledongthuc/pdf parser is exercised separately in
+// docpdf_test.go against an actual generated PDF; service_test.go only
+// needs to control what extraction returns.
+type fakePDFExtractor struct {
+	text string
+	err  error
+}
+
+func (f *fakePDFExtractor) ExtractText([]byte) (string, error) {
+	return f.text, f.err
 }
 
 func newActor() domain.Actor {
@@ -721,6 +816,308 @@ func TestRevokeTarget_FromAnotherOrg_NotFound(t *testing.T) {
 	// check surfaces as "project.not_found" — either way, 404 and not a
 	// 403 that would confirm the target exists.
 	requireCode(t, err, apperrors.KindNotFound, "project.not_found")
+}
+
+func TestUploadDocument_ThenList(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	doc, err := svc.UploadDocument(context.Background(), actor, detail.ID, "srs.md", "text/markdown", []byte("# SRS\n\nContent."))
+	require.NoError(t, err)
+	require.Equal(t, "srs.md", doc.Filename)
+	require.Equal(t, 15, doc.SizeBytes)
+	require.NotNil(t, doc.UploadedBy)
+	require.Equal(t, actor.UserID, *doc.UploadedBy)
+
+	docs, err := svc.ListDocuments(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+	require.Equal(t, doc.ID, docs[0].ID)
+
+	require.Contains(t, d.audit.actions(), "document.uploaded")
+}
+
+func TestUploadDocument_RejectsUnsupportedExtension(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.UploadDocument(context.Background(), actor, detail.ID, "srs.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", []byte("PK\x03\x04"))
+	requireCode(t, err, apperrors.KindValidation, "document.unsupported_type")
+}
+
+// TestUploadDocument_AcceptsEveryAllowedExtension is the near-miss's
+// complement — every extension the allowlist names must actually be
+// accepted, not just an unsupported one rejected. .pdf goes through
+// createDocument's extraction path too (fakePDFExtractor stands in for the
+// real parser here — that's covered against a real PDF in docpdf_test.go).
+func TestUploadDocument_AcceptsEveryAllowedExtension(t *testing.T) {
+	for _, name := range []string{"srs.md", "notes.txt", "spec.adoc", "design.rst", "report.pdf", "data.csv"} {
+		t.Run(name, func(t *testing.T) {
+			d := newTestDeps()
+			svc := d.build()
+			actor := newActor()
+			detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+			require.NoError(t, err)
+
+			_, err = svc.UploadDocument(context.Background(), actor, detail.ID, name, "text/plain", []byte("content"))
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestUploadDocument_PDF_StoresExtractedText(t *testing.T) {
+	d := newTestDeps()
+	d.pdfExtractor = &fakePDFExtractor{text: "  Architecture Decision Record 001  \n"}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	doc, err := svc.UploadDocument(context.Background(), actor, detail.ID, "adr.pdf", "application/pdf", []byte("%PDF-1.4 fake raw bytes"))
+	require.NoError(t, err)
+	require.Equal(t, "text/plain", doc.MIMEType)
+	require.Equal(t, "Architecture Decision Record 001", string(doc.Content))
+}
+
+func TestUploadDocument_PDF_RejectsWhenExtractionFails(t *testing.T) {
+	d := newTestDeps()
+	d.pdfExtractor = &fakePDFExtractor{err: errors.New("corrupt PDF")}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.UploadDocument(context.Background(), actor, detail.ID, "adr.pdf", "application/pdf", []byte("not really a pdf"))
+	requireCode(t, err, apperrors.KindValidation, "document.invalid_pdf")
+}
+
+// TestUploadDocument_PDF_RejectsWhenNoTextExtracted covers a scanned/
+// image-only PDF — extraction succeeds mechanically but yields nothing to
+// review, which must be rejected rather than silently stored as an empty
+// document that never surfaces a docreview finding.
+func TestUploadDocument_PDF_RejectsWhenNoTextExtracted(t *testing.T) {
+	d := newTestDeps()
+	d.pdfExtractor = &fakePDFExtractor{text: "   \n  "}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.UploadDocument(context.Background(), actor, detail.ID, "scanned.pdf", "application/pdf", []byte("fake raw pdf bytes"))
+	requireCode(t, err, apperrors.KindValidation, "document.invalid_pdf")
+}
+
+func TestUploadDocument_RejectsOversizedFile(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	oversized := make([]byte, 100*1024+1)
+	_, err = svc.UploadDocument(context.Background(), actor, detail.ID, "big.md", "text/markdown", oversized)
+	requireCode(t, err, apperrors.KindValidation, "document.too_large")
+}
+
+func TestUploadDocument_RejectsOnceProjectLimitReached(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	for i := range 20 {
+		_, err := svc.UploadDocument(context.Background(), actor, detail.ID, fmt.Sprintf("doc-%d.md", i), "text/markdown", []byte("content"))
+		require.NoError(t, err)
+	}
+
+	_, err = svc.UploadDocument(context.Background(), actor, detail.ID, "one-too-many.md", "text/markdown", []byte("content"))
+	requireCode(t, err, apperrors.KindUnprocessable, "document.limit_reached")
+}
+
+func TestDeleteDocument_FromAnotherOrg_NotFound(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	owner := newActor()
+
+	detail, err := svc.Create(context.Background(), owner, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+	doc, err := svc.UploadDocument(context.Background(), owner, detail.ID, "srs.md", "text/markdown", []byte("content"))
+	require.NoError(t, err)
+
+	intruder := newActor()
+	err = svc.DeleteDocument(context.Background(), intruder, doc.ID)
+	// Ownership is enforced via the document's parent project, same
+	// 404-not-403 shape as every other project-scoped resource.
+	requireCode(t, err, apperrors.KindNotFound, "project.not_found")
+}
+
+func TestDeleteDocument_RemovesIt(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+	doc, err := svc.UploadDocument(context.Background(), actor, detail.ID, "srs.md", "text/markdown", []byte("content"))
+	require.NoError(t, err)
+
+	require.NoError(t, svc.DeleteDocument(context.Background(), actor, doc.ID))
+
+	docs, err := svc.ListDocuments(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Empty(t, docs)
+}
+
+func TestImportDocumentFromURL_Success(t *testing.T) {
+	d := newTestDeps()
+	d.urlFetcher = &fakeURLFetcher{contentType: "text/plain; charset=UTF-8", body: []byte("# Architecture\n\nImported content.")}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	doc, err := svc.ImportDocumentFromURL(context.Background(), actor, detail.ID, "https://docs.google.com/document/d/1AbC-xyz_123/edit?usp=sharing")
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(doc.Filename, "google-doc-"))
+	require.True(t, strings.HasSuffix(doc.Filename, ".txt"))
+	require.Equal(t, "text/plain", doc.MIMEType)
+	require.Equal(t, len("# Architecture\n\nImported content."), doc.SizeBytes)
+
+	docs, err := svc.ListDocuments(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+	require.Contains(t, d.audit.actions(), "document.uploaded")
+}
+
+func TestImportDocumentFromURL_RejectsNonGoogleURL(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.ImportDocumentFromURL(context.Background(), actor, detail.ID, "https://example.com/not-a-google-doc")
+	requireCode(t, err, apperrors.KindValidation, "document.invalid_google_url")
+}
+
+func TestImportDocumentFromURL_RejectsEmptyURL(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.ImportDocumentFromURL(context.Background(), actor, detail.ID, "   ")
+	requireCode(t, err, apperrors.KindValidation, "document.invalid_input")
+}
+
+// TestImportDocumentFromURL_RejectsWhenNotPubliclyShared covers the one
+// signal available without OAuth to tell "not shared" apart from "shared
+// but empty": Google serves an HTML sign-in page instead of the plain-text
+// export for a link that isn't "anyone with the link can view."
+func TestImportDocumentFromURL_RejectsWhenNotPubliclyShared(t *testing.T) {
+	d := newTestDeps()
+	d.urlFetcher = &fakeURLFetcher{contentType: "text/html; charset=UTF-8", body: []byte("<html>sign in</html>")}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.ImportDocumentFromURL(context.Background(), actor, detail.ID, "https://docs.google.com/document/d/1AbC-xyz_123/edit")
+	requireCode(t, err, apperrors.KindUnprocessable, "document.not_publicly_accessible")
+}
+
+func TestImportDocumentFromURL_RejectsFetchFailure(t *testing.T) {
+	d := newTestDeps()
+	d.urlFetcher = &fakeURLFetcher{err: errors.New("connection reset")}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.ImportDocumentFromURL(context.Background(), actor, detail.ID, "https://docs.google.com/document/d/1AbC-xyz_123/edit")
+	requireCode(t, err, apperrors.KindUnprocessable, "document.import_failed")
+}
+
+func TestImportDocumentFromURL_RejectsOversizedFetch(t *testing.T) {
+	d := newTestDeps()
+	d.urlFetcher = &fakeURLFetcher{contentType: "text/plain", body: make([]byte, 100*1024+1)}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.ImportDocumentFromURL(context.Background(), actor, detail.ID, "https://docs.google.com/document/d/1AbC-xyz_123/edit")
+	requireCode(t, err, apperrors.KindValidation, "document.too_large")
+}
+
+func TestImportDocumentFromURL_RejectsOnceProjectLimitReached(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	for i := range 20 {
+		_, err := svc.UploadDocument(context.Background(), actor, detail.ID, fmt.Sprintf("doc-%d.md", i), "text/markdown", []byte("content"))
+		require.NoError(t, err)
+	}
+
+	_, err = svc.ImportDocumentFromURL(context.Background(), actor, detail.ID, "https://docs.google.com/document/d/1AbC-xyz_123/edit")
+	requireCode(t, err, apperrors.KindUnprocessable, "document.limit_reached")
+}
+
+func TestImportDocumentFromURL_FromAnotherOrg_NotFound(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	owner := newActor()
+
+	detail, err := svc.Create(context.Background(), owner, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	intruder := newActor()
+	_, err = svc.ImportDocumentFromURL(context.Background(), intruder, detail.ID, "https://docs.google.com/document/d/1AbC-xyz_123/edit")
+	requireCode(t, err, apperrors.KindNotFound, "project.not_found")
+}
+
+// TestGetDocuments_NoActorCheck confirms the worker-facing read (no actor
+// parameter — same reasoning as GetCloneInfo) returns a project's documents
+// without requiring ownership context, since the caller is background job
+// processing whose authorization already happened at scan creation.
+func TestGetDocuments_NoActorCheck(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+	_, err = svc.UploadDocument(context.Background(), actor, detail.ID, "srs.md", "text/markdown", []byte("content"))
+	require.NoError(t, err)
+
+	docs, err := svc.GetDocuments(context.Background(), detail.ID)
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
 }
 
 func requireCode(t *testing.T, err error, wantKind apperrors.Kind, wantCode string) {

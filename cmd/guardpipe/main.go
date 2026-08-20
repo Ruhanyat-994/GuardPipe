@@ -30,6 +30,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/codescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/containerscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/depscan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/docreview"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/k8sscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
@@ -121,10 +122,13 @@ func run() error {
 		repo.NewCredentialRepo(db.Pool),
 		repo.NewTargetRepo(db.Pool),
 		repo.NewAttestationRepo(db.Pool),
+		repo.NewDocumentRepo(db.Pool),
 		repo.NewUserRepo(db.Pool),
 		vcsSvc,
 		net.DefaultResolver,
 		auditSvc,
+		project.NewHTTPURLFetcher(),
+		project.NewPDFTextExtractor(),
 		cfg.Security.EncryptionKeyRaw,
 		cfg.Pentest.AllowPrivateTargets,
 		cfg.Pentest.Allowlist,
@@ -143,6 +147,7 @@ func run() error {
 	ruleRegistry.Register(depscan.Rules...)
 	ruleRegistry.Register(k8sscan.Rules...)
 	ruleRegistry.Register(cicdscan.Rules...)
+	ruleRegistry.Register(docreview.Rules...)
 
 	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
 	advisorySvc := advisory.NewService(
@@ -214,6 +219,12 @@ func run() error {
 		aiSvc = ai.NewService(geminiClient, ai.NewMemoryCache(), cfg.AI.CacheTTL, cfg.AI.ModelFast, cfg.AI.ModelSmart)
 	}
 	registry.Register(cicdscan.New(aiSvc))
+	// docreview (Phase 11) has no deterministic fallback the way cicdscan
+	// does — a nil aiSvc fails its jobs outright (engine.go's own doc
+	// comment) rather than degrading to rule findings only, since AI review
+	// is this engine's entire output. Still registered unconditionally: the
+	// engine itself decides how to fail, not whether it exists.
+	registry.Register(docreview.New(aiSvc))
 
 	orchestratorSvc := orchestrator.NewService(
 		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),
@@ -228,6 +239,7 @@ func run() error {
 		Jobs:           repo.NewScanJobRepo(db.Pool),
 		JobResults:     repo.NewJobResultRepo(db.Pool),
 		Projects:       projectSvc,
+		Documents:      projectSvc,
 		Cloner:         vcsSvc,
 		WorkspaceRoot:  cfg.Scanning.WorkspaceRoot,
 		EngineTimeouts: cfg.Scanning.EngineTimeouts,

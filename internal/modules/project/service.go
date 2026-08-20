@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,6 +39,20 @@ type Service interface {
 	RegisterTarget(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in TargetInput) (*Target, error)
 	AttestTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID, in AttestationInput) (*Target, *TargetAttestation, error)
 	RevokeTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID) error
+
+	ListDocuments(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]Document, error)
+	UploadDocument(ctx context.Context, actor domain.Actor, projectID uuid.UUID, filename, mimeType string, content []byte) (*Document, error)
+	// ImportDocumentFromURL fetches a Google Docs/Drive share link
+	// (ParseGoogleDocLink) and stores it through the same validation and
+	// per-project limits as UploadDocument — the "paste a link" half of
+	// docreview's document intake, alongside the "pick a file" half.
+	ImportDocumentFromURL(ctx context.Context, actor domain.Actor, projectID uuid.UUID, rawURL string) (*Document, error)
+	DeleteDocument(ctx context.Context, actor domain.Actor, documentID uuid.UUID) error
+
+	// GetDocuments is docreview's (Phase 11) worker-side read — same no-actor
+	// reasoning as GetCloneInfo below: the caller is a background job whose
+	// creation was already authorized, not a per-request check.
+	GetDocuments(ctx context.Context, projectID uuid.UUID) ([]Document, error)
 
 	// GetCloneInfo returns what modules/orchestrator's background worker
 	// needs to check out a project's repository — no actor parameter,
@@ -135,6 +150,32 @@ type AttestationRepository interface {
 	Create(ctx context.Context, a *Attestation) error
 }
 
+// DocumentRepository is defined by this package.
+type DocumentRepository interface {
+	Create(ctx context.Context, d *Document) error
+	GetByID(ctx context.Context, id uuid.UUID) (*Document, error)
+	ListByProject(ctx context.Context, projectID uuid.UUID) ([]Document, error)
+	CountByProject(ctx context.Context, projectID uuid.UUID) (int, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// Document upload limits (documentation/05-module-specifications.md §11) —
+// per project, not per scan: a document is uploaded once and reused by
+// every scan against that project, not re-uploaded each time.
+const (
+	maxDocumentSizeBytes = 100 * 1024
+	maxDocumentsPerProject = 20
+)
+
+// allowedDocumentExtensions extends §11's original Core allowlist with
+// .pdf and .csv. PDF is the one type that isn't already plain text — it's
+// routed through pdfExtractor in UploadDocument before ever reaching
+// createDocument's size/count checks, one new dependency
+// (github.com/ledongthuc/pdf, pure Go, MIT) justified specifically for that.
+var allowedDocumentExtensions = map[string]bool{
+	".md": true, ".txt": true, ".adoc": true, ".rst": true, ".pdf": true, ".csv": true,
+}
+
 // UserDisplayNameLookup is the one thing this module needs from `identity`
 // — the attesting user's display name for the attestation response
 // (documentation/07-api-specification.md §4's "attested_by"). The module
@@ -151,10 +192,13 @@ type service struct {
 	credentials   CredentialRepository
 	targets       TargetRepository
 	attestations  AttestationRepository
+	documents     DocumentRepository
 	users         UserDisplayNameLookup
 	vcs           vcs.Service
 	resolver      validate.Resolver
 	audit         audit.Service
+	urlFetcher    URLFetcher
+	pdfExtractor  PDFTextExtractor
 	encryptionKey []byte
 
 	allowPrivateTargets bool
@@ -171,10 +215,13 @@ func NewService(
 	credentials CredentialRepository,
 	targets TargetRepository,
 	attestations AttestationRepository,
+	documents DocumentRepository,
 	users UserDisplayNameLookup,
 	vcsSvc vcs.Service,
 	resolver validate.Resolver,
 	auditSvc audit.Service,
+	urlFetcher URLFetcher,
+	pdfExtractor PDFTextExtractor,
 	encryptionKey []byte,
 	allowPrivateTargets bool,
 	pentestAllowlist []string,
@@ -185,10 +232,13 @@ func NewService(
 		credentials:         credentials,
 		targets:             targets,
 		attestations:        attestations,
+		documents:           documents,
 		users:               users,
 		vcs:                 vcsSvc,
 		resolver:            resolver,
 		audit:               auditSvc,
+		urlFetcher:          urlFetcher,
+		pdfExtractor:        pdfExtractor,
 		encryptionKey:       encryptionKey,
 		allowPrivateTargets: allowPrivateTargets,
 		pentestAllowlist:    pentestAllowlist,
@@ -530,6 +580,148 @@ func (s *service) RevokeTarget(ctx context.Context, actor domain.Actor, targetID
 	return nil
 }
 
+func (s *service) ListDocuments(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]Document, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+	docs, err := s.documents.ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list documents: %w", err))
+	}
+	return docs, nil
+}
+
+func (s *service) UploadDocument(ctx context.Context, actor domain.Actor, projectID uuid.UUID, filename, mimeType string, content []byte) (*Document, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return nil, apperrors.Validation("document.invalid_input", "filename is required", nil)
+	}
+	ext := strings.ToLower(filepath.Ext(filename))
+	if !allowedDocumentExtensions[ext] {
+		return nil, apperrors.Validation("document.unsupported_type", "filename must end in .md, .txt, .adoc, .rst, .pdf, or .csv", nil)
+	}
+	if len(content) == 0 {
+		return nil, apperrors.Validation("document.invalid_input", "file is empty", nil)
+	}
+
+	// Every other allowed extension is already plain text; a PDF is the one
+	// binary format in the allowlist, so its bytes are swapped out for the
+	// extracted text here — createDocument's size/count checks then apply
+	// to that extracted text, not the (usually much larger) raw PDF.
+	if ext == ".pdf" {
+		text, err := s.pdfExtractor.ExtractText(content)
+		if err != nil {
+			return nil, apperrors.Validation("document.invalid_pdf", "could not read this PDF — it may be corrupted or password-protected", nil)
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil, apperrors.Validation("document.invalid_pdf", "no extractable text found in this PDF — scanned/image-only PDFs aren't supported", nil)
+		}
+		content = []byte(text)
+		mimeType = "text/plain"
+	}
+
+	return s.createDocument(ctx, actor, projectID, filename, mimeType, content, "upload")
+}
+
+// ImportDocumentFromURL is the "paste a link" counterpart to UploadDocument
+// — it fetches a Google Docs/Drive share link server-side rather than
+// receiving bytes over the request, then runs through the exact same size
+// and per-project limit checks via createDocument. No new Google Cloud
+// credentials are needed: the link must already be shared "anyone with the
+// link can view," and the fetch is a plain HTTPS GET against Google's public
+// export endpoint — no OAuth, no API key.
+func (s *service) ImportDocumentFromURL(ctx context.Context, actor domain.Actor, projectID uuid.UUID, rawURL string) (*Document, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil, apperrors.Validation("document.invalid_input", "url is required", nil)
+	}
+	exportURL, filename, err := ParseGoogleDocLink(rawURL)
+	if err != nil {
+		return nil, apperrors.Validation("document.invalid_google_url", err.Error(), nil)
+	}
+
+	contentType, body, err := s.urlFetcher.Fetch(ctx, exportURL)
+	if err != nil {
+		return nil, apperrors.Unprocessable("document.import_failed", "could not fetch the document — check the link and try again")
+	}
+	// A link that isn't shared "anyone with the link can view" resolves to
+	// Google's HTML sign-in/permission page instead of the plain-text
+	// export — that's the one signal available without OAuth to tell "not
+	// public" apart from "public but empty."
+	if strings.Contains(strings.ToLower(contentType), "text/html") {
+		return nil, apperrors.Unprocessable("document.not_publicly_accessible", `this document isn't shared publicly — set sharing to "anyone with the link can view" and try again`)
+	}
+	if len(body) == 0 {
+		return nil, apperrors.Validation("document.invalid_input", "the imported document is empty", nil)
+	}
+
+	return s.createDocument(ctx, actor, projectID, filename, "text/plain", body, "google_drive")
+}
+
+// createDocument is UploadDocument and ImportDocumentFromURL's shared tail:
+// enforce the size and per-project count limits, persist, and audit-log.
+// Callers are responsible for filename/extension validation and for making
+// sure content is non-empty before calling this.
+func (s *service) createDocument(ctx context.Context, actor domain.Actor, projectID uuid.UUID, filename, mimeType string, content []byte, source string) (*Document, error) {
+	if len(content) > maxDocumentSizeBytes {
+		return nil, apperrors.Validation("document.too_large", fmt.Sprintf("file is larger than the %d KB limit", maxDocumentSizeBytes/1024), nil)
+	}
+
+	count, err := s.documents.CountByProject(ctx, projectID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("count documents: %w", err))
+	}
+	if count >= maxDocumentsPerProject {
+		return nil, apperrors.Unprocessable("document.limit_reached", fmt.Sprintf("this project already has the maximum of %d documents — delete one before uploading another", maxDocumentsPerProject))
+	}
+
+	uploadedBy := actor.UserID
+	d := &Document{
+		ID: id.New(), ProjectID: projectID, UploadedBy: &uploadedBy,
+		Filename: filename, MIMEType: mimeType, SizeBytes: len(content), Content: content,
+	}
+	if err := s.documents.Create(ctx, d); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("upload document: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "document.uploaded",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+		Detail: map[string]any{"filename": d.Filename, "source": source},
+	})
+	return d, nil
+}
+
+func (s *service) DeleteDocument(ctx context.Context, actor domain.Actor, documentID uuid.UUID) error {
+	if _, err := s.getOwnedDocument(ctx, actor, documentID); err != nil {
+		return err
+	}
+	if err := s.documents.Delete(ctx, documentID); err != nil {
+		return apperrors.Internal(fmt.Errorf("delete document: %w", err))
+	}
+	return nil
+}
+
+// GetDocuments is docreview's worker-side read — no ownership check,
+// deliberately (see the Service interface's own doc comment on this
+// method): the caller is background job processing, not a per-request
+// check.
+func (s *service) GetDocuments(ctx context.Context, projectID uuid.UUID) ([]Document, error) {
+	docs, err := s.documents.ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("get documents: %w", err))
+	}
+	return docs, nil
+}
+
 func (s *service) GetCloneInfo(ctx context.Context, projectID uuid.UUID) (repoURL, branch, token string, err error) {
 	repo, err := s.repositories.GetByProjectID(ctx, projectID)
 	if err != nil {
@@ -591,6 +783,20 @@ func (s *service) getOwnedTarget(ctx context.Context, actor domain.Actor, target
 		return nil, err
 	}
 	return t, nil
+}
+
+func (s *service) getOwnedDocument(ctx context.Context, actor domain.Actor, documentID uuid.UUID) (*Document, error) {
+	d, err := s.documents.GetByID(ctx, documentID)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, apperrors.NotFound("document.not_found", "document not found")
+		}
+		return nil, apperrors.Internal(fmt.Errorf("get document: %w", err))
+	}
+	if _, err := s.getOwnedProject(ctx, actor, d.ProjectID); err != nil {
+		return nil, err
+	}
+	return d, nil
 }
 
 func (s *service) composeDetail(ctx context.Context, p Project) (*ProjectDetail, error) {

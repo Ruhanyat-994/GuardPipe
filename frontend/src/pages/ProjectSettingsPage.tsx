@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
 import { Input } from '../components/ui/Input'
+import { DocumentUploadForm } from '../components/project/DocumentUploadForm'
 import { RepositoryAttachForm } from '../components/project/RepositoryAttachForm'
 import { useProjectContext } from '../components/project/ProjectContext'
 import { ApiError } from '../lib/apiClient'
@@ -115,6 +116,10 @@ export function ProjectSettingsPage() {
           existing={project.repository}
           onAttached={refetch}
         />
+      </div>
+
+      <div className="mb-4">
+        <DocumentUploadForm projectId={project.id} />
       </div>
 
       <Card className={project.repository?.credential_invalid ? 'mb-4 border-danger/30' : 'mb-4'}>

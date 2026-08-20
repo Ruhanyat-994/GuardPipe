@@ -15,6 +15,8 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
 
 // Cloner is the subset of modules/vcs.Service the worker needs — defined
@@ -34,6 +36,17 @@ type CloneInfoProvider interface {
 	MarkCredentialInvalid(ctx context.Context, projectID uuid.UUID, reason string) error
 }
 
+// DocumentProvider is the subset of modules/project.Service the docreview
+// engine's job needs — same no-actor reasoning as CloneInfoProvider (the
+// worker isn't handling a per-request authorization check, it's processing
+// a scan job whose creation was already authorized). project.Document
+// itself carries file bytes and DB bookkeeping docreview has no use for;
+// DocumentRef (domain/engine.go) is the trimmed shape an Engine actually
+// receives.
+type DocumentProvider interface {
+	GetDocuments(ctx context.Context, projectID uuid.UUID) ([]project.Document, error)
+}
+
 // errCredentialInvalid is what prepareWorkspace wraps its returned error
 // with when a clone failed specifically because the stored credential was
 // rejected (as opposed to a network blip, an oversized repo, or any other
@@ -45,6 +58,19 @@ type CloneInfoProvider interface {
 // called — the project's repository row carries the same signal even
 // between scans, not just as one job's failure reason.
 var errCredentialInvalid = errors.New("orchestrator: repository credential invalid")
+
+// isNoRepositoryAttached reports whether err is prepareWorkspace failing
+// specifically because the project has no repository attached at all —
+// project.Service.GetCloneInfo's own "project.repository_not_found", not any
+// other clone failure (bad credential, oversized repo, network error). Kept
+// narrow on purpose: only docreview treats this as "nothing to add from a
+// repo checkout" (processJob, above); every other engine genuinely needs a
+// repository, so this must not turn every "no repo attached" into a silent
+// pass for them too.
+func isNoRepositoryAttached(err error) bool {
+	var appErr *apperrors.Error
+	return errors.As(err, &appErr) && appErr.Code == "project.repository_not_found"
+}
 
 // claimPollTimeout is how long each worker's Claim call blocks waiting for
 // a job before looping back to check ctx.Done() — bounds shutdown latency
@@ -63,6 +89,7 @@ type Pool struct {
 	Jobs           ScanJobRepository
 	JobResults     JobResultRepository
 	Projects       CloneInfoProvider
+	Documents      DocumentProvider
 	Cloner         Cloner
 	WorkspaceRoot  string
 	EngineTimeouts map[domain.EngineID]time.Duration
@@ -181,17 +208,43 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		return dir, prepErr
 	})
 	if err != nil {
-		reason := "workspace_unavailable"
-		if errors.Is(err, errCredentialInvalid) {
-			reason = "credential_invalid"
+		// docreview is the one engine that can run from uploaded documents
+		// alone (documentation/05-module-specifications.md §11) — a project
+		// with no repository attached at all isn't a failure for that job
+		// specifically, even though the shared workspace acquisition still
+		// reports it as one for whichever engine in this scan actually needs
+		// a checkout. Every other engine keeps failing exactly as before.
+		if job.Engine == domain.EngineDocReview && isNoRepositoryAttached(err) {
+			workspaceDir = ""
+			releaseWorkspace = func() {}
+		} else {
+			reason := "workspace_unavailable"
+			if errors.Is(err, errCredentialInvalid) {
+				reason = "credential_invalid"
+			}
+			p.Log.Error("orchestrator: workspace preparation failed", "job_id", jobID, "error", err)
+			p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: reason})
+			return
 		}
-		p.Log.Error("orchestrator: workspace preparation failed", "job_id", jobID, "error", err)
-		p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: reason})
-		return
 	}
 	defer releaseWorkspace()
 
 	scanInput := domain.ScanInput{ScanID: scan.ID, JobID: jobID, ProjectID: scan.ProjectID, WorkspaceDir: workspaceDir}
+
+	// Uploaded documents are project-scoped data, not part of the git
+	// checkout prepareWorkspace already cloned — only docreview needs them,
+	// so this read is skipped for the other six engines' jobs.
+	if job.Engine == domain.EngineDocReview && p.Documents != nil {
+		docs, err := p.Documents.GetDocuments(ctx, scan.ProjectID)
+		if err != nil {
+			p.Log.Error("orchestrator: load documents failed", "job_id", jobID, "project_id", scan.ProjectID, "error", err)
+		} else {
+			scanInput.Documents = make([]domain.DocumentRef, len(docs))
+			for i, d := range docs {
+				scanInput.Documents[i] = domain.DocumentRef{Path: d.Filename, Content: string(d.Content)}
+			}
+		}
+	}
 
 	applicable, reason := engine.Applicable(ctx, scanInput)
 	if !applicable {

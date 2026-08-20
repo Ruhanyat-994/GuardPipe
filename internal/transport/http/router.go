@@ -102,12 +102,20 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		projects.DELETE("/:id/credential", middleware.RBAC(memberAndAbove...), projectH.RemoveCredential)
 		projects.GET("/:id/targets", middleware.RBAC(viewerAndAbove...), projectH.ListTargets)
 		projects.POST("/:id/targets", middleware.RBAC(memberAndAbove...), projectH.RegisterTarget)
+		projects.GET("/:id/documents", middleware.RBAC(viewerAndAbove...), projectH.ListDocuments)
+		projects.POST("/:id/documents", middleware.RBAC(memberAndAbove...), projectH.UploadDocument)
+		projects.POST("/:id/documents/import", middleware.RBAC(memberAndAbove...), projectH.ImportDocument)
 	}
 
 	targets := api.Group("/targets", requireAuth)
 	{
 		targets.POST("/:id/attest", middleware.RBAC(memberAndAbove...), projectH.AttestTarget)
 		targets.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.RevokeTarget)
+	}
+
+	documents := api.Group("/documents", requireAuth)
+	{
+		documents.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.DeleteDocument)
 	}
 
 	scanH := handler.NewScanHandler(cfg.OrchestratorSvc, v)

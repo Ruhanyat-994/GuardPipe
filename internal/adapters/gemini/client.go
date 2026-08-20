@@ -167,6 +167,20 @@ type generationConfig struct {
 	MaxOutputTokens  int             `json:"maxOutputTokens,omitempty"`
 	ResponseMimeType string          `json:"responseMimeType,omitempty"`
 	ResponseSchema   json.RawMessage `json:"responseSchema,omitempty"`
+	ThinkingConfig   *thinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// thinkingConfig disables Gemini 2.5's "thinking" tokens. Reproduced against
+// the live API: thinking tokens count against generationConfig's own
+// maxOutputTokens, and by default can consume the entire budget before the
+// model ever writes its schema-constrained answer — the response then comes
+// back truncated mid-object with finishReason "MAX_TOKENS", which fails
+// schema validation (modules/ai/schema.go's Validate) as invalid JSON. None
+// of GuardPipe's prompts need chain-of-thought for a structured
+// classification/generation task, so this is set unconditionally rather than
+// left at the provider default.
+type thinkingConfig struct {
+	ThinkingBudget int `json:"thinkingBudget"`
 }
 
 func buildRequestBody(req ai.LLMRequest) generateContentRequest {
@@ -177,6 +191,7 @@ func buildRequestBody(req ai.LLMRequest) generateContentRequest {
 			TopP:             defaultTopP,
 			MaxOutputTokens:  req.MaxTokens,
 			ResponseMimeType: "application/json",
+			ThinkingConfig:   &thinkingConfig{ThinkingBudget: 0},
 		},
 	}
 	if req.System != "" {

@@ -14,6 +14,7 @@ import { cn } from '../../lib/cn'
 import { ENGINE_META } from '../../lib/engines'
 import type { Engine } from '../../lib/rulesApi'
 import type { Job, JobStatus, Progress, Scan } from '../../lib/scansApi'
+import { GeminiMark } from '../icons/GeminiMark'
 import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
@@ -152,6 +153,7 @@ function Node({
   sonarQubeMark,
   kubernetesMark,
   githubMark,
+  geminiMark,
   tooltip,
 }: {
   label: string
@@ -161,6 +163,7 @@ function Node({
   sonarQubeMark?: boolean
   kubernetesMark?: boolean
   githubMark?: boolean
+  geminiMark?: boolean
   tooltip?: string | null
 }) {
   const color = STATUS_COLOR[status]
@@ -188,6 +191,7 @@ function Node({
         {sonarQubeMark && <SonarQubeMark />}
         {kubernetesMark && <KubernetesMark />}
         {githubMark && <GitHubMark className="h-3 w-3" />}
+        {geminiMark && <GeminiMark />}
       </div>
       <span
         className="flex items-center gap-1 text-caption font-medium capitalize"
@@ -331,6 +335,7 @@ export function SupplyChainPipeline({
                         sonarQubeMark={meta.hasSonarQubeMark}
                         kubernetesMark={meta.hasKubernetesMark}
                         githubMark={meta.hasGitHubMark}
+                        geminiMark={meta.hasGeminiMark}
                         tooltip={state.reason}
                       />
                     </div>

@@ -93,6 +93,57 @@ func TestValidate_ReviewDocument_EmptyArrayIsValid(t *testing.T) {
 	require.Empty(t, findings)
 }
 
+// TestValidate_NormalizesEnumCasing guards against a real failure reproduced
+// live: Gemini's responseSchema enum constraint is a hint, not a hard
+// guarantee — it has been observed returning "High" where the schema's enum
+// only lists "high", failing validation and the whole engine job outright
+// even though the model's intent was perfectly clear. Every enum-constrained
+// field across every prompt (severity, confidence) must accept any casing
+// and normalize to the canonical lowercase form other code (e.g.
+// docreview.aiFinding's domain.Severity(f.Severity) cast) actually depends
+// on — not just relax the check and leave a wrong-cased value on the struct.
+func TestValidate_NormalizesEnumCasing(t *testing.T) {
+	t.Run("review_document severity", func(t *testing.T) {
+		value, err := ai.Validate(reviewDocumentPrompt(t), json.RawMessage(`[`+validDocumentReviewFindingJSON(`"High"`)+`]`))
+		require.NoError(t, err)
+		findings, ok := value.(ai.DocumentReviewResponse)
+		require.True(t, ok)
+		require.Equal(t, "high", findings[0].Severity)
+	})
+
+	t.Run("review_workflow severity", func(t *testing.T) {
+		value, err := ai.Validate(reviewWorkflowPrompt(t), json.RawMessage(`[{"rule_id":"r","title":"t","description":"d","severity":"CRITICAL","excerpt":"e","location_hint":"l"}]`))
+		require.NoError(t, err)
+		findings, ok := value.(ai.WorkflowReviewResponse)
+		require.True(t, ok)
+		require.Equal(t, "critical", findings[0].Severity)
+	})
+
+	t.Run("explain_finding confidence", func(t *testing.T) {
+		value, err := ai.Validate(explainFindingPrompt(t), json.RawMessage(`{"what":"x","why_it_matters":"y","how_exploited":"z","confidence":" Medium "}`))
+		require.NoError(t, err)
+		resp, ok := value.(ai.ExplainFindingResponse)
+		require.True(t, ok)
+		require.Equal(t, "medium", resp.Confidence)
+	})
+
+	t.Run("generate_patch confidence", func(t *testing.T) {
+		value, err := ai.Validate(generatePatchPrompt(t), json.RawMessage(`{"patch":"diff --git a/x b/x","explanation":"fix","confidence":"Low","caveats":[]}`))
+		require.NoError(t, err)
+		resp, ok := value.(ai.GeneratePatchResponse)
+		require.True(t, ok)
+		require.Equal(t, "low", resp.Confidence)
+	})
+
+	// Near-miss: a value that isn't any casing of an allowed enum member
+	// must still fail, not be silently accepted just because normalization
+	// runs first.
+	t.Run("still rejects a genuinely invalid value", func(t *testing.T) {
+		_, err := ai.Validate(reviewDocumentPrompt(t), json.RawMessage(`[`+validDocumentReviewFindingJSON(`"Extremely Bad"`)+`]`))
+		require.ErrorIs(t, err, ai.ErrSchemaViolation)
+	})
+}
+
 func TestValidate_SummariseScan_RequiresExactlyThreePriorities(t *testing.T) {
 	prompt := summariseScanPrompt(t)
 
@@ -123,6 +174,19 @@ func generatePatchPrompt(t *testing.T) ai.Prompt {
 func reviewDocumentPrompt(t *testing.T) ai.Prompt {
 	t.Helper()
 	return ai.Prompt{ID: ai.PromptReviewDocument}
+}
+
+func reviewWorkflowPrompt(t *testing.T) ai.Prompt {
+	t.Helper()
+	return ai.Prompt{ID: ai.PromptReviewWorkflow}
+}
+
+// validDocumentReviewFindingJSON is one review_document finding object with
+// every required field present, letting a test override only the severity
+// value under scrutiny.
+func validDocumentReviewFindingJSON(severity string) string {
+	return `{"rule_id":"r","title":"t","description":"d","severity":` + severity +
+		`,"excerpt":"e","suggestion":"s","location_hint":"l"}`
 }
 
 func summariseScanPrompt(t *testing.T) ai.Prompt {
