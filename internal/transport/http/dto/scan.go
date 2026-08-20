@@ -65,6 +65,9 @@ type ScanResponse struct {
 	FindingCounts    map[string]int `json:"finding_counts"`
 	Risk             any            `json:"risk"`
 	Jobs             []JobResponse  `json:"jobs"`
+	// ScanNumber is this scan's 1-based position among its own project's
+	// scans (oldest = 1) — the UI's "Scan #N" in place of a raw UUID prefix.
+	ScanNumber int `json:"scan_number"`
 }
 
 func FromScanDetail(d *orchestrator.ScanDetail) ScanResponse {
@@ -85,7 +88,7 @@ func FromScanDetail(d *orchestrator.ScanDetail) ScanResponse {
 		ID: d.ID.String(), ProjectID: d.ProjectID.String(), Type: string(d.Type), Status: string(d.Status),
 		RequestedEngines: engines, Branch: d.Branch, CommitSHA: d.CommitSHA,
 		QueuedAt: d.QueuedAt, StartedAt: d.StartedAt, FinishedAt: d.FinishedAt,
-		FindingCounts: counts, Risk: nil, Jobs: jobs,
+		FindingCounts: counts, Risk: nil, Jobs: jobs, ScanNumber: d.ScanNumber,
 	}
 }
 
@@ -104,6 +107,9 @@ type ScanSummaryResponse struct {
 	StartedAt     *time.Time     `json:"started_at"`
 	FinishedAt    *time.Time     `json:"finished_at"`
 	FindingCounts map[string]int `json:"finding_counts"`
+	// ScanNumber is this scan's 1-based position among its own project's
+	// scans (oldest = 1) — the UI's "Scan #N" in place of a raw UUID prefix.
+	ScanNumber int `json:"scan_number"`
 }
 
 func FromScan(s domain.Scan) ScanSummaryResponse {
@@ -114,7 +120,7 @@ func FromScan(s domain.Scan) ScanSummaryResponse {
 	return ScanSummaryResponse{
 		ID: s.ID.String(), ProjectID: s.ProjectID.String(), Type: string(s.Type), Status: string(s.Status),
 		Branch: s.Branch, QueuedAt: s.QueuedAt, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt,
-		FindingCounts: counts,
+		FindingCounts: counts, ScanNumber: s.ScanNumber,
 	}
 }
 

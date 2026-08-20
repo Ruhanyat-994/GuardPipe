@@ -67,8 +67,12 @@ func (r *ProjectRepo) scanOne(ctx context.Context, q string, args ...any) (*proj
 	return &p, nil
 }
 
+// List returns only active projects — an archived project is meant to
+// disappear from the active project list (FR-PRJ-008, and the promise
+// ProjectSettingsPage's "Danger zone" copy already makes), not just grow a
+// dimmer status badge while still cluttering this list forever.
 func (r *ProjectRepo) List(ctx context.Context, orgID uuid.UUID, page project.Page) ([]project.Project, int, error) {
-	const countQ = `SELECT count(*) FROM projects WHERE org_id = $1`
+	const countQ = `SELECT count(*) FROM projects WHERE org_id = $1 AND status = 'active'`
 	var total int
 	if err := r.db.QueryRow(ctx, countQ, orgID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("repo: count projects: %w", err)
@@ -76,7 +80,7 @@ func (r *ProjectRepo) List(ctx context.Context, orgID uuid.UUID, page project.Pa
 
 	const listQ = `
 		SELECT id, org_id, name, description, status, created_by, created_at, updated_at
-		FROM projects WHERE org_id = $1
+		FROM projects WHERE org_id = $1 AND status = 'active'
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3`
 	offset := (page.Page - 1) * page.PageSize

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Ban } from 'lucide-react'
+import { Button } from '../components/ui/Button'
 import { Card, CardDescription } from '../components/ui/Card'
 import { EngineFindingsSection } from '../components/project/EngineFindingsSection'
 import { PartialResultBanner } from '../components/project/PartialResultBanner'
@@ -8,6 +9,7 @@ import { SupplyChainPipeline } from '../components/project/SupplyChainPipeline'
 import { ApiError } from '../lib/apiClient'
 import { getProject, type Project } from '../lib/projectsApi'
 import {
+  cancelScan,
   getProgress,
   getScan,
   listFindings,
@@ -32,6 +34,12 @@ export function ScanDetailPage() {
   const [findings, setFindings] = useState<FindingListItem[] | null>(null)
   const [project, setProject] = useState<Project | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  // Bumped after a successful cancel request to force the polling effect
+  // below to refetch immediately instead of waiting out the rest of its
+  // current 2s interval.
+  const [pollKey, setPollKey] = useState(0)
   const findingsLoadedFor = useRef<string | null>(null)
   const projectLoadedFor = useRef<string | null>(null)
 
@@ -81,7 +89,23 @@ export function ScanDetailPage() {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [id])
+  }, [id, pollKey])
+
+  async function handleCancel() {
+    if (!id || !window.confirm('Cancel this scan? Engines already running will finish on their own; anything not yet started stops immediately.')) {
+      return
+    }
+    setCancelError(null)
+    setCancelling(true)
+    try {
+      await cancelScan(id)
+      setPollKey((k) => k + 1)
+    } catch (err) {
+      setCancelError(err instanceof ApiError ? err.problem.detail : 'Could not cancel this scan.')
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   if (error) {
     return (
@@ -113,15 +137,29 @@ export function ScanDetailPage() {
 
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-h1 text-text-primary">Scan {scan.id.slice(0, 8)}</h1>
+          <h1 className="text-h1 text-text-primary">Scan #{scan.scan_number}</h1>
           <p className="text-body-sm text-text-secondary">
             {scan.type.replace(/_/g, ' ')} · queued {new Date(scan.queued_at).toLocaleString()}
           </p>
         </div>
-        <span className="rounded-full bg-bg-subtle px-3 py-1 text-body-sm font-medium capitalize text-text-primary">
-          {scan.status}
-        </span>
+        <div className="flex items-center gap-3">
+          {!TERMINAL_STATUSES.has(scan.status) && (
+            <Button variant="destructive" size="sm" loading={cancelling} onClick={() => void handleCancel()}>
+              <Ban className="h-4 w-4" aria-hidden="true" />
+              Cancel scan
+            </Button>
+          )}
+          <span className="rounded-full bg-bg-subtle px-3 py-1 text-body-sm font-medium capitalize text-text-primary">
+            {scan.status}
+          </span>
+        </div>
       </div>
+
+      {cancelError && (
+        <p role="alert" className="mb-4 text-body-sm text-danger">
+          {cancelError}
+        </p>
+      )}
 
       <PartialResultBanner jobs={scan.jobs} />
 

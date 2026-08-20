@@ -69,10 +69,14 @@ export function ScanHistoryTable({
                 </td>
               )}
               <td className={showProject ? 'px-4 py-3' : 'px-6 py-3'}>
-                <div className="font-medium text-text-primary">{s.id.slice(0, 8)}</div>
+                <div className="font-medium text-text-primary">Scan #{s.scan_number}</div>
                 <div className="text-caption text-text-tertiary">
                   {s.type.replace(/_/g, ' ')}
                   {s.branch ? ` · ${s.branch}` : ''}
+                  {' · '}
+                  <span className="font-mono" title={s.id}>
+                    {s.id.slice(0, 8)}
+                  </span>
                 </div>
               </td>
               <td className="px-4 py-3">

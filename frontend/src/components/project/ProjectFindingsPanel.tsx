@@ -28,9 +28,13 @@ const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
 export function ProjectFindingsPanel({
   projectId,
   repository,
+  severityFilter,
 }: {
   projectId: string
   repository: Repository | null
+  /** Backend severity string (e.g. "critical", "informational") — when set,
+   * only findings of this severity are shown, in every engine section. */
+  severityFilter?: string
 }) {
   const [scan, setScan] = useState<Scan | null | undefined>(undefined) // undefined = loading, null = no scans yet
   const [findings, setFindings] = useState<FindingListItem[] | null>(null)
@@ -131,21 +135,45 @@ export function ProjectFindingsPanel({
       )}
 
       {findings !== null &&
-        scan.jobs.map((job) => (
-          <EngineFindingsSection
-            key={job.id}
-            engine={job.engine}
-            status={job.status}
-            findingCount={job.finding_count}
-            findings={findings.filter((f) => f.engine === job.engine)}
-            scanId={scan.id}
-            repository={repository}
-            gitRef={scan.commit_sha ?? scan.branch ?? repository?.default_branch ?? null}
-            errorReason={job.error_reason}
-            skipReason={job.skip_reason}
-            defaultExpanded={scan.jobs.length === 1}
-          />
-        ))}
+        (() => {
+          const visible = severityFilter
+            ? findings.filter((f) => f.severity === severityFilter)
+            : findings
+          // With a severity filter active, an engine that ran clean for
+          // that severity has nothing useful to show — skip its section
+          // entirely rather than a wall of "no findings" cards.
+          const jobs = severityFilter
+            ? scan.jobs.filter((job) => visible.some((f) => f.engine === job.engine))
+            : scan.jobs
+          if (severityFilter && jobs.length === 0) {
+            return (
+              <Card>
+                <CardDescription>
+                  No {severityFilter} findings in this project's most recent scan.
+                </CardDescription>
+              </Card>
+            )
+          }
+          return jobs.map((job) => (
+            <EngineFindingsSection
+              key={job.id}
+              engine={job.engine}
+              status={job.status}
+              findingCount={
+                severityFilter
+                  ? visible.filter((f) => f.engine === job.engine).length
+                  : job.finding_count
+              }
+              findings={visible.filter((f) => f.engine === job.engine)}
+              scanId={scan.id}
+              repository={repository}
+              gitRef={scan.commit_sha ?? scan.branch ?? repository?.default_branch ?? null}
+              errorReason={job.error_reason}
+              skipReason={job.skip_reason}
+              defaultExpanded={scan.jobs.length === 1 || Boolean(severityFilter)}
+            />
+          ))
+        })()}
     </div>
   )
 }

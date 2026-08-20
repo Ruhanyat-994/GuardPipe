@@ -37,6 +37,9 @@ export interface Scan {
   finding_counts: Record<string, number>
   risk: unknown
   jobs: Job[]
+  // This scan's 1-based position among its own project's scans (oldest =
+  // 1) — rendered as "Scan #N" in place of the raw UUID prefix.
+  scan_number: number
 }
 
 export interface EngineProgress {
@@ -152,6 +155,9 @@ export interface ScanSummary {
   started_at: string | null
   finished_at: string | null
   finding_counts: Record<string, number>
+  // This scan's 1-based position among its own project's scans (oldest =
+  // 1) — rendered as "Scan #N" in place of the raw UUID prefix.
+  scan_number: number
 }
 
 export interface ScanList {
