@@ -25,8 +25,7 @@ export function ProjectFindingsPage() {
 
       {severity && (
         <p className="mb-4 text-body-sm text-text-secondary">
-          Filtered to <span className="font-medium capitalize text-text-primary">{severity}</span>{' '}
-          ·{' '}
+          Filtered to <span className="font-medium capitalize text-text-primary">{severity}</span> ·{' '}
           <Link
             to="?"
             replace
