@@ -92,7 +92,12 @@ export function ScanDetailPage() {
   }, [id, pollKey])
 
   async function handleCancel() {
-    if (!id || !window.confirm('Cancel this scan? Engines already running will finish on their own; anything not yet started stops immediately.')) {
+    if (
+      !id ||
+      !window.confirm(
+        'Cancel this scan? Engines already running will finish on their own; anything not yet started stops immediately.',
+      )
+    ) {
       return
     }
     setCancelError(null)
@@ -144,7 +149,12 @@ export function ScanDetailPage() {
         </div>
         <div className="flex items-center gap-3">
           {!TERMINAL_STATUSES.has(scan.status) && (
-            <Button variant="destructive" size="sm" loading={cancelling} onClick={() => void handleCancel()}>
+            <Button
+              variant="destructive"
+              size="sm"
+              loading={cancelling}
+              onClick={() => void handleCancel()}
+            >
               <Ban className="h-4 w-4" aria-hidden="true" />
               Cancel scan
             </Button>

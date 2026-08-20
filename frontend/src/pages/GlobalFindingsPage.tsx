@@ -7,7 +7,12 @@ import { FindingsList } from '../components/project/FindingsList'
 import { ProjectFindingsPanel } from '../components/project/ProjectFindingsPanel'
 import { ApiError } from '../lib/apiClient'
 import { listProjects, type Project } from '../lib/projectsApi'
-import { listFindings, listOrgScans, type FindingListItem, type OrgScanSummary } from '../lib/scansApi'
+import {
+  listFindings,
+  listOrgScans,
+  type FindingListItem,
+  type OrgScanSummary,
+} from '../lib/scansApi'
 import { cn } from '../lib/cn'
 
 /** One project's row — collapsed by default so opening this page doesn't
@@ -83,13 +88,11 @@ function SeverityFindingsView({ severity }: { severity: string }) {
         const results = await Promise.all(
           candidates.map(({ project, scan }) =>
             listFindings(scan.id)
-              .then(
-                (res): SeverityRow => ({
-                  project,
-                  findings: res.data.filter((f) => f.severity === severity),
-                  gitRef: scan.branch ?? project.repository?.default_branch ?? null,
-                }),
-              )
+              .then((res): SeverityRow => ({
+                project,
+                findings: res.data.filter((f) => f.severity === severity),
+                gitRef: scan.branch ?? project.repository?.default_branch ?? null,
+              }))
               .catch((): SeverityRow => ({ project, findings: [], gitRef: null })),
           ),
         )
@@ -208,8 +211,7 @@ export function GlobalFindingsPage() {
 
       {severity && (
         <p className="mb-4 text-body-sm text-text-secondary">
-          Filtered to <span className="font-medium capitalize text-text-primary">{severity}</span>{' '}
-          ·{' '}
+          Filtered to <span className="font-medium capitalize text-text-primary">{severity}</span> ·{' '}
           <Link
             to="?"
             replace
