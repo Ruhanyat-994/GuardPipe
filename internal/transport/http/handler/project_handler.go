@@ -325,7 +325,7 @@ func (h *ProjectHandler) UploadDocument(c *gin.Context) {
 		c.Error(apperrors.Internal(fmt.Errorf("open uploaded file: %w", err)))
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	content, err := io.ReadAll(f)
 	if err != nil {
 		c.Error(apperrors.Validation("document.invalid_input", "could not read the uploaded file — it may exceed the size limit", nil))
