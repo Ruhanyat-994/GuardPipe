@@ -1,0 +1,1637 @@
+openapi: 3.1.0
+info:
+  title: GuardPipe API
+  version: "1.1"
+  summary: Software supply-chain security scanning API.
+  description: |
+    GuardPipe scans a project across seven SDLC stages and produces a single
+    explainable 0-100 risk score with AI-authored explanations and patches.
+
+    This document is machine-derived from the currently implemented HTTP
+    surface (`internal/transport/http/router.go` and its handlers/DTOs), not
+    hand-aspirational — every path, parameter, and schema here corresponds to
+    code that actually runs today. The **human-authored source of truth**
+    for the intended, eventual API is
+    [`documentation/07-api-specification.md`](../documentation/07-api-specification.md)
+    (see its §12); per that document's own rule, "if code and docs disagree,
+    one of them is a bug — open an issue, don't let them silently diverge."
+    A few endpoints described there (finding detail/triage/history/explain,
+    the dashboard/trend endpoints, SSE progress, report export, GitHub
+    webhooks) are not yet wired into the router and are intentionally absent
+    from this file until they are.
+
+    ### Conventions
+    - Base path `/api/v1` for the product API; `/healthz`, `/readyz`,
+      `/version` are unversioned infrastructure endpoints.
+    - All JSON fields are `snake_case`. IDs are UUIDv4 strings. Timestamps
+      are RFC 3339 UTC (`Z` suffix). Enums are lowercase snake_case strings.
+    - A field that can be absent is `null`, never omitted (except where a
+      field is explicitly marked `omitempty` in the Go DTO, noted per field
+      below).
+    - List endpoints return either the pagination envelope
+      (`{"data": [...], "pagination": {...}}`) or a bare `{"data": [...]}`
+      for small, unpaginated collections (targets, documents) — see each
+      endpoint.
+    - Every error response is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
+      `application/problem+json`, produced centrally by
+      `internal/transport/http/middleware/errormapper.go` — handlers never
+      hand-construct an error body.
+    - A resource that exists but belongs to another organisation returns
+      **404, not 403** — 403 would itself leak that the resource exists.
+  license:
+    name: Proprietary — university coursework project, not for redistribution
+externalDocs:
+  description: Human-authored API specification (source of truth)
+  url: ../documentation/07-api-specification.md
+servers:
+  - url: http://localhost:8080
+    description: Local development (docker compose)
+tags:
+  - name: System
+    description: Unversioned liveness/readiness/build-info endpoints.
+  - name: Auth
+    description: Registration, login, token refresh/revocation.
+  - name: Projects
+    description: Projects and their attached repository/credential.
+  - name: Pentest Targets
+    description: Pentest target registration, attestation, revocation.
+  - name: Documents
+    description: Design/requirements documents attached to a project (docreview input).
+  - name: Scans
+    description: Scan lifecycle — create, list, poll progress, cancel.
+  - name: Findings
+    description: Findings produced by a scan.
+  - name: Rules
+    description: The global rules catalogue.
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------- System
+  /healthz:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      description: Always 200 if the process can respond at all. No auth, no dependencies checked.
+      security: []
+      operationId: healthz
+      responses:
+        "200":
+          description: Process is alive.
+
+  /readyz:
+    get:
+      tags: [System]
+      summary: Readiness probe
+      description: >-
+        200 only if PostgreSQL is reachable. Redis is not yet checked here
+        (no Redis client existed in the codebase when this handler was
+        written — see the handler's own doc comment). Used by
+        `docker compose`'s `HEALTHCHECK` via the `guardpipe healthcheck`
+        subcommand, since the distroless runtime image has no shell/curl.
+      security: []
+      operationId: readyz
+      responses:
+        "200":
+          description: Ready to serve traffic.
+        "503":
+          description: PostgreSQL is not reachable.
+
+  /version:
+    get:
+      tags: [System]
+      summary: Build information
+      security: []
+      operationId: getVersion
+      responses:
+        "200":
+          description: Version metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+
+  /api/v1/openapi.yaml:
+    get:
+      tags: [System]
+      summary: This document
+      description: Serves this file itself, embedded in the binary at build time.
+      security: []
+      operationId: getOpenAPISpec
+      responses:
+        "200":
+          description: The OpenAPI 3.1 document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  # ------------------------------------------------------------------ Auth
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new account
+      description: >-
+        Creates a user and a brand-new organisation owned solely by them —
+        every registration is its own isolated tenant (there is no invite
+        flow yet, so an organisation can never gain a second member). The
+        registrant is always created with role `admin` ("founding/only
+        member of this org," not "first person to ever use the product").
+        Rate-limited to 5/min per IP.
+      security: []
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Account created.
+          headers:
+            Location:
+              schema: { type: string }
+              description: Always `/api/v1/auth/me`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "409":
+          description: Email already registered (`identity.email_taken`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate
+      description: >-
+        On success, sets the `gp_refresh` `HttpOnly` cookie (rotated on every
+        refresh) and returns a short-lived bearer access token in the body —
+        the access token is held in memory only by the SPA, never
+        `localStorage`. Rate-limited to 5/min per IP. Failure is always
+        `401 auth.invalid_credentials` with an identical message for an
+        unknown user and a wrong password, to avoid user enumeration.
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: >-
+                `gp_refresh=<token>; HttpOnly; SameSite=Strict; Path=/api/v1/auth`
+                (`Secure` in production).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          description: Wrong email or password (`auth.invalid_credentials`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate tokens
+      description: >-
+        Cookie-authenticated, not bearer — reads `gp_refresh` from the
+        request cookies (sent automatically by the browser) and returns a
+        new access token, rotating the refresh cookie. Reusing an
+        already-consumed refresh token revokes its entire token family
+        (reuse-detection).
+      security: []
+      operationId: refresh
+      parameters:
+        - name: gp_refresh
+          in: cookie
+          required: true
+          schema: { type: string }
+          description: The `HttpOnly` refresh-token cookie set by `/auth/login`.
+      responses:
+        "200":
+          description: Tokens rotated.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: The rotated `gp_refresh` cookie.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshResponse"
+        "401":
+          description: >-
+            Missing/invalid cookie (`auth.token_invalid`), an already-consumed
+            token (`auth.token_expired`), or reuse of a revoked family
+            (`auth.refresh_reused`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the refresh token
+      description: >-
+        Idempotent — presenting no cookie, or a cookie for an already-dead
+        session, is still 204, not an error. Always clears the `gp_refresh`
+        cookie.
+      operationId: logout
+      responses:
+        "204":
+          description: Logged out (or already was).
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: The expired `gp_refresh` cookie (clears it client-side).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user
+      operationId: getMe
+      responses:
+        "200":
+          description: The authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # -------------------------------------------------------------- Projects
+  /api/v1/projects:
+    get:
+      tags: [Projects]
+      summary: List projects
+      description: Role required — viewer or above.
+      operationId: listProjects
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of the caller's organisation's projects.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Projects]
+      summary: Create a project
+      description: Role required — member or above.
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Project created.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Duplicate project name in the organisation (`project.name_taken`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+
+  /api/v1/projects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [Projects]
+      summary: Get a project
+      description: Role required — viewer or above.
+      operationId: getProject
+      responses:
+        "200":
+          description: Project detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Projects]
+      summary: Update a project
+      description: Partial update (name/description) — role required member or above.
+      operationId: updateProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectRequest"
+      responses:
+        "200":
+          description: Updated project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Projects]
+      summary: Archive a project
+      description: Soft-delete (archive) — role required admin.
+      operationId: archiveProject
+      responses:
+        "204":
+          description: Archived.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/projects/{id}/repository:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [Projects]
+      summary: Attach or replace the repository
+      description: One repository per project — attaching a new one replaces it. Role required member or above.
+      operationId: attachRepository
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachRepositoryRequest"
+      responses:
+        "200":
+          description: The attached repository.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepositoryResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+
+  /api/v1/projects/{id}/credential:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    put:
+      tags: [Projects]
+      summary: Set the repository credential
+      description: >-
+        Stores an AES-256-GCM-encrypted GitHub PAT for the project's
+        repository. The token is never echoed back in any response — only a
+        masked `hint`. Role required member or above.
+      operationId: setCredential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetCredentialRequest"
+      responses:
+        "200":
+          description: Credential stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Projects]
+      summary: Remove the repository credential
+      operationId: removeCredential
+      responses:
+        "204":
+          description: Credential removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # --------------------------------------------------------- Documents
+  /api/v1/projects/{id}/documents:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [Documents]
+      summary: List a project's documents
+      operationId: listDocuments
+      responses:
+        "200":
+          description: All documents attached to the project (unpaginated).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Documents]
+      summary: Upload a document
+      description: >-
+        `multipart/form-data` with a single `file` field. Capped at 1 MiB at
+        the transport layer as a sanity ceiling; the service layer's own
+        100 KB limit is the real business rule and produces the user-facing
+        "too large" error. Role required member or above.
+      operationId: uploadDocument
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Document stored.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/projects/{id}/documents/import:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [Documents]
+      summary: Import a document from a URL
+      description: >-
+        Fetches a Google Docs/Drive share link (or other supported URL)
+        server-side rather than accepting uploaded bytes. Role required
+        member or above.
+      operationId: importDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportDocumentRequest"
+      responses:
+        "201":
+          description: Document imported.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+
+  /api/v1/documents/{id}:
+    delete:
+      tags: [Documents]
+      summary: Delete a document
+      operationId: deleteDocument
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # --------------------------------------------------------- Pentest Targets
+  /api/v1/projects/{id}/targets:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [Pentest Targets]
+      summary: List a project's pentest targets
+      operationId: listTargets
+      responses:
+        "200":
+          description: All targets registered on the project (unpaginated).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TargetListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Pentest Targets]
+      summary: Register a pentest target
+      description: >-
+        Validates and DNS-resolves the target before it can ever be scanned:
+        RFC1918/loopback/metadata addresses are rejected outright. A newly
+        registered target starts `awaiting_attestation` — a pentest against
+        it is blocked (`409 target.not_attested`) until
+        `POST /targets/{id}/attest` succeeds. Role required member or above.
+      operationId: registerTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterTargetRequest"
+      responses:
+        "201":
+          description: Target registered.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TargetResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Target resolves to a blocked address range (`target.blocked_address`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+
+  /api/v1/targets/{id}/attest:
+    post:
+      tags: [Pentest Targets]
+      summary: Accept the authorisation attestation
+      description: >-
+        A hard gate, not a warning — a pentest against a target with
+        `status != "attested"` is refused. Role required member or above.
+      operationId: attestTarget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttestTargetRequest"
+      responses:
+        "200":
+          description: Attested.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttestTargetResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/targets/{id}:
+    delete:
+      tags: [Pentest Targets]
+      summary: Revoke a target
+      operationId: revokeTarget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ Scans
+  /api/v1/projects/{id}/scans:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [Scans]
+      summary: Start a scan
+      description: >-
+        Asynchronous by design — returns 202 immediately and the client
+        polls `GET /scans/{id}/progress`; a scan takes minutes, so holding
+        the HTTP connection open would be wrong at every level. Role
+        required member or above. Rate-limited to 10/hour per user (per
+        `documentation/07-api-specification.md` §1.6; not yet
+        independently rate-limited in code beyond the generic authenticated
+        limit — see that document's table).
+      operationId: createScan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScanRequest"
+      responses:
+        "202":
+          description: Scan queued.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResponse"
+        "400":
+          description: >-
+            Malformed request, or `scan.no_engines_selected` when `type` is
+            `partial` with an empty `engines` list.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A scan is already running for this project (`scan.already_running`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+    get:
+      tags: [Scans]
+      summary: Scan history for a project
+      operationId: listProjectScans
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of the project's scans, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/scans:
+    get:
+      tags: [Scans]
+      summary: Scan history across every project in the organisation
+      operationId: listOrgScans
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of the organisation's scans, newest first, each row carrying its project's name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgScanListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/scans/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ScanId"
+    get:
+      tags: [Scans]
+      summary: Scan detail
+      description: Full detail including per-engine job status.
+      operationId: getScan
+      responses:
+        "200":
+          description: Scan detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/scans/{id}/progress:
+    parameters:
+      - $ref: "#/components/parameters/ScanId"
+    get:
+      tags: [Scans]
+      summary: Lightweight scan progress
+      description: >-
+        Deliberately tiny response, meant to be polled every ~2 seconds by
+        the UI while a scan runs.
+      operationId: getScanProgress
+      responses:
+        "200":
+          description: Current progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgressResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/scans/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ScanId"
+    post:
+      tags: [Scans]
+      summary: Cancel a scan
+      description: Role required member or above.
+      operationId: cancelScan
+      responses:
+        "204":
+          description: Cancellation requested.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/scans/{id}/findings:
+    parameters:
+      - $ref: "#/components/parameters/ScanId"
+    get:
+      tags: [Findings]
+      summary: List a scan's findings
+      description: >-
+        Pagination only in the current implementation — the severity/
+        engine/status/cwe/file_path/q/sort filters described in
+        `documentation/07-api-specification.md` §1.5 are Phase 13 work and
+        not yet wired into this handler.
+      operationId: listFindings
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of the scan's findings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FindingListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ Rules
+  /api/v1/rules:
+    get:
+      tags: [Rules]
+      summary: List the rules catalogue
+      description: Filterable by `engine`, `tier`, and `severity`. Global, not org-scoped.
+      operationId: listRules
+      parameters:
+        - name: engine
+          in: query
+          schema:
+            $ref: "#/components/schemas/EngineID"
+        - name: tier
+          in: query
+          schema:
+            $ref: "#/components/schemas/Tier"
+        - name: severity
+          in: query
+          schema:
+            $ref: "#/components/schemas/Severity"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of rules.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleListResponse"
+        "400":
+          description: An unrecognised filter value (`rule.invalid_filter`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The rule's permanent, namespaced ID (`<engine>.<category>.<rule>`), not a UUID.
+    get:
+      tags: [Rules]
+      summary: Get a rule
+      operationId: getRule
+      responses:
+        "200":
+          description: Rule detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Rules]
+      summary: Enable or disable a rule
+      description: >-
+        Lets an operator silence a noisy rule without a deploy. Role
+        required admin.
+      operationId: setRuleEnabled
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetRuleEnabledRequest"
+      responses:
+        "200":
+          description: Updated rule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleResponse"
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        `Authorization: Bearer <access_token>`. The access token is short-lived
+        (`expires_in` seconds from login/refresh); refresh via
+        `POST /auth/refresh` using the `gp_refresh` cookie.
+
+  parameters:
+    ProjectId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Project ID.
+    ScanId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Scan ID.
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+      description: 1-based page number.
+    PageSize:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      description: Items per page, clamped to 100.
+
+  responses:
+    Validation:
+      description: One or more fields are invalid.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+    Unauthorized:
+      description: Missing, invalid, or expired access token.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+    Forbidden:
+      description: Authenticated but the caller's role does not permit this action.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+    NotFound:
+      description: Not found, or not owned by the caller's organisation.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+    Unprocessable:
+      description: Well-formed and individually-valid fields that are semantically invalid together.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+    RateLimited:
+      description: Too many requests.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds until the caller may retry.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+
+  schemas:
+    # -------------------------------------------------------------- Errors
+    FieldError:
+      type: object
+      properties:
+        field: { type: string }
+        message: { type: string }
+      required: [field, message]
+
+    ProblemDetails:
+      type: object
+      description: RFC 9457 problem-details error body.
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Stable identifier URI for this error kind, namespaced under `https://guardpipe.dev/errors/`.
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+          description: Safe for display to a user. Never a stack trace, SQL, or an internal path.
+        instance:
+          type: string
+          description: The request path.
+        code:
+          type: string
+          description: Machine-readable, stable, namespaced. This is what the frontend switches on — never `title` or `detail`.
+        request_id:
+          type: string
+          description: Matches the corresponding log entry.
+        errors:
+          type: array
+          items: { $ref: "#/components/schemas/FieldError" }
+          description: Present only on validation failures.
+      required: [type, title, status, detail, code]
+
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+      required: [page, page_size, total, total_pages]
+
+    # --------------------------------------------------------------- Enums
+    Role:
+      type: string
+      enum: [admin, member, viewer]
+    Severity:
+      type: string
+      enum: [critical, high, medium, low, informational]
+    Confidence:
+      type: string
+      enum: [high, medium, low]
+    FindingStatus:
+      type: string
+      enum: [open, acknowledged, suppressed, fixed, false_positive]
+    EngineID:
+      type: string
+      enum: [docreview, codescan, depscan, containerscan, k8sscan, cicdscan, pentest]
+    Tier:
+      type: string
+      enum: [core, stretch]
+    FindingSource:
+      type: string
+      enum: [rule, ai]
+    ProjectStatus:
+      type: string
+      enum: [active, archived]
+    TargetStatus:
+      type: string
+      enum: [awaiting_attestation, attested, blocked, revoked]
+    ScanType:
+      type: string
+      enum: [full_supply_chain, partial, pentest_only]
+    ScanStatus:
+      type: string
+      enum: [queued, running, completed, failed, cancelled]
+    JobStatus:
+      type: string
+      enum: [queued, running, succeeded, failed, skipped, cancelled]
+
+    # ---------------------------------------------------------------- Auth
+    RegisterRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        password:
+          type: string
+          minLength: 12
+          format: password
+      required: [email, display_name, password]
+
+    LoginRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+      required: [email, password]
+
+    UserResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        created_at: { type: string, format: date-time }
+      required: [id, email, display_name, role, created_at]
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer, description: Seconds until the access token expires. }
+        user: { $ref: "#/components/schemas/UserResponse" }
+      required: [access_token, token_type, expires_in, user]
+
+    RefreshResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer }
+      required: [access_token, token_type, expires_in]
+
+    VersionResponse:
+      type: object
+      properties:
+        version: { type: string }
+        commit: { type: string }
+        built_at: { type: string }
+        go_version: { type: string }
+      required: [version, commit, built_at, go_version]
+
+    # ------------------------------------------------------------ Projects
+    CreateProjectRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+        repository_url:
+          type: [string, "null"]
+          format: uri
+      required: [name]
+
+    UpdateProjectRequest:
+      type: object
+      description: Partial update — every field optional; a `null`/omitted field is left unchanged.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+
+    AttachRepositoryRequest:
+      type: object
+      properties:
+        repository_url: { type: string, format: uri }
+      required: [repository_url]
+
+    SetCredentialRequest:
+      type: object
+      properties:
+        kind: { type: string, enum: [github_pat] }
+        token: { type: string, minLength: 1 }
+      required: [kind, token]
+
+    RepositoryResponse:
+      type: object
+      description: >-
+        `credential_invalid`/`credential_invalid_reason` are set once a
+        scan's clone is rejected with the stored credential (401/403), and
+        cleared the next time a credential is (re)attached — this never
+        deletes or archives the repository or any past scan/finding.
+      properties:
+        id: { type: string, format: uuid }
+        provider: { type: string, example: github }
+        url: { type: string, format: uri }
+        owner: { type: string }
+        name: { type: string }
+        default_branch: { type: string }
+        is_private: { type: boolean }
+        size_kb: { type: [integer, "null"] }
+        credential_invalid: { type: boolean }
+        credential_invalid_reason: { type: [string, "null"] }
+      required:
+        [id, provider, url, owner, name, default_branch, is_private, size_kb, credential_invalid, credential_invalid_reason]
+
+    ProjectResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        status: { $ref: "#/components/schemas/ProjectStatus" }
+        repository:
+          oneOf:
+            - $ref: "#/components/schemas/RepositoryResponse"
+            - type: "null"
+        has_credential: { type: boolean }
+        latest_scan:
+          description: Always `null` in the current API version — populated once report summaries land.
+          type: "null"
+        created_at: { type: string, format: date-time }
+      required: [id, name, description, status, repository, has_credential, latest_scan, created_at]
+
+    ProjectListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ProjectResponse" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
+      required: [data, pagination]
+
+    CredentialResponse:
+      type: object
+      description: The token itself is never present in any response.
+      properties:
+        has_credential: { type: boolean }
+        hint: { type: string, example: "ghp_••••xxxx" }
+        updated_at: { type: [string, "null"], format: date-time }
+      required: [has_credential, hint, updated_at]
+
+    # --------------------------------------------------------------- Documents
+    DocumentResponse:
+      type: object
+      description: Content is never serialised back — the API never echoes an uploaded file's bytes.
+      properties:
+        id: { type: string, format: uuid }
+        filename: { type: string }
+        mime_type: { type: string }
+        size_bytes: { type: integer }
+        uploaded_by: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+      required: [id, filename, mime_type, size_bytes, uploaded_by, created_at]
+
+    DocumentListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/DocumentResponse" }
+      required: [data]
+
+    ImportDocumentRequest:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+      required: [url]
+
+    # ---------------------------------------------------------- Pentest Targets
+    RegisterTargetRequest:
+      type: object
+      properties:
+        target:
+          type: string
+          description: A hostname or URL to validate, resolve, and pin.
+      required: [target]
+
+    TargetResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        target: { type: string }
+        normalized_host: { type: string }
+        pinned_ips:
+          type: array
+          items: { type: string }
+        status: { $ref: "#/components/schemas/TargetStatus" }
+        last_resolved_at: { type: string, format: date-time }
+      required: [id, target, normalized_host, pinned_ips, status, last_resolved_at]
+
+    TargetListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/TargetResponse" }
+      required: [data]
+
+    AttestTargetRequest:
+      type: object
+      properties:
+        attestation_text_version:
+          type: string
+          description: Identifies which wording of the attestation statement the user agreed to; the statement itself is not stored verbatim.
+        accepted: { type: boolean }
+        statement:
+          type: string
+          description: "The exact wording shown to and agreed to by the user, e.g. \"I confirm I own or am explicitly authorised to test this target.\""
+      required: [attestation_text_version, accepted, statement]
+
+    AttestedByResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        display_name: { type: string }
+      required: [id, display_name]
+
+    AttestTargetResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/TargetStatus" }
+        attested_at: { type: string, format: date-time }
+        attested_by: { $ref: "#/components/schemas/AttestedByResponse" }
+      required: [id, status, attested_at, attested_by]
+
+    # -------------------------------------------------------------------- Scans
+    CreateScanRequest:
+      type: object
+      description: >-
+        `engines` is only read when `type` is `partial`. Note: unlike the
+        `pentest_only` example in `documentation/07-api-specification.md`
+        §5, the current implementation accepts no `target_id` field — this
+        is a known doc/code gap, not something this file papers over.
+      properties:
+        type: { $ref: "#/components/schemas/ScanType" }
+        engines:
+          type: array
+          items: { $ref: "#/components/schemas/EngineID" }
+        branch:
+          type: string
+          description: Defaults to the repository's default branch when omitted/empty.
+      required: [type]
+
+    JobResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        engine: { $ref: "#/components/schemas/EngineID" }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        finding_count: { type: integer }
+        stats:
+          description: Engine-specific stats shown on the UI's engine card (e.g. `files_scanned`, `rules_evaluated`).
+          type: [object, "null"]
+        error_reason: { type: [string, "null"], example: timeout }
+        skip_reason: { type: [string, "null"], example: no_target_artifacts }
+      required: [id, engine, status, started_at, finished_at, finding_count, stats, error_reason, skip_reason]
+
+    ScanResponse:
+      type: object
+      description: >-
+        Serves both `POST /projects/{id}/scans`'s 202 body and
+        `GET /scans/{id}`'s 200 body. `risk` is always `null` in the
+        current API version — risk scoring is not yet built.
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/ScanType" }
+        status: { $ref: "#/components/schemas/ScanStatus" }
+        requested_engines:
+          type: array
+          items: { $ref: "#/components/schemas/EngineID" }
+        branch: { type: [string, "null"] }
+        commit_sha: { type: [string, "null"] }
+        queued_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        finding_counts:
+          type: object
+          description: 'Per-severity counts, e.g. `{"critical": 2, "high": 9}`.'
+          additionalProperties: { type: integer }
+        risk:
+          description: Always `null` until risk scoring lands.
+          type: "null"
+        jobs:
+          type: array
+          items: { $ref: "#/components/schemas/JobResponse" }
+        scan_number:
+          type: integer
+          description: 1-based position among the project's own scans (oldest = 1) — a human-readable "Scan #N".
+      required:
+        [id, project_id, type, status, requested_engines, branch, commit_sha, queued_at, started_at, finished_at, finding_counts, risk, jobs, scan_number]
+
+    ScanSummaryResponse:
+      type: object
+      description: Deliberately lighter than ScanResponse — no per-job detail, used by the scan-history list.
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/ScanType" }
+        status: { $ref: "#/components/schemas/ScanStatus" }
+        branch: { type: [string, "null"] }
+        queued_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        finding_counts:
+          type: object
+          additionalProperties: { type: integer }
+        scan_number: { type: integer }
+      required: [id, project_id, type, status, branch, queued_at, started_at, finished_at, finding_counts, scan_number]
+
+    ScanListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ScanSummaryResponse" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
+      required: [data, pagination]
+
+    OrgScanSummaryResponse:
+      allOf:
+        - $ref: "#/components/schemas/ScanSummaryResponse"
+        - type: object
+          properties:
+            project_name: { type: string }
+          required: [project_name]
+
+    OrgScanListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/OrgScanSummaryResponse" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
+      required: [data, pagination]
+
+    EngineProgressResponse:
+      type: object
+      properties:
+        engine: { $ref: "#/components/schemas/EngineID" }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        progress_pct: { type: integer, minimum: 0, maximum: 100 }
+        finding_count: { type: integer }
+      required: [engine, status, progress_pct, finding_count]
+
+    ProgressResponse:
+      type: object
+      properties:
+        scan_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/ScanStatus" }
+        progress_pct: { type: integer, minimum: 0, maximum: 100 }
+        engines:
+          type: array
+          items: { $ref: "#/components/schemas/EngineProgressResponse" }
+      required: [scan_id, status, progress_pct, engines]
+
+    # ---------------------------------------------------------------- Findings
+    LocationResponse:
+      type: object
+      description: >-
+        A discriminated union keyed by `type` (`file`, `image`, `k8s`,
+        `dependency`, `network`, ...) — the frontend switches on `type`;
+        only the fields relevant to that type are populated, the rest are
+        omitted (`omitempty` in the Go DTO, not present as `null`).
+      properties:
+        type: { type: string }
+        path: { type: string }
+        line_start: { type: integer }
+        line_end: { type: integer }
+        column: { type: integer }
+        image: { type: string }
+        layer_digest: { type: string }
+        layer_index: { type: integer }
+        file: { type: string }
+        kind: { type: string }
+        name: { type: string }
+        namespace: { type: string }
+        container: { type: string }
+        field_path: { type: string }
+        value: { type: string }
+        from_helm: { type: boolean }
+        chart_name: { type: string }
+        template_file: { type: string }
+        host: { type: string }
+        ip: { type: string }
+        port: { type: integer }
+        protocol: { type: string }
+        service: { type: string }
+        url: { type: string }
+        ecosystem: { type: string }
+        package: { type: string }
+        version: { type: string }
+        manifest_path: { type: string }
+      required: [type]
+
+    EvidenceResponse:
+      type: object
+      description: >-
+        Supporting evidence behind a finding's "More" view. `value` is
+        always safe to render as-is — engines redact anything secret-shaped
+        before a finding is ever emitted.
+      properties:
+        kind: { type: string, example: code_snippet }
+        value: { type: string }
+        redacted: { type: boolean }
+        line_start: { type: integer }
+        line_end: { type: integer }
+      required: [kind, value, redacted]
+
+    FindingListItemResponse:
+      type: object
+      description: >-
+        Self-sufficient for a "More" detail expansion without a second
+        request. `remediation` is deterministic, rule-authored guidance
+        that must stand alone without AI. `first_seen_at`/`age_days` are
+        not yet built (Phase 13, cross-scan history) and are absent here,
+        not faked.
+      properties:
+        id: { type: string, format: uuid }
+        engine: { $ref: "#/components/schemas/EngineID" }
+        rule_id:
+          type: string
+          description: Permanent, namespaced `<engine>.<category>.<rule>` — appears in suppression comments, never renamed.
+        title: { type: string }
+        description: { type: string }
+        remediation: { type: string }
+        severity: { $ref: "#/components/schemas/Severity" }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        status: { $ref: "#/components/schemas/FindingStatus" }
+        cwe:
+          type: array
+          items: { type: string, example: "CWE-89" }
+        cve:
+          type: array
+          items: { type: string }
+        owasp:
+          type: array
+          items: { type: string, example: "A03:2021" }
+        cvss_score: { type: [number, "null"] }
+        location: { $ref: "#/components/schemas/LocationResponse" }
+        evidence:
+          type: array
+          items: { $ref: "#/components/schemas/EvidenceResponse" }
+        source:
+          $ref: "#/components/schemas/FindingSource"
+        metadata:
+          description: Engine-specific extra context (e.g. `impact`, `attack_path`, `osv_id`) — never load-bearing, absent keys are absent.
+          type: object
+      required:
+        [id, engine, rule_id, title, description, remediation, severity, confidence, status, cwe, cve, owasp, cvss_score, location, evidence, source]
+
+    FindingListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/FindingListItemResponse" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
+      required: [data, pagination]
+
+    # ------------------------------------------------------------------- Rules
+    RuleResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The permanent, namespaced rule ID (`<engine>.<category>.<rule>`).
+        engine: { $ref: "#/components/schemas/EngineID" }
+        category: { type: string }
+        title: { type: string }
+        description: { type: string }
+        remediation: { type: string }
+        default_severity: { $ref: "#/components/schemas/Severity" }
+        cwe:
+          type: array
+          items: { type: string }
+        owasp:
+          type: array
+          items: { type: string }
+        references:
+          type: array
+          items: { type: string, format: uri }
+        tier: { $ref: "#/components/schemas/Tier" }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required:
+        [id, engine, category, title, description, remediation, default_severity, cwe, owasp, references, tier, enabled, created_at, updated_at]
+
+    RuleListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/RuleResponse" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
+      required: [data, pagination]
+
+    SetRuleEnabledRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Required and non-nullable by design — an omitted field is rejected rather than silently read as `false`.
+      required: [enabled]

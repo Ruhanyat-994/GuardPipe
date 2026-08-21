@@ -1,5 +1,5 @@
 .PHONY: setup gen-secrets up down logs migrate migrate-down migration seed \
-        test test-unit lint fmt sqlc build selfscan demo-prep clean
+        test test-unit lint fmt sqlc build selfscan demo-prep clean docs
 
 GOOSE := go run github.com/pressly/goose/v3/cmd/goose@v3
 
@@ -55,6 +55,9 @@ fmt:
 
 sqlc:
 	@if [ -f sqlc.yaml ]; then go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest generate; else echo "no sqlc.yaml yet"; fi
+
+docs:
+	npx --yes @redocly/cli@latest preview-docs api/openapi.yaml
 
 build:
 	docker compose build
