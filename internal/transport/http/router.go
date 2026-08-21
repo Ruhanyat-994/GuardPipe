@@ -80,6 +80,10 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	requireAuth := middleware.Auth(cfg.IdentitySvc)
 
 	api := r.Group("/api/v1")
+
+	docsH := handler.NewDocsHandler()
+	api.GET("/openapi.yaml", docsH.OpenAPISpec)
+
 	auth := api.Group("/auth")
 	{
 		auth.POST("/register", authLimiter, authH.Register)
