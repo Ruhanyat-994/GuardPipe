@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   CheckCircle2,
   Circle,
@@ -11,9 +12,10 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import { ENGINE_META } from '../../lib/engines'
+import { ENGINE_META, isEngineEnabled } from '../../lib/engines'
 import type { Engine } from '../../lib/rulesApi'
 import type { Job, JobStatus, Progress, Scan } from '../../lib/scansApi'
+import { EngineRunDetail } from './EngineRunDetail'
 import { GeminiMark } from '../icons/GeminiMark'
 import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
@@ -155,6 +157,8 @@ function Node({
   githubMark,
   geminiMark,
   tooltip,
+  onClick,
+  selected,
 }: {
   label: string
   icon: LucideIcon
@@ -165,17 +169,30 @@ function Node({
   githubMark?: boolean
   geminiMark?: boolean
   tooltip?: string | null
+  onClick?: () => void
+  selected?: boolean
 }) {
   const color = STATUS_COLOR[status]
   const StatusIcon = STATUS_ICON[status]
+  const Tag = onClick ? 'button' : 'div'
   return (
-    <div
-      className="relative z-[1] flex w-[116px] shrink-0 flex-col items-center gap-2 rounded-xl border bg-bg-surface px-3 py-3.5 text-center shadow-sm transition-colors"
+    <Tag
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      aria-pressed={onClick ? selected : undefined}
+      className={cn(
+        'relative z-[1] flex w-[116px] shrink-0 flex-col items-center gap-2 rounded-xl border bg-bg-surface px-3 py-3.5 text-center shadow-sm transition-colors',
+        onClick && 'cursor-pointer hover:border-accent/50 hover:shadow-md',
+      )}
       style={{
-        borderColor:
-          status === 'not_run'
+        borderColor: selected
+          ? 'var(--accent)'
+          : status === 'not_run'
             ? 'var(--border-default)'
             : `color-mix(in srgb, ${color} 45%, transparent)`,
+        boxShadow: selected
+          ? '0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent)'
+          : undefined,
       }}
       title={tooltip ?? undefined}
     >
@@ -203,38 +220,21 @@ function Node({
         />
         {STATUS_LABEL[status]}
       </span>
-    </div>
+    </Tag>
   )
 }
 
-/** A short solid connector segment — the trunk line between stacked nodes. */
-function TrunkLine() {
-  return <div className="h-5 w-px bg-border-default" aria-hidden="true" />
-}
-
-/** The small filled circle rendered at every branch/merge point, matching
- * the reference design's joint dots on its connector lines. */
-function JointDot() {
-  return <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-border-strong" aria-hidden="true" />
-}
-
-/** The horizontal bar workspace prep fans out from, with a joint dot
- * dropping straight down into each of the six parallel engine nodes. */
-function FanOutBar({ count }: { count: number }) {
+/** A short horizontal connector between two stages in the left-to-right
+ * flow, with a joint dot at its midpoint — GitHub Actions' own connector
+ * style (documentation/09-ui-ux-design-system.md §4.8's reference), and
+ * the reason the whole graph now reads as wide-and-shallow instead of the
+ * tall narrow column the vertical version produced. */
+function HConnector() {
   return (
-    <div className="flex w-full items-stretch">
-      {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="flex flex-1 flex-col items-center">
-          <div
-            className={cn(
-              'h-px w-full bg-border-default',
-              i === 0 && 'ml-auto w-1/2',
-              i === count - 1 && 'mr-auto w-1/2',
-            )}
-            aria-hidden="true"
-          />
-        </div>
-      ))}
+    <div className="flex w-10 shrink-0 items-center" aria-hidden="true">
+      <div className="h-px flex-1 bg-border-default" />
+      <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-border-strong" />
+      <div className="h-px flex-1 bg-border-default" />
     </div>
   )
 }
@@ -289,6 +289,18 @@ export function SupplyChainPipeline({
   const pentestState = resolveEngineState('pentest', progress, jobs)
   const status = overallStatus(scanStarted, progress, jobs)
 
+  // Only nodes with a real per-engine job to drill into are clickable —
+  // "Scan start"/"Workspace prep"/"AI enrichment"/"Scoring" have no job of
+  // their own (workspace prep is shared, the other two don't exist as
+  // engines yet), so making them clickable would mean either faking data
+  // for them or opening a panel that just says "nothing here," neither of
+  // which earns a click. Same `isEngineEnabled` gate ScanLauncher already
+  // uses for "can this engine even run today."
+  const [selectedEngine, setSelectedEngine] = useState<Engine | null>(null)
+  function toggleEngine(engine: Engine) {
+    setSelectedEngine((current) => (current === engine ? null : engine))
+  }
+
   return (
     <div className="overflow-hidden rounded-lg border border-border-default bg-bg-surface">
       {/* header bar */}
@@ -300,82 +312,103 @@ export function SupplyChainPipeline({
         <StatusBadge status={status} />
       </div>
 
-      {/* graph */}
+      {/* graph — left-to-right, GitHub Actions' own flow direction
+          (documentation/09-ui-ux-design-system.md §4.8): one stage after
+          another rather than a tall stacked column. The six parallel
+          engines live inside one bordered group (same idea as GH Actions
+          stacking parallel jobs inside one box with a single line in and
+          a single line out) instead of each getting its own connector,
+          which is what let the previous vertical version balloon in
+          height for no benefit. */}
       <div className="overflow-x-auto p-6">
-        <div className="flex min-w-max flex-col items-center">
-          <Node
-            label="Scan start"
-            icon={ShieldAlert}
-            status={scanStarted ? 'succeeded' : 'not_run'}
-          />
+        <div className="flex min-w-max flex-col gap-4">
+          <div className="flex items-center">
+            <Node
+              label="Scan start"
+              icon={ShieldAlert}
+              status={scanStarted ? 'succeeded' : 'not_run'}
+            />
 
-          <div className="flex w-full items-start justify-center gap-10 pt-0">
-            <div className="flex flex-col items-center">
-              <TrunkLine />
-              <JointDot />
-              <TrunkLine />
-              <Node label="Workspace prep" icon={Package} status={workspaceStatus} />
-              <TrunkLine />
-              <JointDot />
-              <div className="w-full px-2">
-                <FanOutBar count={PARALLEL_ENGINES.length} />
-              </div>
-              <div className="flex flex-wrap items-start justify-center gap-3 pt-0">
+            <HConnector />
+
+            <Node label="Workspace prep" icon={Package} status={workspaceStatus} />
+
+            <HConnector />
+
+            <div className="rounded-xl border border-border-default bg-bg-subtle/60 p-3">
+              <div className="grid grid-cols-2 gap-3">
                 {PARALLEL_ENGINES.map((engine) => {
                   const meta = ENGINE_META[engine]
                   const state = resolveEngineState(engine, progress, jobs)
+                  const clickable = scanStarted && isEngineEnabled(engine)
                   return (
-                    <div key={engine} className="flex flex-col items-center">
-                      <TrunkLine />
-                      <Node
-                        label={meta.label}
-                        icon={meta.icon}
-                        status={state.status}
-                        osvMark={meta.hasOsvMark}
-                        sonarQubeMark={meta.hasSonarQubeMark}
-                        kubernetesMark={meta.hasKubernetesMark}
-                        githubMark={meta.hasGitHubMark}
-                        geminiMark={meta.hasGeminiMark}
-                        tooltip={state.reason}
-                      />
-                    </div>
+                    <Node
+                      key={engine}
+                      label={meta.label}
+                      icon={meta.icon}
+                      status={state.status}
+                      osvMark={meta.hasOsvMark}
+                      sonarQubeMark={meta.hasSonarQubeMark}
+                      kubernetesMark={meta.hasKubernetesMark}
+                      githubMark={meta.hasGitHubMark}
+                      geminiMark={meta.hasGeminiMark}
+                      tooltip={state.reason}
+                      onClick={clickable ? () => toggleEngine(engine) : undefined}
+                      selected={selectedEngine === engine}
+                    />
                   )
                 })}
               </div>
             </div>
 
-            <div className="flex flex-col items-center gap-1 pt-2">
-              <span className="rounded-full bg-bg-subtle px-2 py-0.5 text-caption text-text-tertiary">
-                Needs no workspace
-              </span>
-              <div
-                className="h-4 w-px border-l border-dashed border-border-strong"
-                aria-hidden="true"
-              />
-              <Node
-                label="Pentest"
-                icon={ShieldAlert}
-                status={pentestState.status}
-                tooltip={pentestState.reason}
-              />
-            </div>
+            <HConnector />
+
+            <Node
+              label="AI enrichment"
+              icon={FileText}
+              status="not_run"
+              tooltip="Lands in Phase 10/11"
+            />
+
+            <HConnector />
+
+            <Node label="Scoring" icon={ShieldAlert} status="not_run" tooltip="Lands in Phase 13" />
           </div>
 
-          <TrunkLine />
-          <JointDot />
-          <TrunkLine />
-          <Node
-            label="AI enrichment"
-            icon={FileText}
-            status="not_run"
-            tooltip="Lands in Phase 10/11"
-          />
-          <TrunkLine />
-          <JointDot />
-          <TrunkLine />
-          <Node label="Scoring" icon={ShieldAlert} status="not_run" tooltip="Lands in Phase 13" />
+          {/* Pentest branches independently off scan start — it needs no
+              workspace, so it isn't part of the main left-to-right chain
+              above; shown as its own row rather than forced to share a
+              connector with a chain it doesn't depend on. */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-caption text-text-tertiary">
+              <div className="h-px w-6 border-t border-dashed border-border-strong" />
+              <span>Runs independently — needs no workspace</span>
+            </div>
+            <Node
+              label="Pentest"
+              icon={ShieldAlert}
+              status={pentestState.status}
+              tooltip={pentestState.reason}
+              onClick={
+                scanStarted && isEngineEnabled('pentest')
+                  ? () => toggleEngine('pentest')
+                  : undefined
+              }
+              selected={selectedEngine === 'pentest'}
+            />
+          </div>
         </div>
       </div>
+
+      {selectedEngine && (
+        <div className="px-6 pb-6">
+          <EngineRunDetail
+            engine={selectedEngine}
+            job={jobs.find((j) => j.engine === selectedEngine)}
+            onClose={() => setSelectedEngine(null)}
+          />
+        </div>
+      )}
 
       {/* footer: legend + real scan info, no fabricated fields */}
       <div className="flex flex-wrap items-start justify-between gap-6 border-t border-border-default bg-bg-subtle px-5 py-4">
