@@ -20,7 +20,7 @@ import (
 // into separate API/worker replicas; nothing here forecloses that, since
 // callers only see the Get/Set/Clear methods below.
 type LiveProgress struct {
-	mu  sync.RWMutex
+	mu    sync.RWMutex
 	byJob map[uuid.UUID]jobProgress
 }
 

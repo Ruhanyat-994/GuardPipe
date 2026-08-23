@@ -5,8 +5,18 @@ import { cn } from '../../lib/cn'
 import { ApiError } from '../../lib/apiClient'
 import { exportScan, type ExportFormat } from '../../lib/scansApi'
 
-const FORMATS: { format: ExportFormat; label: string; description: string; icon: typeof FileText }[] = [
-  { format: 'pdf', label: 'PDF report', description: 'Cover page, coverage, findings', icon: FileText },
+const FORMATS: {
+  format: ExportFormat
+  label: string
+  description: string
+  icon: typeof FileText
+}[] = [
+  {
+    format: 'pdf',
+    label: 'PDF report',
+    description: 'Cover page, coverage, findings',
+    icon: FileText,
+  },
   { format: 'csv', label: 'CSV', description: 'Findings table only', icon: FileSpreadsheet },
   { format: 'json', label: 'JSON', description: 'Full machine-readable snapshot', icon: FileJson },
 ]
