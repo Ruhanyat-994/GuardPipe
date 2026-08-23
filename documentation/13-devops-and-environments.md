@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.5 |
+| **Version** | 1.8 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-08-16 |
+| **Last updated** | 2026-08-23 |
 
 ### Revision history
 
@@ -19,6 +19,9 @@
 | 1.3 | 2026-08-14 | Team | §5.7 adds `GUARDPIPE_SONARQUBE_*` vars for the new self-hosted SonarQube CE dependency (`codescan`, Phase 7, ADR-0011) — planned, not yet built |
 | 1.4 | 2026-08-16 | Team | §5.3's `GUARDPIPE_REFRESH_TOKEN_TTL` default dropped from `168h` to `30m` (it's the session idle timeout, not a "remember me" duration) and a new `GUARDPIPE_SESSION_ABSOLUTE_TTL` (`12h`) added — both built, `BUILD_GUIDE.md` Phase 14 |
 | 1.5 | 2026-08-16 | Team | Builder image moved from `golang:1.25-alpine` to `golang:1.26-alpine` — `k8sscan`'s Helm SDK dependency (`BUILD_GUIDE.md` Phase 9) transitively requires `k8s.io/api`/`apimachinery`/`client-go` at a version whose current release train needs Go 1.26; the module's own `go` directive moved to `1.26.0` to match. Resolved by letting `go mod tidy` pick a consistent dependency graph naturally, not by hand-pinning individual `k8s.io/*` versions (see `CLAUDE.md`'s note on why that cascaded into cross-version type mismatches) |
+| 1.6 | 2026-08-22 | Team | §5.2 adds `GUARDPIPE_POSTGRES_DATA_DIR`/`GUARDPIPE_REDIS_DATA_DIR` — `postgres`/`redis` now bind-mount to a real host folder instead of an opaque named volume (repo-local default, overridable per machine); `redis` also gains `--appendonly yes` so local dev queue state survives a restart. Built, `docker-compose.yml` |
+| 1.7 | 2026-08-23 | Team | §5.5's `GUARDPIPE_PENTEST_ALLOWLIST` renamed to `GUARDPIPE_PENTEST_DENYLIST` and its polarity flipped: a hosted product can't pre-enumerate every customer's target domain, so any public, non-blocked-range host is now accepted by default and only explicitly denylisted hosts are rejected — the authorisation attestation (FR-PEN-001) plus the private/metadata range block plus this denylist are the actual safety boundary. See [02-srs.md](02-srs.md) FR-PRJ-007/FR-PEN-002 and [05-module-specifications.md](05-module-specifications.md) §4. **Needs its second reviewer** per this doc's own change-control status |
+| 1.8 | 2026-08-23 | Team | New buildable (not long-running — `profiles: [build-only]`) `pentest-sandbox` service added to `docker-compose.yml`, built from `internal/scripts/pentest/Dockerfile`: an alpine-based image (never distroless — needs a real shell) bundling naabu/nmap/httpx/whatweb/testssl.sh/curl/katana/gau/CeWL/ffuf/nuclei/iptables/su-exec. `GUARDPIPE_SANDBOX_IMAGE` default changed from the old placeholder to `guardpipe-pentest-sandbox:latest` (§5.5) — a plain locally-built tag, not a pinned digest like this file's other image references, since it's never pushed to any registry. Build it once with `docker compose build pentest-sandbox` before a pentest scan can actually run tools; the engine still registers and fails cleanly without it. |
 
 ---
 
@@ -132,6 +135,8 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_DB_MAX_CONNS` | `25` | no | Pool size |
 | `GUARDPIPE_REDIS_URL` | — | **yes** | `redis://host:6379/0` |
 | `GUARDPIPE_MIGRATE_ON_START` | `true` | no | Apply pending migrations at boot |
+| `GUARDPIPE_POSTGRES_DATA_DIR` | `./.docker-data/postgres` | no, compose-only | Host path `docker-compose.yml` bind-mounts as the `postgres` container's data directory — not read by the Go binary itself. Repo-local default needs no setup; override to redirect onto a different disk |
+| `GUARDPIPE_REDIS_DATA_DIR` | `./.docker-data/redis` | no, compose-only | Same, for `redis`'s `--appendonly` data directory. Redis is still architecturally losable (`03-architecture-overview.md`) — this just avoids throwing away a working local queue on every `docker compose down` |
 
 ### 5.3 Security
 
@@ -165,7 +170,7 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 |---|---|---|---|
 | `GUARDPIPE_PENTEST_ENABLED` | `true` | no | Master switch |
 | `GUARDPIPE_ALLOW_PRIVATE_TARGETS` | `false` | no | **Leave false.** Enables RFC 1918 targets |
-| `GUARDPIPE_PENTEST_ALLOWLIST` | empty | no | Optional host allowlist |
+| `GUARDPIPE_PENTEST_DENYLIST` | empty | no | Hosts explicitly refused as pentest targets; every other public, non-blocked-range host is allowed by default |
 | `GUARDPIPE_PENTEST_RATE_LIMIT` | `10` | no | Requests/second ceiling |
 | `GUARDPIPE_PENTEST_PORTS` | `top100` | no | Port set |
 

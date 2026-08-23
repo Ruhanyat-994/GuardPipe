@@ -4,12 +4,12 @@
 |---|---|
 | **Document** | API Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.3 |
 | **Status** | Draft |
 | **Style** | REST · JSON · OpenAPI 3.1 conventions · RFC 9457 errors |
 | **Base URL** | `http://localhost:8080/api/v1` |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-16 |
+| **Last updated** | 2026-08-23 |
 
 ### Revision history
 
@@ -17,6 +17,8 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial API contract |
 | 1.1 | 2026-08-16 | Team | `POST /projects`'s example `repository` object gains `credential_invalid`/`credential_invalid_reason` (also present on every other endpoint returning a repository) — set once a scan's clone is rejected with the stored credential, cleared by the existing attach/replace flow (`documentation/06-database-design.md` §4.5, migration `00012`). **Needs its second reviewer** per this doc's own change-control rule, since this file requires two approvals and only one person made this edit |
+| 1.2 | 2026-08-23 | Team | `GET /scans/{id}/export` implemented for real (`json`/`csv`/`pdf`, `modules/reporting`'s export slice pulled forward from Phase 13) — was previously JSON-only-documented with `pdf`/`sarif` returning a placeholder `501`. `sarif` remains unimplemented, now a plain `400 scan.export_format_unsupported`. **Needs its second reviewer**, same standing caveat as 1.1 |
+| 1.3 | 2026-08-23 | Team | `GET /scans/{id}/progress` gains a real, live per-engine `activity` field and an honest (elapsed-time-based, not frozen) `progress_pct` for a running job — previously a hardcoded `50`. Also corrects this section's own long-standing inaccuracy: progress was never actually Redis-backed (`gp:progress:{scan_id}` was aspirational, not built); it's now genuinely live, backed by an in-process store (`orchestrator.LiveProgress`), which this revision documents instead of the Redis shape that never existed. **Needs its second reviewer**, same standing caveat as 1.1 |
 
 > **Change control:** this is the frontend/backend contract. Breaking changes require **two approvals** and a note to the frontend owner. Freeze target: end of Sprint 0.
 
@@ -387,14 +389,23 @@ Note that a `failed` and a `skipped` job both appear in a `completed` scan — t
   "progress_pct": 57,
   "engines": [
     { "engine": "codescan",  "status": "succeeded", "progress_pct": 100, "finding_count": 18 },
-    { "engine": "depscan",   "status": "running",   "progress_pct": 60,  "finding_count": 7  },
+    { "engine": "pentest",   "status": "running",   "progress_pct": 62,  "activity": "Fuzzing for hidden files and paths", "finding_count": 2 },
+    { "engine": "depscan",   "status": "running",   "progress_pct": 34,  "finding_count": 7  },
     { "engine": "k8sscan",   "status": "queued",    "progress_pct": 0,   "finding_count": 0  }
   ],
   "updated_at": "2026-08-05T10:22:10Z" }
 ```
-Served from Redis (`gp:progress:{scan_id}`), not PostgreSQL — a 2-second poll must not hit the database.
+`activity` is present only when the engine actually reported a real named stage (pentest's own recon/service_id/tls/… phases today — `internal/domain/engine.go`'s `ScanInput.ReportProgress`); every other engine's running `progress_pct` is a real elapsed-time-against-timeout estimate (`orchestrator.elapsedFallbackPct`), never a frozen constant, but has no `activity` of its own — the frontend's own generic per-engine label covers that case.
 
-**`GET /scans/{id}/export?format=json`** → `200` with `Content-Disposition: attachment`. `format=pdf` and `format=sarif` are Stretch and return `501` with `code: "export.format_unsupported"` until implemented.
+Overall/per-engine `progress_pct` is computed live: the whole-scan figure is genuinely `terminal jobs / total jobs`, done in the request handler itself (`orchestrator.Service.GetProgress`), reading each running job's live-reported stage from an in-process store (`orchestrator.LiveProgress`, written by the worker pool as an engine calls `ReportProgress`) with the elapsed-time estimate as the fallback — not Redis, and not a value pre-computed and cached ahead of the request. This corrects an earlier draft of this section, which described a `gp:progress:{scan_id}` Redis hash that was never actually built; the in-process store is the right shape for the current single-process-per-replica deployment (`03-architecture-overview.md` §5's "Single process, two roles") and is a straightforward swap for a Redis-backed hash the day that changes.
+
+**`GET /scans/{id}/export?format=json|csv|pdf`** (default `json`) → `200` with `Content-Disposition: attachment`, `Content-Type` matching the format (`application/json`/`text/csv`/`application/pdf`). Built ahead of the rest of Phase 13 (`modules/reporting`'s export slice only — scoring/triage/correlation are still unbuilt), reusing `orchestrator.Service`'s already-authorized `GetScan`/`ListFindings` — a cross-org request gets the same 404 as every other scan endpoint, not a reporting-specific check.
+
+A self-contained snapshot distinct from `GET /scans/{id}`'s live shape above: every job's `stats` (including pentest's `coverage` summary — open ports, HTTP services probed, TLS ports checked, phases completed/skipped — the concrete "what did it check" record, not just findings), every finding with its deterministic `remediation`, and (when `GUARDPIPE_AI_ENABLED` and a Gemini key are configured) one AI-authored `executive_summary` + `top_priorities` — exactly one Gemini call per export, cached by scan ID so repeat downloads of the same scan don't re-spend budget. No `risk` block: `modules/scoring` isn't built, so the export honestly omits a score rather than fabricating one.
+
+`format=sarif` and any other unrecognised value return `400` with `code: "scan.export_format_unsupported"` — simplified from this doc's earlier `501` (that was written for a "not yet built" PDF; sarif is the only one still in that state, and 501 wasn't worth a dedicated `platform/errors` kind for one remaining format).
+
+**Doc debt, not yet through this doc's own two-approval change-control process** (this doc's own header rule, §21): this entry, and the `csv` format the original spec never named, were added and shipped in one solo session per explicit user direction to fix a live gap (a clean pentest scan's coverage was being silently discarded before it ever reached the API — see `internal/modules/orchestrator/worker.go`'s persistence fix and `internal/engines/pentest/coverage.go`). Needs a second reviewer before this is "really" done, same caveat rev 1.1 above already carries for the same reason.
 
 ---
 

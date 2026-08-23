@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Security Design and Threat Model |
 | **Project** | GuardPipe |
-| **Version** | 1.2 |
+| **Version** | 1.4 |
 | **Status** | Draft |
 | **Method** | STRIDE · OWASP ASVS 4.0 |
 | **Owner** | Member 6 (with all) |
-| **Last updated** | 2026-08-16 |
+| **Last updated** | 2026-08-23 |
 
 ### Revision history
 
@@ -17,6 +17,8 @@
 | 1.0 | 2026-07-29 | Team | Initial threat model |
 | 1.1 | 2026-08-01 | Team | §11 risk #5 reworded after fixing the cross-account data leak it described — every account registering into one shared organisation was letting every user see every other user's projects. Fixed by giving each registration its own organisation (`internal/modules/identity/service.go`); the accepted-risk item is now narrower (an organisation can't yet gain a *second* member), not "no isolation at all" |
 | 1.2 | 2026-08-16 | Team | §7.1 gained two new rows: a session idle timeout (30 min, `GUARDPIPE_REFRESH_TOKEN_TTL`) and a session absolute timeout (12 h from login, `GUARDPIPE_SESSION_ABSOLUTE_TTL`, checked against a new `refresh_tokens.family_issued_at` column) — closing the gap where a continuously-refreshed session never expired at all, per OWASP's Session Management Cheat Sheet and NIST SP 800-63B §4.1.3. BUILD_GUIDE.md Phase 14 |
+| 1.3 | 2026-08-23 | Team | §5.2 gained an explicit note on the pentest target denylist (`GUARDPIPE_PENTEST_DENYLIST`), which replaces the old allowlist model — a hosted product can't pre-enumerate every customer's target domain, so any public, non-blocked-range host is accepted by default and only explicitly denylisted hosts are refused. Matches `02-srs.md` rev 1.4's FR-PRJ-007/FR-PEN-002 |
+| 1.4 | 2026-08-23 | Team | §3.1 `S4` (forged webhook) control column extended with delivery-ID replay dedup; new `S6` added (webhook-triggered scan flooding / cost abuse) — both now point at the full "Live / continuous scanning" design added to `BUILD_GUIDE.md` Phase 15+ (post-graduation roadmap, still Stretch/not implemented this semester) |
 
 ---
 
@@ -106,8 +108,9 @@ flowchart TB
 | S1 | Credential stuffing against `/auth/login` | TB1 | High | High | Argon2id; 5/min/IP rate limit; account lock after repeated failures; identical error for unknown user and wrong password (no enumeration) |
 | S2 | Stolen JWT replayed | TB1 | Medium | High | 15-minute access token; token held in memory not `localStorage`; `jti` claim |
 | S3 | Refresh token theft | TB1 | Medium | High | `HttpOnly`+`Secure`+`SameSite=Strict` cookie; single-use rotation; **family invalidation on reuse detection** |
-| S4 | Forged GitHub webhook | TB1 | Medium | Medium | HMAC-SHA256 signature verification, constant-time compare (Stretch, with the webhook feature) |
+| S4 | Forged GitHub webhook | TB1 | Medium | Medium | HMAC-SHA256 signature verification, constant-time compare, plus delivery-ID dedup against replayed/duplicated deliveries (Stretch, with the webhook feature — full design in `BUILD_GUIDE.md` Phase 15+'s "Live / continuous scanning" entry) |
 | S5 | DNS rebinding — target resolves benignly at validation, internally at execution | TB5 | Low | **Critical** | IPs pinned at validation; **re-resolved and compared immediately before execution**; abort on mismatch (FR-PEN-002) |
+| S6 | Webhook-triggered scan flooding — a noisy or malicious repo push source drives unbounded backend compute with no human in the loop to rate-limit itself | TB1 | Medium | Medium | Per-org live-scan quota via `entitlement.Check`, per-project trigger-burst circuit breaker, debounce window collapsing rapid pushes into one scan (Stretch, with the webhook feature — same `BUILD_GUIDE.md` entry as S4) |
 
 S5 is subtle and worth stating: validating a hostname and then connecting by hostname later is a classic bypass. We validate, pin the resolved IP, and connect to the pinned IP.
 
@@ -219,6 +222,8 @@ Blocked by default and rejected at registration and again at execution:
 `10.0.0.0/8` · `172.16.0.0/12` · `192.168.0.0/16` · `127.0.0.0/8` · `::1` · `169.254.0.0/16` (**including `169.254.169.254`, the cloud metadata endpoint**) · `fc00::/7` · `0.0.0.0` · any address resolving to the GuardPipe host itself.
 
 `GUARDPIPE_ALLOW_PRIVATE_TARGETS=true` exists for legitimate internal testing. It is off by default, and turning it on is a deliberate, logged act.
+
+Beyond the blocked ranges above, any other public, resolvable target is accepted by default — a hosted product can't ask an operator to pre-approve every customer's domain before it can be registered. `GUARDPIPE_PENTEST_DENYLIST` lets an operator explicitly refuse specific hosts (exact match or subdomain) on top of that. The authorisation attestation (§5.1) is what actually establishes the user is allowed to test the target; the denylist is a backstop for hosts GuardPipe has separately decided to refuse regardless of attestation.
 
 ### 5.3 Prohibited activity — enforced in code, not policy
 

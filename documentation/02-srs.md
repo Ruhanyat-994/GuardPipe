@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Software Requirements Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Status** | Draft |
 | **Standard** | ISO/IEC/IEEE 29148:2018 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-16 |
+| **Last updated** | 2026-08-23 |
 
 ### Revision history
 
@@ -18,6 +18,7 @@
 | 1.1 | 2026-08-14 | Team | FR-CODE-001 reversed: `codescan` now wraps a self-hosted SonarQube Community Edition instance instead of implementing its own SAST analyzer, per explicit external requirement. See [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md) for rationale; supersedes the codescan-specific portion of [ADR-0010](17-adr/0010-own-scanners.md) |
 | 1.2 | 2026-08-14 | Team | FR-CNT-004..008 reversed: `containerscan` now wraps Trivy for image vulnerability/misconfiguration/secret scanning instead of implementing its own layer-walking and package-database matching. See [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md) for rationale; supersedes the containerscan-specific portion of [ADR-0010](17-adr/0010-own-scanners.md) |
 | 1.3 | 2026-08-16 | Team | FR-K8S-014 promoted Stretch → Core, ahead of Phase 9 starting: Helm chart rendering (offline only, vendored dependencies only, no cluster/network access) is now required before `k8sscan`'s policy engine runs, not deferred. `k8sscan` itself stays GuardPipe's own rule engine either way — this does **not** invoke ADR-0010/0011/0012 (no external tool is being wrapped; Helm's own template renderer is used as a library the same way `go-git` already is elsewhere, purely to turn chart+values into plain manifests). Kustomize overlay rendering (also named in the old FR-K8S-014) is split out and remains Stretch — only Helm was requested. **Needs its second reviewer** per this doc's own change-control status, since only one person made this edit |
+| 1.4 | 2026-08-23 | Team | FR-PRJ-007 and FR-PEN-002 flip from an allowlist to a denylist model for pentest targets: a hosted product can't ask an operator to pre-enumerate every customer's target domain before they can register it, so any public, non-blocked-range host is now accepted by default and only explicitly denylisted hosts are rejected. The authorisation attestation (FR-PEN-001), the RFC1918/loopback/metadata range block, and DNS-rebinding re-validation are unchanged and remain the actual safety boundary alongside the denylist. See [05-module-specifications.md](05-module-specifications.md) §4 for the updated flowchart. **Needs its second reviewer** per this doc's own change-control status |
 
 > **Change control:** this document is a shared contract. Any modification requires **two approvals** (see [14 — GitHub Workflow](14-github-workflow.md)).
 
@@ -196,7 +197,7 @@ flowchart TB
 | FR-PRJ-004 | The system **shall never** return a stored PAT through the API; it **shall** return only a masked hint (e.g. `ghp_••••3f9a`). | Core |
 | FR-PRJ-005 | The system **shall** validate a repository URL and confirm reachability before saving it. | Core |
 | FR-PRJ-006 | The system **shall** allow a user to register a pentest target (host or URL) with an explicit **authorisation attestation** that must be accepted before any pentest scan can run. | Core |
-| FR-PRJ-007 | The system **shall** reject pentest targets that resolve to addresses outside the configured allowlist, and **shall** block RFC 1918 / loopback / link-local / cloud-metadata addresses unless explicitly permitted by configuration. | Core |
+| FR-PRJ-007 | The system **shall** reject pentest targets that resolve to an address matching the configured denylist, and **shall** block RFC 1918 / loopback / link-local / cloud-metadata addresses unless explicitly permitted by configuration. Any other publicly-resolvable target is accepted by default. | Core |
 | FR-PRJ-008 | The system **shall** record the full scan history of a project. | Core |
 
 ### 3.3 Scan orchestration — `orchestrator`
@@ -329,7 +330,7 @@ flowchart TB
 | ID | Requirement | Priority |
 |---|---|---|
 | FR-PEN-001 | The system **shall** require an explicit, recorded authorisation attestation, naming the target and the attesting user, before any pentest scan can be started. | Core |
-| FR-PEN-002 | The system **shall** re-validate at execution time that the resolved target address is within the configured allowlist, and **shall** abort if DNS resolution changes between validation and execution (DNS-rebinding defence). | Core |
+| FR-PEN-002 | The system **shall** re-validate at execution time that the resolved target address does not match the configured denylist, and **shall** abort if DNS resolution changes between validation and execution (DNS-rebinding defence). | Core |
 | FR-PEN-003 | All pentest activity **shall** execute inside a sandboxed container with an enforced wall-clock timeout, resource limits, and no access to the GuardPipe host, database, or Docker socket. | Core |
 | FR-PEN-004 | The system **shall** perform **reconnaissance**: DNS resolution, reverse DNS, and TCP port discovery over a configurable port set. | Core |
 | FR-PEN-005 | The system **shall** perform **service and version identification** on discovered open ports via banner grabbing. | Core |
@@ -574,7 +575,7 @@ None. Standard x86-64 or ARM64 server hardware.
 
 1. User selects *Penetration Test* and chooses a registered target.
 2. System displays the authorisation attestation; user confirms ownership/permission.
-3. System validates target resolution against the allowlist and blocks private/metadata addresses (FR-PRJ-007).
+3. System validates target resolution against the denylist and blocks private/metadata addresses (FR-PRJ-007).
 4. System creates the scan and a single `pentest` job.
 5. Worker launches the sandbox container with the target pinned by IP, rate limits applied, and a 15-minute timeout.
 6. The bash suite executes its phases: recon → service ID → TLS → HTTP headers → information disclosure → misconfiguration.

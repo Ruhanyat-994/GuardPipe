@@ -4,16 +4,19 @@
 |---|---|
 | **Document** | Client Journey, Product Usage & Pricing Model |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.3 |
 | **Status** | Draft |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-07-30 |
+| **Last updated** | 2026-08-23 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-30 | Team | Initial client-facing journey and pricing model |
+| 1.1 | 2026-08-22 | Team | Added §13.5–13.7: CLI as a fourth channel (incl. device-authorization browser-handoff login, à la `gh auth login`/`claude login`), per-engine tier gating, org-vs-solo account model. Still conceptual/not implemented — see the boundary restated in §13 and the roadmap entry added to `BUILD_GUIDE.md` Phase 15+ |
+| 1.2 | 2026-08-23 | Team | Pentest target restrictions reworded: any public, non-blocked-range target is now accepted by default (a client doesn't need an administrator to pre-allowlist their domain before registering it); GuardPipe instead maintains a denylist for specific hosts it refuses regardless of attestation. Matches `02-srs.md` rev 1.4's FR-PRJ-007 |
+| 1.3 | 2026-08-23 | Team | §12's webhook/scheduled-scan Stretch line now points at the full "Live / continuous scanning" design (scan-profile replay, debounce, per-org abuse quotas, worker/queue scaling) added to `BUILD_GUIDE.md` Phase 15+ — still a post-graduation roadmap item, not scoped for this semester |
 
 ---
 
@@ -141,7 +144,7 @@ Once started, a scan is not a black box:
 
 ## 9. The standalone pentest path (its own gate)
 
-Because a pentest touches a live system the client may not fully control, it has an extra, mandatory step the other engines don't: **an explicit authorisation attestation**. A client must register the target and affirmatively confirm they're authorised to test it before the scan button is even enabled (`FR-PRJ-006`). GuardPipe additionally blocks targets that resolve to private, loopback, link-local, or cloud-metadata addresses unless an administrator has explicitly allowlisted them (`FR-PRJ-007`) — this protects both the client and GuardPipe from an accidental (or malicious) attempt to point the scanner at infrastructure it has no business touching.
+Because a pentest touches a live system the client may not fully control, it has an extra, mandatory step the other engines don't: **an explicit authorisation attestation**. A client must register the target and affirmatively confirm they're authorised to test it before the scan button is even enabled (`FR-PRJ-006`). GuardPipe additionally blocks targets that resolve to private, loopback, link-local, or cloud-metadata addresses, and refuses any host on an operator-maintained denylist (`FR-PRJ-007`) — this protects both the client and GuardPipe from an accidental (or malicious) attempt to point the scanner at infrastructure it has no business touching. Any other public target a client registers and attests to is accepted without an administrator needing to pre-approve the domain first.
 
 ---
 
@@ -172,7 +175,7 @@ Suppressed findings are excluded from the score but stay visible in the explorer
 
 - The client fixes what they choose to fix, then **re-scans**. Because every finding has a stable fingerprint, a fixed issue disappears from the open list and a genuinely new issue is distinguishable from a moved line number (§7.1 of [03 — Architecture Overview](03-architecture-overview.md)).
 - Full scan history is retained per project (`FR-PRJ-008`), so the dashboard can show a **trend** — is the risk score improving release over release, which is exactly the evidence an Engineering Manager needs for a go/no-go call (`UC-08`).
-- **Stretch, not required for this semester:** a GitHub webhook can auto-trigger a scan on push or pull request, and scans can be scheduled to run on a recurring basis (`FR-ORC-013..014`) — both are natural once the product needs to run unattended rather than on a client's explicit click.
+- **Stretch, not required for this semester:** a GitHub webhook can auto-trigger a scan on push or pull request, and scans can be scheduled to run on a recurring basis (`FR-ORC-013..014`) — both are natural once the product needs to run unattended rather than on a client's explicit click. Full design (replaying the client's own last-used scan configuration rather than a fresh default, debounce, per-org abuse quotas, worker/queue scaling once triggers are externally driven) is the "Live / continuous scanning" entry in `BUILD_GUIDE.md`'s Phase 15+ — a post-graduation roadmap item, not scoped for this semester.
 
 ---
 
@@ -210,6 +213,49 @@ The Enterprise column is not invented from nothing — every row in it is alread
 ### 13.4 What would actually need to be built to charge money
 
 Being explicit about this is more convincing to an instructor than the pricing table alone: a billing integration (e.g. Stripe), a subscription/entitlement model in the database, per-tier rate-limit enforcement in the API layer, and a plan-management UI. None of this exists, none of it is planned for this semester, and the architecture (stateless app, external state, modular monolith) doesn't foreclose adding it later — which is the same design property already claimed for the Kubernetes migration path in [03 — Architecture Overview](03-architecture-overview.md) §9.
+
+### 13.5 A fourth channel: the CLI
+
+Everything above assumes the web app is the only door in. The post-graduation plan adds a `guardpipe` CLI (`guardpipe login`, `guardpipe scan .`, `guardpipe findings list`, `guardpipe scan --engine codescan`) as a second, developer-facing channel onto the *same* API and the *same* entitlement checks — it is not a separate product with separate limits. A CLI scan run counts against the calling account's normal monthly quota exactly like a web-triggered one; there is no "CLI tier."
+
+This is the lowest-effort item in this whole roadmap because `cmd/guardpipe` already is a single binary with a subcommand dispatcher (`healthcheck`, `aiprobe`) — a `scan`/`login`/`findings` subcommand group is the same pattern, thin HTTP calls against `07-api-specification.md`'s existing endpoints. No new backend logic beyond the login handshake below; see the corresponding entry in `BUILD_GUIDE.md` Phase 15+ for the full command list.
+
+**Authentication — browser handoff, not a password prompt.** `guardpipe login` never asks for a password on the command line. It follows the same device-authorization pattern developers already know from `gh auth login` and Claude Code's own `claude login`: the CLI requests a short device code from the API, opens the user's default browser to a GuardPipe confirmation page pre-filled with that code, the user approves the CLI's access using whatever session they already have in the browser (or logs in there if they don't), and the CLI — which has been quietly polling in the background — picks up a token the moment approval lands. Nothing about this is a new login system: it's the existing `identity` login/JWT flow (§4 above), just triggered from a browser tab the CLI opened rather than a form the CLI can't render. The account settings page would gain a "CLI/device sessions" list alongside browser sessions, so a lost laptop's CLI credential can be revoked independently of revoking every browser session.
+
+**Why a developer would want it:** it's what makes "gate my release" mean `guardpipe scan --gate` as one line in a CI job someone else's pipeline calls, instead of requiring a human to click through the web UI before every merge — closes the loop the webhook/scheduled-scan Stretch goal (§12 above, `FR-ORC-013..014`) already gestures at.
+
+### 13.6 Per-engine tier gating (replacing the flat "All 7" row)
+
+§13.2's table gives every tier all seven engines, which was accurate for a course presentation but not for a real pricing wall — a paying customer expects the free tier to be a genuine taste, not the full product. A more deliberate per-engine mapping:
+
+| Engine | Free | Pro | Enterprise |
+|---|---|---|---|
+| `codescan` (SAST via SonarQube) | Included | Included | Included |
+| `depscan` (dependency/OSV) | Included | Included | Included |
+| `docreview` (AI design-doc review) | 1 doc / month | Unlimited | Unlimited |
+| `containerscan` (Trivy) | — | Included | Included |
+| `k8sscan` (Helm/manifest policy) | — | Included | Included |
+| `cicdscan` | — | Included | Included |
+| `pentest` (live-target probing) | — | Included | Included, custom rate limits |
+
+The logic: `codescan`/`depscan` are the cheapest to run and the best hook for a free account to see real value fast, so they stay free without a scan-count cap on the engine itself (the existing "5 full scans/month" cap in §13.2 still applies at the *scan* level). Everything that touches infrastructure the client controls (`containerscan`, `k8sscan`, `cicdscan`) or a live external target (`pentest`) is gated to paid tiers — those are also the engines with the highest operating cost (sandbox containers, Trivy/Helm invocations, network probing), so the gate lines up with actual marginal cost, not an arbitrary split.
+
+Enforcement point, if this is ever built: the same `entitlement.Check(ctx, orgID, capability)` seam named in `BUILD_GUIDE.md` Phase 15+, called from `transport/http` before a scan job is created — never inside `Engine.Applicable`/`Engine.Run`, which stay tier-agnostic exactly like they're already actor-agnostic (`03-architecture-overview.md`'s Engine interface, §7 above).
+
+### 13.7 Organisation vs. solo accounts
+
+§2's personas (Developer, DevSecOps Engineer, Engineering Manager) already imply two different buyers, but today's data model doesn't distinguish them: `CLAUDE.md`'s "Multi-tenancy" section is explicit that registration creates one organisation per account with **no invite flow**, so an organisation can never gain a second member. That's fine for the graded build (one account = one isolated org is the actual security property being tested) but it's too narrow for "an organisation buys this."
+
+The conceptual distinction for the post-graduation product:
+
+| | **Personal account** | **Organisation account** |
+|---|---|---|
+| Membership | Exactly one user, always | Multiple users under one billing entity, via an invite flow that doesn't exist yet |
+| Roles | N/A — one user, full access to their own org | Owner / Admin / Member, reusing the RBAC types `modules/identity` already defines for a *single* user's role, extended to be per-membership rather than per-user |
+| Billing | Individual card, Free/Pro tiers from §13.2 | Seat-based or usage-based, Enterprise tier + custom contracts |
+| Projects/scans | Scoped to the one org, as today | Scoped to the org, visible to every member per their role |
+
+The important point for anyone reading this later: this is a **schema and identity-module change** (a membership table between `users` and `organizations`, invite tokens, per-membership roles), not a UI skin on the existing model — it would go through the normal two-approval `schema/` branch process (`14-github-workflow.md`) exactly like any other change to `02-srs.md`/`06-database-design.md`, and is explicitly **not** something to build by quietly relaxing the current one-org-per-user isolation. See `CLAUDE.md`'s standing warning about not reintroducing a shared/default organisation — an invite flow is the correct way to let a second person into an org; a `GetSole()`-style shortcut is the incident that already happened once.
 
 ---
 

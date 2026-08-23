@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Architecture Overview |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Status** | Draft |
 | **Structure** | arc42 + C4 model (levels 1–3) |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-01 |
+| **Last updated** | 2026-08-23 |
 
 ### Revision history
 
@@ -16,6 +16,7 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial architecture description |
 | 1.1 | 2026-08-01 | Team | §8.1 cross-referenced to the new live scan execution graph (`documentation/09-ui-ux-design-system.md` §4.8, planned `BUILD_GUIDE.md` Phase 6) — a frontend-only addition, no change to the runtime sequence or the `Engine`/API contracts documented here |
+| 1.2 | 2026-08-23 | Team | Pentest target-validation sequence diagram updated: "check allowlist" → "check denylist", matching `02-srs.md` rev 1.4's FR-PRJ-007/FR-PEN-002 flip to a denylist model |
 
 ---
 
@@ -424,7 +425,7 @@ sequenceDiagram
     participant T as Target
 
     P->>V: validate(target)
-    V->>V: resolve DNS → check allowlist,<br/>reject RFC1918/loopback/metadata
+    V->>V: resolve DNS → check denylist,<br/>reject RFC1918/loopback/metadata
     V-->>P: pinned IP
     P->>S: Run(image, script, limits, pinned IP, 15m)
     S->>C: create --network=limited --read-only<br/>--memory=512m --cpus=1 --user=nobody<br/>--cap-drop=ALL --pids-limit=128
