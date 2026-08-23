@@ -107,11 +107,7 @@ export function ProjectCreatePage() {
   // "At least one must end up attached" (BUILD_GUIDE.md Phase 12) — exactly
   // the section(s) the chosen mode requires, not both regardless of mode.
   const attachmentSatisfied =
-    scanMode === 'repo'
-      ? !!repository
-      : scanMode === 'target'
-        ? !!target
-        : !!repository && !!target
+    scanMode === 'repo' ? !!repository : scanMode === 'target' ? !!target : !!repository && !!target
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-8">
