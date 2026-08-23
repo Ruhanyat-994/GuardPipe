@@ -55,7 +55,9 @@ function coverageSummary(stats: Record<string, unknown> | null | undefined): str
   if (typeof cov.total_script_runs === 'number') parts.push(`${cov.total_script_runs} checks run`)
   if (Array.isArray(cov.open_ports)) parts.push(`${cov.open_ports.length} open ports`)
   if (typeof cov.http_services_found === 'number') {
-    parts.push(`${cov.http_services_found} HTTP service${cov.http_services_found === 1 ? '' : 's'} probed`)
+    parts.push(
+      `${cov.http_services_found} HTTP service${cov.http_services_found === 1 ? '' : 's'} probed`,
+    )
   }
   if (typeof cov.tls_ports_checked === 'number' && cov.tls_ports_checked > 0) {
     parts.push(`${cov.tls_ports_checked} TLS port${cov.tls_ports_checked === 1 ? '' : 's'} checked`)

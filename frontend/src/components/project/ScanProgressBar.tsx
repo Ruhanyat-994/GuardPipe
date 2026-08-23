@@ -31,7 +31,10 @@ export function ScanProgressBar({
     <div className={cn('flex items-center', className)}>
       <div className="relative flex-1 py-1">
         <div
-          className={cn('overflow-hidden rounded-full ring-1 ring-inset ring-white/10', trackHeight)}
+          className={cn(
+            'overflow-hidden rounded-full ring-1 ring-inset ring-white/10',
+            trackHeight,
+          )}
           style={{ backgroundColor: '#0b1220' }}
           role="progressbar"
           aria-valuenow={clamped}

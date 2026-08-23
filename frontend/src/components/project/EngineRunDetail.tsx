@@ -84,7 +84,9 @@ interface PentestCoverage {
   phases_skipped?: string[]
 }
 
-function pentestCoverage(stats: Record<string, unknown> | null | undefined): PentestCoverage | null {
+function pentestCoverage(
+  stats: Record<string, unknown> | null | undefined,
+): PentestCoverage | null {
   const c = stats?.coverage
   if (!c || typeof c !== 'object') return null
   return c as PentestCoverage
@@ -296,7 +298,9 @@ export function EngineRunDetail({
           <div className="mt-3 border-t border-border-default pt-3">
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-caption text-text-secondary">
               <span>
-                <span className="font-semibold text-text-primary">{coverage.open_ports.length}</span>{' '}
+                <span className="font-semibold text-text-primary">
+                  {coverage.open_ports.length}
+                </span>{' '}
                 open port{coverage.open_ports.length === 1 ? '' : 's'}
                 {coverage.open_ports.length > 0 && ` (${coverage.open_ports.join(', ')})`}
               </span>
@@ -307,7 +311,9 @@ export function EngineRunDetail({
                 HTTP service{coverage.http_services_found === 1 ? '' : 's'} probed
               </span>
               <span>
-                <span className="font-semibold text-text-primary">{coverage.tls_ports_checked}</span>{' '}
+                <span className="font-semibold text-text-primary">
+                  {coverage.tls_ports_checked}
+                </span>{' '}
                 TLS port{coverage.tls_ports_checked === 1 ? '' : 's'} checked
               </span>
               <span>
@@ -319,7 +325,8 @@ export function EngineRunDetail({
             </div>
             {coverage.nuclei_categories_run.length > 0 && (
               <p className="mt-1.5 text-caption text-text-tertiary">
-                Vulnerability signature categories checked: {coverage.nuclei_categories_run.join(', ')}
+                Vulnerability signature categories checked:{' '}
+                {coverage.nuclei_categories_run.join(', ')}
               </p>
             )}
             {coverage.technologies_found && coverage.technologies_found.length > 0 && (
