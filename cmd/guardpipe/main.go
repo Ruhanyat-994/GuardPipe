@@ -23,15 +23,19 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/gemini"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/pentestsandbox"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/sandbox"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/sonarqube"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/trivy"
+	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/cicdscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/codescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/containerscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/depscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/docreview"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/k8sscan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/pentest"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
@@ -55,6 +59,18 @@ var (
 // shutdownTimeout is the hard deadline for graceful shutdown
 // (documentation/04-backend-architecture.md §10).
 const shutdownTimeout = 30 * time.Second
+
+// pentestSandboxUnavailable is a pentest.Runner fallback used only when no
+// GUARDPIPE_SANDBOX_IMAGE is configured — an operator who hasn't run `docker
+// compose build pentest-sandbox` yet still gets the engine registered
+// (visible in the live graph) rather than a silent absence, failing every
+// job cleanly with a clear reason instead of a startup crash. Once an image
+// is configured, pentestsandbox.Runner (Phase 12 Pass 2) is the real thing.
+type pentestSandboxUnavailable struct{}
+
+func (pentestSandboxUnavailable) Run(context.Context, pentest.RunSpec) (pentest.RawResult, error) {
+	return pentest.RawResult{}, fmt.Errorf("pentest: no GUARDPIPE_SANDBOX_IMAGE configured — run `docker compose build pentest-sandbox` and set it")
+}
 
 func main() {
 	// The distroless runtime image has no shell, curl, or wget, so a Docker
@@ -131,7 +147,7 @@ func run() error {
 		project.NewPDFTextExtractor(),
 		cfg.Security.EncryptionKeyRaw,
 		cfg.Pentest.AllowPrivateTargets,
-		cfg.Pentest.Allowlist,
+		cfg.Pentest.Denylist,
 	)
 
 	redisClient, err := queue.New(cfg.Data.RedisURL)
@@ -148,6 +164,7 @@ func run() error {
 	ruleRegistry.Register(k8sscan.Rules...)
 	ruleRegistry.Register(cicdscan.Rules...)
 	ruleRegistry.Register(docreview.Rules...)
+	ruleRegistry.Register(pentest.Rules...)
 
 	osvClient := osv.NewClient(cfg.External.OSVAPIURL, nil)
 	advisorySvc := advisory.NewService(
@@ -226,9 +243,48 @@ func run() error {
 	// engine itself decides how to fail, not whether it exists.
 	registry.Register(docreview.New(aiSvc))
 
+	// pentest (Phase 12 Pass 2) — pentestsandbox.Runner wraps adapters/sandbox
+	// with the pentest sandbox image (internal/scripts/pentest/Dockerfile),
+	// firewalling each container's own egress down to the pinned target IP
+	// (adapters/sandbox.NetworkTargetOnly). Falls back to
+	// pentestSandboxUnavailable only when no image is configured, so a
+	// dev machine that hasn't built the sandbox image yet still starts.
+	var pentestRunner pentest.Runner = pentestSandboxUnavailable{}
+	if cfg.Scanning.SandboxImage != "" {
+		sb := sandbox.New(dockerClient)
+		if n, sweepErr := sb.SweepOrphans(context.Background()); sweepErr != nil {
+			log.Error("pentest sandbox: sweep orphaned containers at startup", "error", sweepErr)
+		} else if n > 0 {
+			log.Info("pentest sandbox: removed orphaned containers from a previous run", "count", n)
+		}
+		realRunner, err := pentestsandbox.New(sb, cfg.Scanning.SandboxImage, cfg.Scanning.WorkspaceVolume, cfg.Scanning.WorkspaceRoot)
+		if err != nil {
+			return fmt.Errorf("initialise pentest sandbox runner: %w", err)
+		}
+		pentestRunner = realRunner
+	}
+	registry.Register(pentest.New(pentestRunner, net.DefaultResolver, cfg.Pentest.AllowPrivateTargets, cfg.Pentest.Denylist, advisorySvc))
+
+	// pentestCeiling is the hard cap CreateScan clamps every scan's
+	// pentest_config against (BUILD_GUIDE.md Phase 12) — Deep's own numbers
+	// already sit at the ceiling by construction (domain.ClampPentestScanConfig's
+	// doc comment), with the request-rate figure sourced from the same
+	// GUARDPIPE_PENTEST_RATE_LIMIT config value the (not-yet-built, Pass 2)
+	// sandboxed scripts will themselves be capped by.
+	pentestCeiling := domain.PentestPresetDeepConfig()
+	pentestCeiling.RequestRatePerSec = cfg.Pentest.RateLimit
+
+	// liveProgress is shared between the worker pool (writes, as an engine
+	// reports real stage progress) and the API's GetProgress (reads, on
+	// every ~2s poll) — one process, one in-memory store; see
+	// LiveProgress's own doc comment for why this isn't Redis-backed yet.
+	const defaultEngineTimeout = 5 * time.Minute
+	liveProgress := orchestrator.NewLiveProgress()
+
 	orchestratorSvc := orchestrator.NewService(
 		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),
-		projectSvc, jobQueue, registry,
+		projectSvc, jobQueue, registry, pentestCeiling,
+		liveProgress, cfg.Scanning.EngineTimeouts, defaultEngineTimeout,
 	)
 
 	pool := &orchestrator.Pool{
@@ -240,10 +296,12 @@ func run() error {
 		JobResults:     repo.NewJobResultRepo(db.Pool),
 		Projects:       projectSvc,
 		Documents:      projectSvc,
+		Targets:        projectSvc,
 		Cloner:         vcsSvc,
 		WorkspaceRoot:  cfg.Scanning.WorkspaceRoot,
 		EngineTimeouts: cfg.Scanning.EngineTimeouts,
-		DefaultTimeout: 5 * time.Minute,
+		DefaultTimeout: defaultEngineTimeout,
+		Progress:       liveProgress,
 		Log:            log,
 	}
 
@@ -273,6 +331,7 @@ func run() error {
 		ProjectSvc:      projectSvc,
 		AdvisorySvc:     advisorySvc,
 		OrchestratorSvc: orchestratorSvc,
+		AISvc:           aiSvc,
 		HealthDB:        db,
 		Version:         version,
 		CommitSHA:       commitSHA,

@@ -1,0 +1,230 @@
+package reporting_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
+)
+
+type fakeScanReader struct {
+	detail   *orchestrator.ScanDetail
+	findings []domain.Finding
+}
+
+func (f *fakeScanReader) GetScan(_ context.Context, _ domain.Actor, _ uuid.UUID) (*orchestrator.ScanDetail, error) {
+	return f.detail, nil
+}
+
+func (f *fakeScanReader) ListFindings(_ context.Context, _ domain.Actor, _ uuid.UUID, page orchestrator.Page) ([]domain.Finding, int, error) {
+	start := (page.Page - 1) * page.PageSize
+	if start >= len(f.findings) {
+		return nil, len(f.findings), nil
+	}
+	end := min(start+page.PageSize, len(f.findings))
+	return f.findings[start:end], len(f.findings), nil
+}
+
+type fakeProjectReader struct {
+	detail *project.ProjectDetail
+}
+
+func (f *fakeProjectReader) Get(_ context.Context, _ domain.Actor, _ uuid.UUID) (*project.ProjectDetail, error) {
+	return f.detail, nil
+}
+
+// fakeAI is a hand-written ai.Service stub — this package's own tests never
+// call a real provider, matching the project-wide "no mocking framework,
+// hand-written fakes only" rule (documentation/15-testing-strategy.md).
+type fakeAI struct {
+	result *ai.RunResult
+	err    error
+}
+
+func (f *fakeAI) Run(_ context.Context, _ ai.RunInput, _ func(domain.Finding)) (*ai.RunResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.result, nil
+}
+
+func sampleScanDetail() *orchestrator.ScanDetail {
+	started := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	finished := started.Add(3 * time.Minute)
+	branch := "main"
+	sha := "abc1234"
+	return &orchestrator.ScanDetail{
+		Scan: domain.Scan{
+			ID:            uuid.New(),
+			ProjectID:     uuid.New(),
+			Type:          domain.ScanTypeFullSupplyChain,
+			Status:        domain.ScanStatusCompleted,
+			Branch:        &branch,
+			CommitSHA:     &sha,
+			QueuedAt:      started.Add(-time.Minute),
+			StartedAt:     &started,
+			FinishedAt:    &finished,
+			FindingCounts: map[domain.Severity]int{domain.SeverityHigh: 1},
+			ScanNumber:    3,
+		},
+		Jobs: []orchestrator.JobDetail{
+			{
+				ScanJob: domain.ScanJob{
+					Engine: domain.EngineDepScan, Status: domain.JobStatusSucceeded,
+					StartedAt: &started, FinishedAt: &finished,
+				},
+				FindingCount: 1,
+			},
+			{
+				ScanJob: domain.ScanJob{
+					Engine: domain.EnginePentest, Status: domain.JobStatusSucceeded,
+					StartedAt: &started, FinishedAt: &finished,
+					Stats: map[string]any{
+						"target_host": "example.com",
+						"coverage": map[string]any{
+							"open_ports":            []any{80.0, 443.0},
+							"http_services_found":   2.0,
+							"tls_ports_checked":     1.0,
+							"nuclei_categories_run": []any{"exposures", "misconfiguration"},
+							"total_script_runs":     12.0,
+							"phases_completed":      []any{"recon", "service_id", "tls", "headers"},
+						},
+					},
+				},
+				FindingCount: 0,
+			},
+		},
+	}
+}
+
+func sampleProjectDetail() *project.ProjectDetail {
+	return &project.ProjectDetail{
+		Project: project.Project{Name: "Demo Project"},
+		Repository: &project.Repository{
+			Owner: "guardpipe", Name: "demo", DefaultBranch: "main",
+		},
+	}
+}
+
+func TestAssembler_Build_AssemblesScanProjectAndCoverage(t *testing.T) {
+	findings := []domain.Finding{
+		{Engine: domain.EngineDepScan, RuleID: "depscan.vuln.known-cve", Title: "Known CVE", Severity: domain.SeverityHigh, Remediation: "Upgrade the package."},
+	}
+	scans := &fakeScanReader{detail: sampleScanDetail(), findings: findings}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+
+	a := reporting.NewAssembler(scans, projects, nil, nil)
+	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v", err)
+	}
+
+	if data.ProjectName != "Demo Project" {
+		t.Errorf("ProjectName = %q, want %q", data.ProjectName, "Demo Project")
+	}
+	if data.RepositoryOwner != "guardpipe" || data.RepositoryName != "demo" {
+		t.Errorf("Repository = %s/%s, want guardpipe/demo", data.RepositoryOwner, data.RepositoryName)
+	}
+	if data.TotalFindings != 1 {
+		t.Errorf("TotalFindings = %d, want 1", data.TotalFindings)
+	}
+	if data.PentestTargetHost != "example.com" {
+		t.Errorf("PentestTargetHost = %q, want example.com", data.PentestTargetHost)
+	}
+
+	var pentestJob *reporting.JobSummary
+	for i := range data.Jobs {
+		if data.Jobs[i].Engine == domain.EnginePentest {
+			pentestJob = &data.Jobs[i]
+		}
+	}
+	if pentestJob == nil {
+		t.Fatal("no pentest job in assembled report")
+	}
+	if pentestJob.Coverage == nil {
+		t.Fatal("pentest job's Coverage is nil — a clean pentest run must still report what it checked")
+	}
+	if pentestJob.Coverage.TotalScriptRuns != 12 {
+		t.Errorf("Coverage.TotalScriptRuns = %d, want 12", pentestJob.Coverage.TotalScriptRuns)
+	}
+	if len(pentestJob.Coverage.OpenPorts) != 2 {
+		t.Errorf("Coverage.OpenPorts = %v, want 2 entries", pentestJob.Coverage.OpenPorts)
+	}
+
+	// AI is nil in this test — the report must still be fully usable without it.
+	if data.ExecutiveSummary != "" {
+		t.Errorf("ExecutiveSummary = %q, want empty when ai.Service is nil", data.ExecutiveSummary)
+	}
+}
+
+func TestAssembler_Build_SortsFindingsWorstFirst(t *testing.T) {
+	findings := []domain.Finding{
+		{Engine: domain.EngineDepScan, RuleID: "a", Title: "Low", Severity: domain.SeverityLow},
+		{Engine: domain.EngineDepScan, RuleID: "b", Title: "Critical", Severity: domain.SeverityCritical},
+		{Engine: domain.EngineDepScan, RuleID: "c", Title: "Medium", Severity: domain.SeverityMedium},
+	}
+	scans := &fakeScanReader{detail: sampleScanDetail(), findings: findings}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+
+	a := reporting.NewAssembler(scans, projects, nil, nil)
+	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v", err)
+	}
+	if len(data.Findings) != 3 || data.Findings[0].Severity != domain.SeverityCritical {
+		t.Fatalf("Findings not sorted worst-first: %+v", data.Findings)
+	}
+	if data.Findings[2].Severity != domain.SeverityLow {
+		t.Fatalf("last finding = %v, want low", data.Findings[2].Severity)
+	}
+}
+
+func TestAssembler_Build_AttachesAIExecutiveSummaryWhenAvailable(t *testing.T) {
+	scans := &fakeScanReader{detail: sampleScanDetail()}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	stub := &fakeAI{result: &ai.RunResult{Value: ai.ScanSummaryResponse{
+		Summary:       "The scan found one high-severity issue.",
+		TopPriorities: []string{"Fix the CVE", "Rotate credentials", "Enable HSTS"},
+	}}}
+
+	a := reporting.NewAssembler(scans, projects, stub, nil)
+	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v", err)
+	}
+	if data.ExecutiveSummary == "" {
+		t.Error("ExecutiveSummary is empty, want the AI-authored summary")
+	}
+	if len(data.TopPriorities) != 3 {
+		t.Errorf("TopPriorities = %v, want 3 items", data.TopPriorities)
+	}
+}
+
+func TestAssembler_Build_NearMiss_AIFailureNeverFailsBuild(t *testing.T) {
+	// The near-miss half of the AI-attachment behaviour: Gemini being down
+	// (or returning an error/discard) must degrade the report, not break it —
+	// same fallback contract every AI-consuming engine already follows.
+	scans := &fakeScanReader{detail: sampleScanDetail()}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	stub := &fakeAI{err: errors.New("gemini: 429 resource exhausted")}
+
+	a := reporting.NewAssembler(scans, projects, stub, nil)
+	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v — an AI failure must not fail the whole report", err)
+	}
+	if data.ExecutiveSummary != "" {
+		t.Errorf("ExecutiveSummary = %q, want empty when the AI call failed", data.ExecutiveSummary)
+	}
+	if data.TotalFindings != 0 {
+		t.Errorf("TotalFindings = %d, want 0 (no findings were seeded in this test)", data.TotalFindings)
+	}
+}
