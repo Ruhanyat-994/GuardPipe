@@ -7,6 +7,7 @@ package repo_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -165,6 +166,36 @@ func TestScanRepo_SetCancelRequested(t *testing.T) {
 	got, err := scans.GetByID(ctx, scan.ID)
 	require.NoError(t, err)
 	require.True(t, got.CancelRequested)
+}
+
+func TestScanRepo_MarkStarted_SetsStatusAndTimestampOnce(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	scans := repo.NewScanRepo(pool)
+
+	scan := &domain.Scan{ID: id.New(), ProjectID: projectID, Type: domain.ScanTypeFullSupplyChain, Status: domain.ScanStatusQueued, RequestedEngines: []domain.EngineID{domain.EngineDepScan}}
+	require.NoError(t, scans.Create(ctx, scan))
+
+	require.NoError(t, scans.MarkStarted(ctx, scan.ID))
+
+	got, err := scans.GetByID(ctx, scan.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.ScanStatusRunning, got.Status)
+	require.NotNil(t, got.StartedAt)
+	firstStartedAt := *got.StartedAt
+
+	// Near-miss: a second call (every job after the first one claimed for
+	// this scan, worker.go) must be a no-op — it must not overwrite
+	// StartedAt with a later time or revert a status a concurrent job
+	// completion has since moved to something terminal.
+	time.Sleep(10 * time.Millisecond)
+	require.NoError(t, scans.MarkStarted(ctx, scan.ID))
+
+	got2, err := scans.GetByID(ctx, scan.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.ScanStatusRunning, got2.Status)
+	require.WithinDuration(t, firstStartedAt, *got2.StartedAt, 0, "MarkStarted must not update StartedAt once already set")
 }
 
 func TestScanJobRepo_CreateListAndMarkRunning(t *testing.T) {

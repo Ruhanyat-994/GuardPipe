@@ -25,6 +25,10 @@ type CreateScanInput struct {
 	Type    domain.ScanType
 	Engines []domain.EngineID
 	Branch  string
+	// PentestConfig is optional — nil means "use the server-side default"
+	// (Stealth, literally, not just a UI suggestion — BUILD_GUIDE.md Phase
+	// 12). Ignored when the resolved engine set doesn't include pentest.
+	PentestConfig *domain.PentestScanConfig
 }
 
 // ScanDetail is a Scan plus its jobs — documentation/07-api-specification.md
@@ -33,6 +37,11 @@ type CreateScanInput struct {
 type ScanDetail struct {
 	domain.Scan
 	Jobs []JobDetail
+	// PentestConfigClamped names any PentestConfig field CreateScan reduced
+	// to fit the server-side ceiling ("scan speed capped at 10 req/s") —
+	// populated only by CreateScan's own response, not persisted or
+	// returned by GetScan later (BUILD_GUIDE.md Phase 12).
+	PentestConfigClamped []string
 }
 
 // OrgScanSummary is one row of the org-wide scan history (`GET /scans`) —
@@ -54,9 +63,16 @@ type JobDetail struct {
 // EngineProgress is one row of the progress-polling response
 // (documentation/07-api-specification.md §5's `GET /scans/{id}/progress`).
 type EngineProgress struct {
-	Engine       domain.EngineID
-	Status       domain.JobStatus
-	ProgressPct  int
+	Engine      domain.EngineID
+	Status      domain.JobStatus
+	ProgressPct int
+	// Activity is a real, live "what's happening right now" label — an
+	// engine's own reported stage (pentest's actual phase names, e.g.
+	// "Fuzzing for hidden paths and files") when one exists, empty
+	// otherwise. Empty is a normal value, not a bug: the frontend already
+	// has a generic per-engine fallback label (lib/engines.ts) for engines
+	// that don't report named stages.
+	Activity     string
 	FindingCount int
 }
 

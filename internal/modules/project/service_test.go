@@ -373,7 +373,7 @@ type testDeps struct {
 	audit        *fakeAuditService
 	urlFetcher   *fakeURLFetcher
 	pdfExtractor *fakePDFExtractor
-	allowlist    []string
+	denylist     []string
 }
 
 // fakeAuditService is a hand-written fake — no mocking framework, matching
@@ -415,13 +415,13 @@ func newTestDeps() *testDeps {
 		audit:        &fakeAuditService{},
 		urlFetcher:   &fakeURLFetcher{contentType: "text/plain", body: []byte("Imported document content.")},
 		pdfExtractor: &fakePDFExtractor{text: "Extracted PDF content."},
-		allowlist:    []string{"acme.example"},
+		denylist:     nil,
 	}
 }
 
 func (d *testDeps) build() project.Service {
 	key := make([]byte, crypto.KeySize)
-	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.documents, d.users, d.vcs, d.resolver, d.audit, d.urlFetcher, d.pdfExtractor, key, false, d.allowlist)
+	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.documents, d.users, d.vcs, d.resolver, d.audit, d.urlFetcher, d.pdfExtractor, key, false, d.denylist)
 }
 
 // fakeURLFetcher is a hand-written fake for project.URLFetcher — no
@@ -463,6 +463,7 @@ func TestCreate_NoRepository(t *testing.T) {
 	require.Equal(t, "Payments API", detail.Name)
 	require.Nil(t, detail.Repository)
 	require.False(t, detail.HasCredential)
+	require.False(t, detail.HasAttestedTarget)
 }
 
 // TestCreate_RecordsAuditEntry is BUILD_GUIDE.md Phase 6's retroactive
@@ -753,6 +754,24 @@ func TestRegisterTarget_BlockedAddress(t *testing.T) {
 	requireCode(t, err, apperrors.KindUnprocessable, "target.blocked_address")
 }
 
+// TestRegisterTarget_DenylistedHost is the near-miss complement to
+// TestRegisterTarget_ThenAttest_FullFlow's true positive: a public,
+// resolvable host is still rejected when it's explicitly denylisted, even
+// though it isn't in any blocked private range.
+func TestRegisterTarget_DenylistedHost(t *testing.T) {
+	d := newTestDeps()
+	d.resolver["evil.example"] = ipAddrs("203.0.113.20")
+	d.denylist = []string{"evil.example"}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.RegisterTarget(context.Background(), actor, detail.ID, project.TargetInput{Target: "evil.example"})
+	requireCode(t, err, apperrors.KindUnprocessable, "target.blocked_address")
+}
+
 func TestRegisterTarget_ThenAttest_FullFlow(t *testing.T) {
 	d := newTestDeps()
 	d.resolver["staging.acme.example"] = ipAddrs("203.0.113.10")
@@ -782,6 +801,37 @@ func TestRegisterTarget_ThenAttest_FullFlow(t *testing.T) {
 	require.Equal(t, "target.attested", last.Action)
 	require.NotNil(t, last.IP)
 	require.Equal(t, "203.0.113.99", last.IP.String())
+}
+
+// TestGet_HasAttestedTarget is the true-positive complement to
+// TestCreate_NoRepository's near-miss: once a target is registered and
+// attested, ProjectDetail.HasAttestedTarget must flip true — this is what
+// lets orchestrator.resolveEngines and the frontend's engine picker both
+// know pentest is runnable without a second targets round trip.
+func TestGet_HasAttestedTarget(t *testing.T) {
+	d := newTestDeps()
+	d.resolver["staging.acme.example"] = ipAddrs("203.0.113.10")
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	target, err := svc.RegisterTarget(context.Background(), actor, detail.ID, project.TargetInput{Target: "staging.acme.example"})
+	require.NoError(t, err)
+
+	reGet, err := svc.Get(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.False(t, reGet.HasAttestedTarget, "registered but not yet attested must not count")
+
+	_, _, err = svc.AttestTarget(context.Background(), actor, target.ID, project.AttestationInput{
+		AttestationTextVersion: "v1", Accepted: true, SourceIP: "203.0.113.99",
+	})
+	require.NoError(t, err)
+
+	reGet, err = svc.Get(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.True(t, reGet.HasAttestedTarget)
 }
 
 func TestAttestTarget_RequiresAcceptance(t *testing.T) {

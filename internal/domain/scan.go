@@ -71,4 +71,9 @@ type Scan struct {
 	// stored — a human-readable "Scan #3" in place of a meaningless UUID
 	// prefix in the UI.
 	ScanNumber int
+	// PentestConfig is nil for a scan with no pentest job; once one exists,
+	// this is always populated (at minimum DefaultPentestScanConfig, never
+	// left nil-meaning-Stealth) — see BUILD_GUIDE.md Phase 12's "default-to-
+	// Stealth is literal, not just a UI default" rule.
+	PentestConfig *PentestScanConfig
 }

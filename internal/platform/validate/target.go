@@ -17,7 +17,7 @@ var ErrTargetMalformed = errors.New("validate: target is not a valid hostname or
 var ErrTargetUnresolvable = errors.New("validate: target host does not resolve to any address")
 
 // ErrTargetBlocked means every resolved address (or the only one checked)
-// falls in a blocked range, or the host isn't covered by the allowlist.
+// falls in a blocked range, or the host matches the denylist.
 var ErrTargetBlocked = errors.New("validate: target address is blocked")
 
 // targetErr carries a caller-facing Error() string that stays clean of the
@@ -51,12 +51,15 @@ type Resolver interface {
 // ResolveTarget implements the flowchart in
 // documentation/05-module-specifications.md §4: parse → DNS resolve → reject
 // private/loopback/link-local/multicast/metadata addresses unless
-// allowPrivate → require an allowlist match. allowlist entries match a host
-// exactly or as a suffix (so "example.com" also matches
-// "staging.example.com"); a nil/empty allowlist matches nothing — a pentest
-// target must be explicitly allowlisted, there is no "allow everything"
-// default for a feature that launches real network probes.
-func ResolveTarget(ctx context.Context, resolver Resolver, target string, allowPrivate bool, allowlist []string) (*TargetResolution, error) {
+// allowPrivate → reject a denylist match. Any other publicly-resolvable host
+// is accepted by default — a hosted product can't pre-enumerate every
+// customer's target domain, so the operator-controlled list is a denylist
+// (specific hosts we've decided to refuse), not an allowlist. The
+// authorisation attestation (FR-PEN-001) plus the private/metadata range
+// block plus this denylist together form the actual safety boundary; a
+// denylist entry matches a host exactly or as a suffix (so "evil.example"
+// also blocks "sub.evil.example").
+func ResolveTarget(ctx context.Context, resolver Resolver, target string, allowPrivate bool, denylist []string) (*TargetResolution, error) {
 	host, err := normalizeTargetHost(target)
 	if err != nil {
 		return nil, err
@@ -80,8 +83,8 @@ func ResolveTarget(ctx context.Context, resolver Resolver, target string, allowP
 		}
 	}
 
-	if !hostAllowlisted(host, allowlist) {
-		return nil, &targetErr{sentinel: ErrTargetBlocked, detail: fmt.Sprintf("%s is not in the pentest target allowlist", host)}
+	if hostDenied(host, denylist) {
+		return nil, &targetErr{sentinel: ErrTargetBlocked, detail: fmt.Sprintf("%s is on the pentest target denylist", host)}
 	}
 
 	return &TargetResolution{NormalizedHost: host, PinnedIPs: ips}, nil
@@ -128,11 +131,11 @@ func isBlockedRange(ip net.IP) bool {
 		ip.IsMulticast()
 }
 
-// hostAllowlisted matches host against allowlist entries exactly or as a
-// dot-boundary suffix, so an entry of "acme.example" also allows
-// "staging.acme.example" without allowing "evilacme.example".
-func hostAllowlisted(host string, allowlist []string) bool {
-	for _, entry := range allowlist {
+// hostDenied matches host against denylist entries exactly or as a
+// dot-boundary suffix, so an entry of "evil.example" also blocks
+// "sub.evil.example" without blocking "notevil.example".
+func hostDenied(host string, denylist []string) bool {
+	for _, entry := range denylist {
 		entry = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(entry, "*.")))
 		if entry == "" {
 			continue

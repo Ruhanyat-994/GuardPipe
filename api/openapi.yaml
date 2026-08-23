@@ -16,9 +16,11 @@ info:
     (see its §12); per that document's own rule, "if code and docs disagree,
     one of them is a bug — open an issue, don't let them silently diverge."
     A few endpoints described there (finding detail/triage/history/explain,
-    the dashboard/trend endpoints, SSE progress, report export, GitHub
-    webhooks) are not yet wired into the router and are intentionally absent
-    from this file until they are.
+    the dashboard/trend endpoints, SSE progress, GitHub webhooks) are not yet
+    wired into the router and are intentionally absent from this file until
+    they are. `GET /scans/{id}/export` *is* wired (json/csv/pdf, pulled
+    forward ahead of the rest of Phase 13's `reporting` module) and appears
+    below.
 
     ### Conventions
     - Base path `/api/v1` for the product API; `/healthz`, `/readyz`,
@@ -876,6 +878,52 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/scans/{id}/export:
+    parameters:
+      - $ref: "#/components/parameters/ScanId"
+    get:
+      tags: [Scans]
+      summary: Export a scan report
+      description: >-
+        A self-contained report snapshot (metadata, every job's stats —
+        including pentest's coverage summary — every finding with its
+        deterministic remediation, and an AI-authored executive summary when
+        AI is configured), distinct from `GET /scans/{id}`'s live shape.
+        `modules/reporting`'s export slice only, pulled forward ahead of the
+        rest of Phase 13 — no `risk` block, since `modules/scoring` isn't
+        built yet. `format=sarif` is not implemented and returns 400, not
+        the 501 an earlier draft of this endpoint described.
+      operationId: exportScan
+      parameters:
+        - name: format
+          in: query
+          description: Defaults to `json` when omitted.
+          schema:
+            type: string
+            enum: [json, csv, pdf]
+      responses:
+        "200":
+          description: >-
+            The report in the requested format, served as an attachment
+            (`Content-Disposition: attachment`).
+          content:
+            application/json:
+              schema:
+                type: object
+            text/csv:
+              schema:
+                type: string
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/Validation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   # ------------------------------------------------------------------ Rules
   /api/v1/rules:
     get:
@@ -1472,6 +1520,14 @@ components:
         engine: { $ref: "#/components/schemas/EngineID" }
         status: { $ref: "#/components/schemas/JobStatus" }
         progress_pct: { type: integer, minimum: 0, maximum: 100 }
+        activity:
+          type: string
+          description: >-
+            A real, live "what's happening right now" label — present only
+            when the engine reported an actual named stage of its own
+            (pentest's real phases, today). Absent for every other engine,
+            which still gets a real (elapsed-time-based) progress_pct, just
+            no stage name to go with it.
         finding_count: { type: integer }
       required: [engine, status, progress_pct, finding_count]
 

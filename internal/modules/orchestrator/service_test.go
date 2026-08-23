@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -94,6 +95,21 @@ func (f *fakeScanRepo) SetCancelRequested(_ context.Context, scanID uuid.UUID) e
 	return nil
 }
 
+// MarkStarted mirrors the real repo's idempotent "only from queued" guard —
+// a no-op, not an error, once the scan has already moved past queued.
+func (f *fakeScanRepo) MarkStarted(_ context.Context, scanID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.byID[scanID]
+	if !ok || s.Status != domain.ScanStatusQueued {
+		return nil
+	}
+	s.Status = domain.ScanStatusRunning
+	now := time.Now()
+	s.StartedAt = &now
+	return nil
+}
+
 type fakeScanJobRepo struct {
 	mu   sync.Mutex
 	byID map[uuid.UUID]*domain.ScanJob
@@ -141,6 +157,11 @@ func (f *fakeScanJobRepo) MarkRunning(_ context.Context, jobID uuid.UUID) error 
 		return apperrors.NotFound("job.not_found", "job not found")
 	}
 	j.Status = domain.JobStatusRunning
+	// Mirrors the real repo's `SET status = 'running', started_at = now()`
+	// (internal/store/repo/scan_job_repo.go) — GetProgress's elapsed-time
+	// fallback needs a real StartedAt to compute against.
+	now := time.Now()
+	j.StartedAt = &now
 	return nil
 }
 
@@ -293,10 +314,26 @@ func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestra
 type fakeProjectAccess struct {
 	detail *project.ProjectDetail
 	err    error
+
+	// target/targetErr drive GetAttestedTarget — target set means "an
+	// attested target exists," nil (the zero value) means "none," matching
+	// project.Service.GetAttestedTarget's own not-found-on-none contract.
+	target    *project.Target
+	targetErr error
 }
 
 func (f *fakeProjectAccess) Get(context.Context, domain.Actor, uuid.UUID) (*project.ProjectDetail, error) {
 	return f.detail, f.err
+}
+
+func (f *fakeProjectAccess) GetAttestedTarget(context.Context, uuid.UUID) (*project.Target, error) {
+	if f.targetErr != nil {
+		return nil, f.targetErr
+	}
+	if f.target == nil {
+		return nil, apperrors.NotFound("project.pentest_target_not_found", "no attested pentest target attached to this project")
+	}
+	return f.target, nil
 }
 
 type fakeEnqueuer struct {
@@ -329,6 +366,14 @@ func newActor() domain.Actor {
 	return domain.Actor{UserID: id.New(), OrgID: id.New(), Role: domain.RoleMember}
 }
 
+// newTestOrchestrator's fixture project carries a Repository (non-nil, empty
+// value is enough — resolveEngines only checks presence) precisely because
+// resolveEngines now excludes repository-based engines from a repo-less
+// project: the existing "full supply chain runs every registered engine"
+// tests below assume depscan actually runs, which requires a repository to
+// be attached. Repo/target-gating itself is exercised separately by
+// TestCreateScan_FullSupplyChain_ExcludesEnginesTheProjectCantRun and its
+// siblings, which build their own fakeProjectAccess per case.
 func newTestOrchestrator(t *testing.T) (orchestrator.Service, *fakeScanRepo, *fakeScanJobRepo, *fakeFindingRepo, *fakeEnqueuer, *fakeJobResultRepo) {
 	t.Helper()
 	scans := newFakeScanRepo()
@@ -340,9 +385,12 @@ func newTestOrchestrator(t *testing.T) (orchestrator.Service, *fakeScanRepo, *fa
 	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
 
 	projectID := id.New()
-	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}}}
+	projects := &fakeProjectAccess{detail: &project.ProjectDetail{
+		Project:    project.Project{ID: projectID},
+		Repository: &project.Repository{},
+	}}
 
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
 	return svc, scans, jobs, findings, enqueuer, jobResults
 }
 
@@ -383,6 +431,137 @@ func TestCreateScan_Partial_RequiresEnginesList(t *testing.T) {
 	require.Error(t, err)
 }
 
+// newGatingOrchestrator builds an orchestrator.Service with a registry
+// carrying exactly depscan (repository-based) and pentest (target-based),
+// and the given project fixture — the shared setup every resolveEngines
+// gating test below needs, since each case needs its own repo/target shape.
+func newGatingOrchestrator(t *testing.T, projects *fakeProjectAccess) orchestrator.Service {
+	t.Helper()
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	enqueuer := &fakeEnqueuer{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(fakeEngine{id: domain.EngineDepScan})
+	registry.Register(fakeEngine{id: domain.EnginePentest})
+	return orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
+}
+
+// TestCreateScan_FullSupplyChain_ExcludesEnginesTheProjectCantRun is the
+// true-positive half: a project with only an attested target (no
+// repository) gets exactly [pentest] from a full_supply_chain request —
+// depscan's job is never even created, not created-then-failed.
+func TestCreateScan_FullSupplyChain_ExcludesEnginesTheProjectCantRun(t *testing.T) {
+	projectID := id.New()
+	projects := &fakeProjectAccess{
+		detail: &project.ProjectDetail{Project: project.Project{ID: projectID}}, // no Repository
+		target: &project.Target{ID: id.New(), Status: project.TargetAttested},
+	}
+	svc := newGatingOrchestrator(t, projects)
+
+	detail, err := svc.CreateScan(context.Background(), newActor(), projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	require.Equal(t, []domain.EngineID{domain.EnginePentest}, detail.RequestedEngines)
+}
+
+// TestCreateScan_FullSupplyChain_RepoOnlyProjectExcludesPentest is the
+// near-miss complement: a project with a repository but no attested target
+// must not fire pentest just because a repo-based engine is available.
+func TestCreateScan_FullSupplyChain_RepoOnlyProjectExcludesPentest(t *testing.T) {
+	projectID := id.New()
+	projects := &fakeProjectAccess{
+		detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}},
+		// target left nil — no attested target
+	}
+	svc := newGatingOrchestrator(t, projects)
+
+	detail, err := svc.CreateScan(context.Background(), newActor(), projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	require.Equal(t, []domain.EngineID{domain.EngineDepScan}, detail.RequestedEngines)
+}
+
+// TestCreateScan_FullSupplyChain_BothAttachedRunsEverything confirms a
+// project with both a repository and an attested target gets every
+// registered engine from one full_supply_chain request — no separate
+// pentest_only call required once both are attached.
+func TestCreateScan_FullSupplyChain_BothAttachedRunsEverything(t *testing.T) {
+	projectID := id.New()
+	projects := &fakeProjectAccess{
+		detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}},
+		target: &project.Target{ID: id.New(), Status: project.TargetAttested},
+	}
+	svc := newGatingOrchestrator(t, projects)
+
+	detail, err := svc.CreateScan(context.Background(), newActor(), projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []domain.EngineID{domain.EngineDepScan, domain.EnginePentest}, detail.RequestedEngines)
+}
+
+// TestCreateScan_FullSupplyChain_NeitherAttachedHasNoEngines is the
+// near-miss floor: a project with neither a repository nor a target has
+// nothing runnable at all, and must fail loudly (scan.no_engines_available)
+// rather than silently create a scan with zero jobs.
+func TestCreateScan_FullSupplyChain_NeitherAttachedHasNoEngines(t *testing.T) {
+	projectID := id.New()
+	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}}}
+	svc := newGatingOrchestrator(t, projects)
+
+	_, err := svc.CreateScan(context.Background(), newActor(), projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.Error(t, err)
+	var appErr *apperrors.Error
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, "scan.no_engines_available", appErr.Code)
+}
+
+// TestCreateScan_PentestOnly_RequiresAttestedTarget is the near-miss half of
+// FR-PEN-013's standalone pentest path: no attested target means a 422, not
+// a scan silently created with zero jobs.
+func TestCreateScan_PentestOnly_RequiresAttestedTarget(t *testing.T) {
+	projectID := id.New()
+	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}}}
+	svc := newGatingOrchestrator(t, projects)
+
+	_, err := svc.CreateScan(context.Background(), newActor(), projectID, orchestrator.CreateScanInput{Type: domain.ScanTypePentestOnly})
+	require.Error(t, err)
+	var appErr *apperrors.Error
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, apperrors.KindUnprocessable, appErr.Kind)
+}
+
+// TestCreateScan_PentestOnly_IgnoresOtherRegisteredEngines is the true
+// positive: an attested target resolves pentest_only to exactly [pentest],
+// even though depscan is also registered and the project also has a repo.
+func TestCreateScan_PentestOnly_IgnoresOtherRegisteredEngines(t *testing.T) {
+	projectID := id.New()
+	projects := &fakeProjectAccess{
+		detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}},
+		target: &project.Target{ID: id.New(), Status: project.TargetAttested},
+	}
+	svc := newGatingOrchestrator(t, projects)
+
+	detail, err := svc.CreateScan(context.Background(), newActor(), projectID, orchestrator.CreateScanInput{Type: domain.ScanTypePentestOnly})
+	require.NoError(t, err)
+	require.Equal(t, []domain.EngineID{domain.EnginePentest}, detail.RequestedEngines)
+}
+
+// TestCreateScan_Partial_RejectsEngineTheProjectCantRun is the near-miss
+// complement to TestCreateScan_Partial_RejectsUnregisteredEngine: depscan IS
+// registered here, but this project has no repository, so an explicit
+// request for it must still be rejected loudly (422), not silently dropped.
+func TestCreateScan_Partial_RejectsEngineTheProjectCantRun(t *testing.T) {
+	projectID := id.New()
+	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}}} // no repo
+	svc := newGatingOrchestrator(t, projects)
+
+	_, err := svc.CreateScan(context.Background(), newActor(), projectID, orchestrator.CreateScanInput{
+		Type: domain.ScanTypePartial, Engines: []domain.EngineID{domain.EngineDepScan},
+	})
+	require.Error(t, err)
+	var appErr *apperrors.Error
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, apperrors.KindUnprocessable, appErr.Kind)
+}
+
 func TestCreateScan_UnknownProject_ReturnsNotFound(t *testing.T) {
 	scans := newFakeScanRepo()
 	jobs := newFakeScanJobRepo()
@@ -391,7 +570,7 @@ func TestCreateScan_UnknownProject_ReturnsNotFound(t *testing.T) {
 	registry := orchestrator.NewRegistry()
 	registry.Register(fakeEngine{id: domain.EngineDepScan})
 	projects := &fakeProjectAccess{err: apperrors.NotFound("project.not_found", "project not found")}
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
 
 	_, err := svc.CreateScan(context.Background(), newActor(), id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
 	require.Error(t, err)
@@ -452,7 +631,7 @@ func TestListScans_CrossOrgProject_ReturnsNotFound(t *testing.T) {
 	enqueuer := &fakeEnqueuer{}
 	registry := orchestrator.NewRegistry()
 	projects := &fakeProjectAccess{err: apperrors.NotFound("project.not_found", "project not found")}
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
 
 	_, _, err := svc.ListScans(context.Background(), newActor(), id.New(), orchestrator.Page{Page: 1, PageSize: 10})
 	require.Error(t, err)
@@ -493,6 +672,78 @@ func TestCancelScan_SetsFlag(t *testing.T) {
 	stored, err := scans.GetByID(context.Background(), detail.ID)
 	require.NoError(t, err)
 	require.True(t, stored.CancelRequested)
+}
+
+func TestGetProgress_PrefersLiveEngineReportedProgressOverElapsedFallback(t *testing.T) {
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	enqueuer := &fakeEnqueuer{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(fakeEngine{id: domain.EngineDepScan})
+	projectID := id.New()
+	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}}}
+	liveProgress := orchestrator.NewLiveProgress()
+	timeouts := map[domain.EngineID]time.Duration{domain.EngineDepScan: 10 * time.Minute}
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), liveProgress, timeouts, 5*time.Minute)
+
+	actor := newActor()
+	detail, err := svc.CreateScan(context.Background(), actor, projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	jobID := detail.Jobs[0].ID
+	require.NoError(t, jobs.MarkRunning(context.Background(), jobID))
+
+	// The engine itself reported a real, specific stage — GetProgress must
+	// surface exactly that, not fall back to an elapsed-time guess.
+	liveProgress.Set(jobID, 62, "Fuzzing for hidden files and paths")
+
+	progress, err := svc.GetProgress(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Len(t, progress.Engines, 1)
+	require.Equal(t, 62, progress.Engines[0].ProgressPct)
+	require.Equal(t, "Fuzzing for hidden files and paths", progress.Engines[0].Activity)
+}
+
+func TestGetProgress_NearMiss_FallsBackToRealElapsedTimeWhenEngineReportsNothing(t *testing.T) {
+	// An engine with no named stages of its own (every engine except
+	// pentest, today) must still show a real, moving number — computed from
+	// actual elapsed time against its own configured timeout, never a
+	// frozen constant.
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	enqueuer := &fakeEnqueuer{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(fakeEngine{id: domain.EngineDepScan})
+	projectID := id.New()
+	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}}}
+	liveProgress := orchestrator.NewLiveProgress() // no Set() call for this job — nothing reported
+	timeouts := map[domain.EngineID]time.Duration{domain.EngineDepScan: time.Second}
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), liveProgress, timeouts, 5*time.Minute)
+
+	actor := newActor()
+	detail, err := svc.CreateScan(context.Background(), actor, projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	jobID := detail.Jobs[0].ID
+	require.NoError(t, jobs.MarkRunning(context.Background(), jobID))
+
+	time.Sleep(300 * time.Millisecond) // ~30% of the 1s timeout above
+
+	progress, err := svc.GetProgress(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Len(t, progress.Engines, 1)
+	require.Empty(t, progress.Engines[0].Activity, "no engine-reported activity — the frontend's own generic fallback label applies")
+	require.Greater(t, progress.Engines[0].ProgressPct, 0)
+	require.Less(t, progress.Engines[0].ProgressPct, 100)
+
+	// The bug this also covers: a single-job scan's *overall* ProgressPct
+	// used to be `terminal_jobs / total_jobs`, which sits frozen at 0 for
+	// the entire time a scan's only job is running (0/1) and then jumps
+	// straight to 100 — exactly the "stuck at 0%, then suddenly 100%"
+	// behaviour reported live. It must now move with the same real
+	// per-job value already asserted above, not just count terminal jobs.
+	require.Equal(t, progress.Engines[0].ProgressPct, progress.ProgressPct,
+		"a scan with exactly one job must report that job's own live pct as the overall pct, not a frozen 0")
 }
 
 func TestGetScan_UnknownScan_ReturnsNotFound(t *testing.T) {

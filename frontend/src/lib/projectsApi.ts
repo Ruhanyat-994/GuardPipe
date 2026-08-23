@@ -32,6 +32,13 @@ export interface Project {
   status: 'active' | 'archived'
   repository: Repository | null
   has_credential: boolean
+  /** Whether this project has an attested pentest target — a cheap summary
+   * flag, not the target itself (targets stay their own resource via
+   * `listTargets`/`GET /projects/{id}/targets`). Drives which engines
+   * `lib/engines.ts`'s `isEngineRunnable` allows selecting. Optional because
+   * older/cached responses may not carry it yet — treated as `false` (no
+   * target) wherever it's missing. */
+  has_pentest_target?: boolean
   latest_scan: unknown
   created_at: string
 }
@@ -65,6 +72,26 @@ export interface Target {
 
 export interface TargetList {
   data: Target[]
+}
+
+/** `documentation/07-api-specification.md` §4's example statement — the
+ * backend validates this is non-empty but doesn't store it verbatim (only
+ * `attestation_text_version` is persisted), so this is display copy, not a
+ * value the server checks character-for-character. */
+export const ATTESTATION_STATEMENT =
+  'I confirm I own or am explicitly authorised to test this target.'
+export const ATTESTATION_TEXT_VERSION = 'v1'
+
+export interface AttestedBy {
+  id: string
+  display_name: string
+}
+
+export interface TargetAttestation {
+  id: string
+  status: Target['status']
+  attested_at: string
+  attested_by: AttestedBy
 }
 
 /** A document uploaded for `docreview`'s AI architecture/security review
@@ -132,6 +159,18 @@ export function listTargets(projectId: string): Promise<TargetList> {
 
 export function registerTarget(projectId: string, target: string): Promise<Target> {
   return apiClient.post<Target>(`/projects/${projectId}/targets`, { target })
+}
+
+/** `POST /targets/{id}/attest` (documentation/07-api-specification.md §4) —
+ * note the path is target-scoped, not nested under the project. Required
+ * before any pentest scan can start (NFR-CMP-001); `target.not_attested`
+ * (409) otherwise. */
+export function attestTarget(targetId: string): Promise<TargetAttestation> {
+  return apiClient.post<TargetAttestation>(`/targets/${targetId}/attest`, {
+    attestation_text_version: ATTESTATION_TEXT_VERSION,
+    accepted: true,
+    statement: ATTESTATION_STATEMENT,
+  })
 }
 
 export function listDocuments(projectId: string): Promise<DocumentList> {

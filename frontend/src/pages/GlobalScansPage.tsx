@@ -26,23 +26,21 @@ export function GlobalScansPage() {
   const [scans, setScans] = useState<OrgScanSummary[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    listProjects()
+  const selectedProject = projects?.find((p) => p.id === selectedProjectId) ?? null
+
+  function loadProjects() {
+    return listProjects()
       .then((res) => {
-        if (cancelled) return
         setProjects(res.data)
-        if (res.data.length > 0) setSelectedProjectId(res.data[0].id)
+        setSelectedProjectId((current) => current || (res.data.length > 0 ? res.data[0].id : ''))
       })
       .catch((err: unknown) => {
-        if (!cancelled)
-          setProjectsError(
-            err instanceof ApiError ? err.problem.detail : 'Could not load projects.',
-          )
+        setProjectsError(err instanceof ApiError ? err.problem.detail : 'Could not load projects.')
       })
-    return () => {
-      cancelled = true
-    }
+  }
+
+  useEffect(() => {
+    void loadProjects()
   }, [])
 
   useEffect(() => {
@@ -124,8 +122,12 @@ export function GlobalScansPage() {
             </label>
           </Card>
 
-          {selectedProjectId && (
-            <ScanLauncher projectId={selectedProjectId} onStarted={handleStarted} />
+          {selectedProject && (
+            <ScanLauncher
+              project={selectedProject}
+              onStarted={handleStarted}
+              onProjectRefresh={() => void loadProjects()}
+            />
           )}
         </div>
       )}

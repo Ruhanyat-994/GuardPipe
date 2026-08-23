@@ -11,12 +11,32 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/handler"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/middleware"
 )
+
+// fakeReportBuilder is a hand-written handler.ReportBuilder fake — Export's
+// own tests are about the HTTP layer (content-type, Content-Disposition,
+// format validation), not report assembly, which internal/modules/reporting's
+// own tests already cover.
+type fakeReportBuilder struct {
+	data *reporting.ReportData
+	err  error
+}
+
+func (f *fakeReportBuilder) Build(context.Context, domain.Actor, uuid.UUID) (*reporting.ReportData, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.data != nil {
+		return f.data, nil
+	}
+	return &reporting.ReportData{ScanNumber: 1, FindingCounts: map[domain.Severity]int{}}, nil
+}
 
 // fakeOrchestratorService is a hand-written fake — these tests are about
 // the HTTP layer, business logic is covered by
@@ -54,6 +74,10 @@ func (f *fakeOrchestratorService) ListFindings(context.Context, domain.Actor, uu
 }
 
 func newScanRouter(svc orchestrator.Service) *gin.Engine {
+	return newScanRouterWithReports(svc, &fakeReportBuilder{})
+}
+
+func newScanRouterWithReports(svc orchestrator.Service, reports handler.ReportBuilder) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.ErrorMapper())
 	r.Use(func(c *gin.Context) {
@@ -61,7 +85,7 @@ func newScanRouter(svc orchestrator.Service) *gin.Engine {
 		c.Next()
 	})
 
-	h := handler.NewScanHandler(svc, validate.New())
+	h := handler.NewScanHandler(svc, reports, validate.New())
 	r.POST("/projects/:id/scans", h.Create)
 	r.GET("/projects/:id/scans", h.List)
 	r.GET("/scans", h.ListForOrg)
@@ -69,6 +93,7 @@ func newScanRouter(svc orchestrator.Service) *gin.Engine {
 	r.GET("/scans/:id/progress", h.Progress)
 	r.POST("/scans/:id/cancel", h.Cancel)
 	r.GET("/scans/:id/findings", h.ListFindings)
+	r.GET("/scans/:id/export", h.Export)
 	return r
 }
 
@@ -215,6 +240,67 @@ func TestScanGet_InvalidUUID_Returns400(t *testing.T) {
 	r := newScanRouter(svc)
 
 	rec := doJSON(t, r, http.MethodGet, "/scans/not-a-uuid", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScanExport_DefaultFormatIsJSON(t *testing.T) {
+	svc := &fakeOrchestratorService{}
+	reports := &fakeReportBuilder{data: &reporting.ReportData{ScanNumber: 4, ProjectName: "Demo", FindingCounts: map[domain.Severity]int{}}}
+	r := newScanRouterWithReports(svc, reports)
+
+	rec := doJSON(t, r, http.MethodGet, "/scans/"+id.New().String()+"/export", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if disp := rec.Header().Get("Content-Disposition"); !strings.Contains(disp, "guardpipe-scan-4.json") {
+		t.Errorf("Content-Disposition = %q, want it to name guardpipe-scan-4.json", disp)
+	}
+}
+
+func TestScanExport_CSVFormat(t *testing.T) {
+	svc := &fakeOrchestratorService{}
+	reports := &fakeReportBuilder{data: &reporting.ReportData{ScanNumber: 1, FindingCounts: map[domain.Severity]int{}}}
+	r := newScanRouterWithReports(svc, reports)
+
+	rec := doJSON(t, r, http.MethodGet, "/scans/"+id.New().String()+"/export?format=csv", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Errorf("Content-Type = %q, want text/csv", ct)
+	}
+}
+
+func TestScanExport_PDFFormat(t *testing.T) {
+	svc := &fakeOrchestratorService{}
+	reports := &fakeReportBuilder{data: &reporting.ReportData{ScanNumber: 1, FindingCounts: map[domain.Severity]int{}}}
+	r := newScanRouterWithReports(svc, reports)
+
+	rec := doJSON(t, r, http.MethodGet, "/scans/"+id.New().String()+"/export?format=pdf", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/pdf") {
+		t.Errorf("Content-Type = %q, want application/pdf", ct)
+	}
+	if !strings.HasPrefix(rec.Body.String(), "%PDF") {
+		t.Error("body does not start with the PDF magic bytes")
+	}
+}
+
+func TestScanExport_NearMiss_UnsupportedFormatReturns400(t *testing.T) {
+	// sarif and any other unrecognised value must be a clean validation
+	// error, not a 500 or a silently-wrong format.
+	svc := &fakeOrchestratorService{}
+	reports := &fakeReportBuilder{data: &reporting.ReportData{FindingCounts: map[domain.Severity]int{}}}
+	r := newScanRouterWithReports(svc, reports)
+
+	rec := doJSON(t, r, http.MethodGet, "/scans/"+id.New().String()+"/export?format=sarif", nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
 	}

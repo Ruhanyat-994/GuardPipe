@@ -42,10 +42,33 @@ function subtitle(status: JobStatus, findingCount: number): string {
   }
 }
 
+function coverageSummary(stats: Record<string, unknown> | null | undefined): string | null {
+  const c = stats?.coverage
+  if (!c || typeof c !== 'object') return null
+  const cov = c as {
+    open_ports?: number[]
+    http_services_found?: number
+    tls_ports_checked?: number
+    total_script_runs?: number
+  }
+  const parts: string[] = []
+  if (typeof cov.total_script_runs === 'number') parts.push(`${cov.total_script_runs} checks run`)
+  if (Array.isArray(cov.open_ports)) parts.push(`${cov.open_ports.length} open ports`)
+  if (typeof cov.http_services_found === 'number') {
+    parts.push(`${cov.http_services_found} HTTP service${cov.http_services_found === 1 ? '' : 's'} probed`)
+  }
+  if (typeof cov.tls_ports_checked === 'number' && cov.tls_ports_checked > 0) {
+    parts.push(`${cov.tls_ports_checked} TLS port${cov.tls_ports_checked === 1 ? '' : 's'} checked`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
 function emptyMessage(
+  engine: Engine,
   status: JobStatus,
   errorReason: string | null,
   skipReason: string | null,
+  stats: Record<string, unknown> | null | undefined,
 ): string {
   switch (status) {
     case 'queued':
@@ -57,8 +80,18 @@ function emptyMessage(
       return skipReason ?? 'This engine was skipped for this scan.'
     case 'cancelled':
       return 'This scan was cancelled before this engine finished.'
-    case 'succeeded':
+    case 'succeeded': {
+      // pentest has no files to scan, so "came back clean" on its own reads
+      // as "did nothing" rather than "checked and found nothing" — surface
+      // what was actually probed instead (internal/engines/pentest/coverage.go).
+      if (engine === 'pentest') {
+        const summary = coverageSummary(stats)
+        return summary
+          ? `Target probed, no issues found — ${summary}.`
+          : 'This engine came back clean — no findings.'
+      }
       return 'This engine came back clean — no findings.'
+    }
   }
 }
 
@@ -82,6 +115,7 @@ export function EngineFindingsSection({
   gitRef,
   errorReason,
   skipReason,
+  stats = null,
   defaultExpanded = false,
 }: {
   engine: Engine
@@ -93,6 +127,7 @@ export function EngineFindingsSection({
   gitRef: string | null
   errorReason: string | null
   skipReason: string | null
+  stats?: Record<string, unknown> | null
   defaultExpanded?: boolean
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
@@ -172,7 +207,7 @@ export function EngineFindingsSection({
               />
             ) : (
               <p className="pb-4 text-body-sm text-text-secondary">
-                {emptyMessage(status, errorReason, skipReason)}
+                {emptyMessage(engine, status, errorReason, skipReason, stats)}
               </p>
             )
           ) : (

@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | Module Specifications |
 | **Project** | GuardPipe |
-| **Version** | 1.2 |
+| **Version** | 1.4 |
 | **Status** | Draft |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-16 |
+| **Last updated** | 2026-08-23 |
 
 ### Revision history
 
@@ -16,6 +16,8 @@
 | 1.0 | 2026-07-29 | Team | Initial module specifications |
 | 1.1 | 2026-08-14 | Team | §6 `codescan` rewritten: wraps a self-hosted SonarQube CE instance via `adapters/sonarqube` instead of implementing its own SAST engine, per external requirement — see [ADR-0011](17-adr/0011-codescan-wraps-sonarqube.md). §7's secret-sweep note and §16's rule-count summary updated to match; `depscan`'s secret sweep is now standalone rather than a planned shared package with `codescan` |
 | 1.2 | 2026-08-16 | Team | §9 `k8sscan` expanded ahead of Phase 9 starting: named the specific standards each rule family is grounded in (Pod Security Standards, CIS Kubernetes Benchmark's workload-level controls, NSA/CISA hardening guidance); Helm chart rendering promoted from Stretch to Core (offline template rendering only, vendored chart dependencies only, no cluster/network access — matches `02-srs.md` rev 1.3's FR-K8S-014), with new failure modes for unresolved dependencies and render errors that skip one chart rather than the whole engine |
+| 1.3 | 2026-08-23 | Team | §4's target-validation flowchart and §12's "Legal boundary" row flip from an allowlist to a denylist model: a hosted product can't ask an operator to pre-enumerate every customer's target domain, so any public, non-blocked-range host is now accepted by default and only explicitly denylisted hosts are rejected. Matches `02-srs.md` rev 1.4's FR-PRJ-007/FR-PEN-002, the actual contract-doc change this one follows |
+| 1.4 | 2026-08-23 | Team | §12 Pass 2 built: real sandboxed tool execution (`internal/scripts/pentest`, `internal/adapters/pentestsandbox`) replaces the stub `Runner` — naabu/nmap/httpx/whatweb/testssl.sh/curl/katana/gau/CeWL/ffuf/nuclei now actually run inside a dedicated, self-firewalling sandbox container (egress restricted to the pinned target IP from inside the container's own network namespace, closing the gap §4/§12 previously left open). Two new phases (crawl, wordlist-generation) feed the disclosure phase's `ffuf` runs with real target-derived paths. **Doc debt still open, not closed this pass**: §12's Phases-and-checks table still needs its Tool column added; `06-database-design.md`/`07-api-specification.md`'s `pentest_config` addenda from the Pass 1 revision are also still outstanding. Deliberately out of scope this pass, unchanged: the deliberately-vulnerable test-target app, and Stretch-tier passive subdomain enum/authenticated-scan reuse |
 
 > **How to use this document.** Read §1–2 fully, then read *your* module's section in full and skim the rest. Each engine section has a **Core / Stretch rule table** — Core rules are what you must have working on demo day. If time runs out, cut Stretch without asking.
 
@@ -241,9 +243,9 @@ flowchart TB
     D -->|yes| E{ALLOW_PRIVATE_TARGETS<br/>set in config?}
     E -->|no| R3[Reject: blocked address range]
     E -->|yes| F
-    D -->|no| F{Host matches<br/>PENTEST_ALLOWLIST?}
-    F -->|no| R4[Reject: not in allowlist]
-    F -->|yes| G[Store target + pinned IPs<br/>status = awaiting_attestation]
+    D -->|no| F{Host matches<br/>PENTEST_DENYLIST?}
+    F -->|yes| R4[Reject: denylisted host]
+    F -->|no| G[Store target + pinned IPs<br/>status = awaiting_attestation]
 ```
 
 Blocked by default: `10/8`, `172.16/12`, `192.168/16`, `127/8`, `::1`, `169.254/16` (including `169.254.169.254` cloud metadata), `fc00::/7`, `0.0.0.0`, and any address resolving to the GuardPipe host itself.
@@ -797,7 +799,7 @@ Each phase emits JSON Lines to stdout and human-readable progress to stderr. Pha
 | Denial of service, fuzzing at volume, resource exhaustion | Destructive |
 | Any request that writes, modifies, or deletes data (`PUT`/`POST`/`DELETE` beyond method *discovery*) | Destructive |
 | Requests exceeding the rate cap (default 10/s) | Prevents accidental DoS |
-| Targets outside the validated allowlist | Legal boundary |
+| Targets matching the pentest denylist, or a blocked private/metadata range | Legal boundary |
 
 These are enforced in the scripts **and** at the sandbox network layer, so a script bug cannot breach them alone. Defence in depth applies to our own tool.
 

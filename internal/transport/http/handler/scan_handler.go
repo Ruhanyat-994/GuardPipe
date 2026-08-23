@@ -1,26 +1,44 @@
 package handler
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/dto"
 )
 
+// ReportBuilder is the subset of *reporting.Assembler ScanHandler needs —
+// defined here (the consumer), same narrow-interface convention
+// internal/modules/reporting/assembler.go's own ScanReader/ProjectReader
+// already use, so a handler test substitutes a small fake instead of wiring
+// a real Assembler (which itself depends on orchestrator/project/ai
+// services).
+type ReportBuilder interface {
+	Build(ctx context.Context, actor domain.Actor, scanID uuid.UUID) (*reporting.ReportData, error)
+}
+
 // ScanHandler implements the scan and finding-list endpoints in
 // documentation/07-api-specification.md §5-6 that BUILD_GUIDE.md Phase 6
-// scopes — risk/AI/triage endpoints are Phase 13's.
+// scopes, plus the export endpoint (§5's `GET /scans/{id}/export`) pulled
+// forward from Phase 13 — risk/AI-enrichment/triage endpoints are still
+// Phase 13's.
 type ScanHandler struct {
 	svc       orchestrator.Service
+	reports   ReportBuilder
 	validator *validate.Validator
 }
 
-func NewScanHandler(svc orchestrator.Service, validator *validate.Validator) *ScanHandler {
-	return &ScanHandler{svc: svc, validator: validator}
+func NewScanHandler(svc orchestrator.Service, reports ReportBuilder, validator *validate.Validator) *ScanHandler {
+	return &ScanHandler{svc: svc, reports: reports, validator: validator}
 }
 
 // Create handles `POST /projects/{id}/scans` — 202 Accepted, asynchronous
@@ -179,6 +197,66 @@ func (h *ScanHandler) ListFindings(c *gin.Context) {
 		items[i] = dto.FromFinding(f)
 	}
 	c.JSON(http.StatusOK, dto.FindingListResponse{Data: items, Pagination: dto.NewPagination(page.Page, page.PageSize, total)})
+}
+
+// exportContentTypes maps a supported `?format=` value to its MIME type —
+// json is the Core default (documentation/07-api-specification.md §5),
+// csv/pdf are this build's promotion of that endpoint from "JSON only" to
+// the three formats a client actually chooses between.
+var exportContentTypes = map[string]string{
+	"json": "application/json",
+	"csv":  "text/csv",
+	"pdf":  "application/pdf",
+}
+
+// Export handles `GET /scans/{id}/export?format=json|csv|pdf` — a
+// self-contained report snapshot (metadata, coverage, all findings, and an
+// AI-authored executive summary when available), distinct from the live
+// paginated Get/ListFindings endpoints. `sarif` and any other unrecognised
+// value return 400 `scan.export_format_unsupported` — the API spec's
+// original `501` for a Stretch format that was never built simplifies to
+// this since sarif isn't implemented in this pass either.
+func (h *ScanHandler) Export(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	scanID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	format := c.DefaultQuery("format", "json")
+	contentType, ok := exportContentTypes[format]
+	if !ok {
+		c.Error(apperrors.Validation("scan.export_format_unsupported",
+			fmt.Sprintf("unsupported export format %q — use json, csv, or pdf", format), nil))
+		return
+	}
+
+	data, err := h.reports.Build(c.Request.Context(), actor, scanID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	var out []byte
+	var renderErr error
+	switch format {
+	case "json":
+		out, renderErr = reporting.RenderJSON(data)
+	case "csv":
+		out, renderErr = reporting.RenderCSV(data)
+	case "pdf":
+		out, renderErr = reporting.RenderPDF(data)
+	}
+	if renderErr != nil {
+		c.Error(apperrors.Internal(fmt.Errorf("render %s export: %w", format, renderErr)))
+		return
+	}
+
+	filename := fmt.Sprintf("guardpipe-scan-%d.%s", data.ScanNumber, format)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Data(http.StatusOK, contentType, out)
 }
 
 func (h *ScanHandler) bindAndValidate(c *gin.Context, req any) bool {

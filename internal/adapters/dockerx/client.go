@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	dockerclient "github.com/moby/moby/client"
 )
@@ -69,6 +70,22 @@ func (c *Client) PullImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("dockerx: read pull progress for %s: %w", ref, err)
 	}
 	return nil
+}
+
+// ImageExists reports whether ref already exists in the local image store,
+// without attempting to pull it — adapters/sandbox uses this to skip
+// PullImage for a locally-built-only tag (e.g. the pentest sandbox image),
+// which has nothing to pull from any registry and would otherwise fail
+// PullImage every run.
+func (c *Client) ImageExists(ctx context.Context, ref string) (bool, error) {
+	_, err := c.cli.ImageInspect(ctx, ref)
+	if err == nil {
+		return true, nil
+	}
+	if cerrdefs.IsNotFound(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("dockerx: inspect image %s: %w", ref, err)
 }
 
 // CreateContainer creates a container from config/hostConfig — both are

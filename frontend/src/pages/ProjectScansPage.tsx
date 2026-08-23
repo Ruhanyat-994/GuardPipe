@@ -16,7 +16,7 @@ import { listScans, type Scan, type ScanSummary } from '../lib/scansApi'
  * at `/scans/:id`.
  */
 export function ProjectScansPage() {
-  const { project } = useProjectContext()
+  const { project, refetch } = useProjectContext()
   const navigate = useNavigate()
   const [scans, setScans] = useState<ScanSummary[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -50,7 +50,7 @@ export function ProjectScansPage() {
       </div>
 
       <div className="mb-6">
-        <ScanLauncher projectId={project.id} onStarted={handleStarted} />
+        <ScanLauncher project={project} onStarted={handleStarted} onProjectRefresh={refetch} />
       </div>
 
       {loadError && (

@@ -10,11 +10,15 @@ import (
 // --- scans — documentation/07-api-specification.md §5 ---
 
 // CreateScanRequest matches `POST /projects/{id}/scans`. Engines is only
-// used when Type is "partial".
+// used when Type is "partial". PentestConfig is optional — omitted means
+// "use the server-side default" (Stealth, literally — BUILD_GUIDE.md Phase
+// 12's "default-to-Stealth is literal, not just a UI default" rule);
+// ignored when the resolved engine set doesn't include pentest.
 type CreateScanRequest struct {
-	Type    string   `json:"type" validate:"required,oneof=full_supply_chain partial pentest_only"`
-	Engines []string `json:"engines" validate:"omitempty,dive,oneof=docreview codescan depscan containerscan k8sscan cicdscan pentest"`
-	Branch  string   `json:"branch"`
+	Type          string                `json:"type" validate:"required,oneof=full_supply_chain partial pentest_only"`
+	Engines       []string              `json:"engines" validate:"omitempty,dive,oneof=docreview codescan depscan containerscan k8sscan cicdscan pentest"`
+	Branch        string                `json:"branch"`
+	PentestConfig *PentestConfigRequest `json:"pentest_config,omitempty"`
 }
 
 func (r CreateScanRequest) ToInput() orchestrator.CreateScanInput {
@@ -22,7 +26,81 @@ func (r CreateScanRequest) ToInput() orchestrator.CreateScanInput {
 	for i, e := range r.Engines {
 		engines[i] = domain.EngineID(e)
 	}
-	return orchestrator.CreateScanInput{Type: domain.ScanType(r.Type), Engines: engines, Branch: r.Branch}
+	in := orchestrator.CreateScanInput{Type: domain.ScanType(r.Type), Engines: engines, Branch: r.Branch}
+	if r.PentestConfig != nil {
+		cfg := r.PentestConfig.toDomain()
+		in.PentestConfig = &cfg
+	}
+	return in
+}
+
+// PentestConfigRequest is BUILD_GUIDE.md Phase 12's "client-controllable
+// scan intensity" request shape — a named preset, optionally with one or
+// more fields overridden (which switches the effective preset to "custom",
+// same rule domain.ClampPentestScanConfig itself enforces server-side).
+// Preset alone (no overrides) is the common case: pick a card, done.
+type PentestConfigRequest struct {
+	Preset             string   `json:"preset" validate:"omitempty,oneof=stealth standard deep custom"`
+	RequestRatePerSec  int      `json:"request_rate_per_sec,omitempty"`
+	PortBreadth        string   `json:"port_breadth,omitempty" validate:"omitempty,oneof=top100 top1000 top1000_service_detect"`
+	NucleiCategories   []string `json:"nuclei_categories,omitempty"`
+	PhaseBudgetSeconds int      `json:"phase_budget_seconds,omitempty"`
+}
+
+func (r *PentestConfigRequest) toDomain() domain.PentestScanConfig {
+	base := domain.PentestPresetStealthConfig()
+	switch domain.PentestPreset(r.Preset) {
+	case domain.PentestPresetStandard:
+		base = domain.PentestPresetStandardConfig()
+	case domain.PentestPresetDeep:
+		base = domain.PentestPresetDeepConfig()
+	}
+
+	if r.RequestRatePerSec > 0 {
+		base.RequestRatePerSec = r.RequestRatePerSec
+		base.Preset = domain.PentestPresetCustom
+	}
+	if r.PortBreadth != "" {
+		base.PortBreadth = domain.PentestPortBreadth(r.PortBreadth)
+		base.Preset = domain.PentestPresetCustom
+	}
+	if len(r.NucleiCategories) > 0 {
+		base.NucleiCategories = r.NucleiCategories
+		base.Preset = domain.PentestPresetCustom
+	}
+	if r.PhaseBudgetSeconds > 0 {
+		base.PhaseBudget = time.Duration(r.PhaseBudgetSeconds) * time.Second
+		base.Preset = domain.PentestPresetCustom
+	}
+	return base
+}
+
+// PentestConfigResponse mirrors PentestConfigRequest's shape back —
+// ScanResponse's copy is always the resolved, already-clamped-to-the-
+// ceiling config a scan actually ran (or will run) with, never the raw
+// client request. ClampedFields is populated only on the response to the
+// CreateScan call itself (BUILD_GUIDE.md Phase 12: "scan speed capped at 10
+// req/s"); a later GET /scans/{id} carries the resolved config with an
+// empty ClampedFields, since nothing was clamped *this read*.
+type PentestConfigResponse struct {
+	Preset             string   `json:"preset"`
+	RequestRatePerSec  int      `json:"request_rate_per_sec"`
+	PortBreadth        string   `json:"port_breadth"`
+	NucleiCategories   []string `json:"nuclei_categories"`
+	PhaseBudgetSeconds int      `json:"phase_budget_seconds"`
+	ClampedFields      []string `json:"clamped_fields,omitempty"`
+}
+
+func fromPentestConfig(cfg *domain.PentestScanConfig, clampedFields []string) *PentestConfigResponse {
+	if cfg == nil {
+		return nil
+	}
+	return &PentestConfigResponse{
+		Preset: string(cfg.Preset), RequestRatePerSec: cfg.RequestRatePerSec,
+		PortBreadth: string(cfg.PortBreadth), NucleiCategories: cfg.NucleiCategories,
+		PhaseBudgetSeconds: int(cfg.PhaseBudget / time.Second),
+		ClampedFields:      clampedFields,
+	}
 }
 
 // JobResponse is one entry in ScanResponse.Jobs.
@@ -68,6 +146,10 @@ type ScanResponse struct {
 	// ScanNumber is this scan's 1-based position among its own project's
 	// scans (oldest = 1) — the UI's "Scan #N" in place of a raw UUID prefix.
 	ScanNumber int `json:"scan_number"`
+	// PentestConfig is nil for a scan with no pentest job. BUILD_GUIDE.md
+	// Phase 12: "whatever preset/custom config was actually used is shown
+	// on the completed scan's detail view."
+	PentestConfig *PentestConfigResponse `json:"pentest_config"`
 }
 
 func FromScanDetail(d *orchestrator.ScanDetail) ScanResponse {
@@ -89,6 +171,7 @@ func FromScanDetail(d *orchestrator.ScanDetail) ScanResponse {
 		RequestedEngines: engines, Branch: d.Branch, CommitSHA: d.CommitSHA,
 		QueuedAt: d.QueuedAt, StartedAt: d.StartedAt, FinishedAt: d.FinishedAt,
 		FindingCounts: counts, Risk: nil, Jobs: jobs, ScanNumber: d.ScanNumber,
+		PentestConfig: fromPentestConfig(d.PentestConfig, d.PentestConfigClamped),
 	}
 }
 
@@ -150,9 +233,15 @@ type OrgScanListResponse struct {
 
 // EngineProgressResponse is one entry in ProgressResponse.Engines.
 type EngineProgressResponse struct {
-	Engine       string `json:"engine"`
-	Status       string `json:"status"`
-	ProgressPct  int    `json:"progress_pct"`
+	Engine      string `json:"engine"`
+	Status      string `json:"status"`
+	ProgressPct int    `json:"progress_pct"`
+	// Activity is a real, live "what's happening right now" label — an
+	// engine's own reported stage when it has one (pentest's actual phase
+	// names), omitted otherwise. Absence is normal, not an error: the
+	// frontend already has a generic per-engine fallback label for engines
+	// that don't report named stages.
+	Activity     string `json:"activity,omitempty"`
 	FindingCount int    `json:"finding_count"`
 }
 
@@ -170,7 +259,7 @@ func FromProgress(p *orchestrator.Progress) ProgressResponse {
 	for i, e := range p.Engines {
 		engines[i] = EngineProgressResponse{
 			Engine: string(e.Engine), Status: string(e.Status),
-			ProgressPct: e.ProgressPct, FindingCount: e.FindingCount,
+			ProgressPct: e.ProgressPct, Activity: e.Activity, FindingCount: e.FindingCount,
 		}
 	}
 	return ProgressResponse{ScanID: p.ScanID.String(), Status: string(p.Status), ProgressPct: p.ProgressPct, Engines: engines}

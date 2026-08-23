@@ -4,6 +4,7 @@ import { ArrowLeft, Ban } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, CardDescription } from '../components/ui/Card'
 import { EngineFindingsSection } from '../components/project/EngineFindingsSection'
+import { ExportScanButton } from '../components/project/ExportScanButton'
 import { PartialResultBanner } from '../components/project/PartialResultBanner'
 import { SupplyChainPipeline } from '../components/project/SupplyChainPipeline'
 import { ApiError } from '../lib/apiClient'
@@ -159,6 +160,7 @@ export function ScanDetailPage() {
               Cancel scan
             </Button>
           )}
+          {TERMINAL_STATUSES.has(scan.status) && <ExportScanButton scanId={scan.id} />}
           <span className="rounded-full bg-bg-subtle px-3 py-1 text-body-sm font-medium capitalize text-text-primary">
             {scan.status}
           </span>
@@ -174,7 +176,7 @@ export function ScanDetailPage() {
       <PartialResultBanner jobs={scan.jobs} />
 
       <div className="mb-6">
-        <SupplyChainPipeline progress={progress} jobs={scan.jobs} scan={scan} />
+        <SupplyChainPipeline progress={progress} jobs={scan.jobs} scan={scan} project={project} />
       </div>
 
       <div>
@@ -210,6 +212,7 @@ export function ScanDetailPage() {
                 }
                 errorReason={job.error_reason}
                 skipReason={job.skip_reason}
+                stats={job.stats}
                 defaultExpanded={scan.jobs.length === 1}
               />
             ))}

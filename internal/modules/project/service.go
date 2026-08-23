@@ -40,6 +40,19 @@ type Service interface {
 	AttestTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID, in AttestationInput) (*Target, *TargetAttestation, error)
 	RevokeTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID) error
 
+	// GetAttestedTarget is modules/orchestrator's background-worker read for
+	// the pentest engine — same no-actor shape as GetCloneInfo below (the
+	// worker isn't handling a per-request authorization check, it's
+	// processing a scan job whose creation was already authorized). A
+	// project can technically hold more than one target
+	// (documentation/06-database-design.md §4.7's constraint is
+	// UNIQUE(project_id, normalized_host), not UNIQUE(project_id)), but
+	// domain.ScanInput.Target is singular — this returns the first
+	// TargetAttested-status row found, a stated simplification rather than
+	// a silently arbitrary choice. Multi-target-per-scan is unsupported
+	// today.
+	GetAttestedTarget(ctx context.Context, projectID uuid.UUID) (*Target, error)
+
 	ListDocuments(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]Document, error)
 	UploadDocument(ctx context.Context, actor domain.Actor, projectID uuid.UUID, filename, mimeType string, content []byte) (*Document, error)
 	// ImportDocumentFromURL fetches a Google Docs/Drive share link
@@ -82,6 +95,12 @@ type ProjectDetail struct {
 	Repository     *Repository
 	HasCredential  bool
 	CredentialHint string
+	// HasAttestedTarget lets a caller (orchestrator.resolveEngines, the
+	// frontend's engine picker) know whether pentest can run here without a
+	// second GetAttestedTarget/GET .../targets round trip — cheap to compute
+	// alongside Repository/HasCredential in composeDetail, so it's included
+	// unconditionally rather than behind a separate lookup.
+	HasAttestedTarget bool
 }
 
 // ProjectRepository is defined by this package; implementation lives in
@@ -202,7 +221,7 @@ type service struct {
 	encryptionKey []byte
 
 	allowPrivateTargets bool
-	pentestAllowlist    []string
+	pentestDenylist     []string
 	attestationVersion  string
 }
 
@@ -224,7 +243,7 @@ func NewService(
 	pdfExtractor PDFTextExtractor,
 	encryptionKey []byte,
 	allowPrivateTargets bool,
-	pentestAllowlist []string,
+	pentestDenylist []string,
 ) Service {
 	return &service{
 		projects:            projects,
@@ -241,7 +260,7 @@ func NewService(
 		pdfExtractor:        pdfExtractor,
 		encryptionKey:       encryptionKey,
 		allowPrivateTargets: allowPrivateTargets,
-		pentestAllowlist:    pentestAllowlist,
+		pentestDenylist:     pentestDenylist,
 		attestationVersion:  "v1",
 	}
 }
@@ -481,12 +500,29 @@ func (s *service) ListTargets(ctx context.Context, actor domain.Actor, projectID
 	return targets, nil
 }
 
+// GetAttestedTarget is the worker-side counterpart to ListTargets — see the
+// Service interface's own doc comment for the no-actor reasoning and the
+// stated multi-target simplification.
+func (s *service) GetAttestedTarget(ctx context.Context, projectID uuid.UUID) (*Target, error) {
+	targets, err := s.targets.ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list targets: %w", err))
+	}
+	for _, t := range targets {
+		if t.Status == TargetAttested {
+			target := t
+			return &target, nil
+		}
+	}
+	return nil, apperrors.NotFound("project.pentest_target_not_found", "no attested pentest target attached to this project")
+}
+
 func (s *service) RegisterTarget(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in TargetInput) (*Target, error) {
 	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
 		return nil, err
 	}
 
-	resolution, err := validate.ResolveTarget(ctx, s.resolver, in.Target, s.allowPrivateTargets, s.pentestAllowlist)
+	resolution, err := validate.ResolveTarget(ctx, s.resolver, in.Target, s.allowPrivateTargets, s.pentestDenylist)
 	if err != nil {
 		return nil, translateTargetError(err)
 	}
@@ -821,6 +857,12 @@ func (s *service) composeDetail(ctx context.Context, p Project) (*ProjectDetail,
 		// no credential stored — not an error
 	default:
 		return nil, apperrors.Internal(fmt.Errorf("get credential info: %w", err))
+	}
+
+	if _, err := s.GetAttestedTarget(ctx, p.ID); err == nil {
+		detail.HasAttestedTarget = true
+	} else if !isNotFound(err) {
+		return nil, apperrors.Internal(fmt.Errorf("check attested target: %w", err))
 	}
 
 	return detail, nil

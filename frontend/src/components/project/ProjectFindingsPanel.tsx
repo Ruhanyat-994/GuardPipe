@@ -170,6 +170,7 @@ export function ProjectFindingsPanel({
               gitRef={scan.commit_sha ?? scan.branch ?? repository?.default_branch ?? null}
               errorReason={job.error_reason}
               skipReason={job.skip_reason}
+              stats={job.stats}
               defaultExpanded={scan.jobs.length === 1 || Boolean(severityFilter)}
             />
           ))

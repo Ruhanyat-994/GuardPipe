@@ -10,9 +10,11 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/handler"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/middleware"
@@ -37,7 +39,13 @@ type RouterConfig struct {
 	ProjectSvc      project.Service
 	AdvisorySvc     advisory.Service
 	OrchestratorSvc orchestrator.Service
-	HealthDB        handler.Pinger
+	// AISvc may be nil (GUARDPIPE_AI_ENABLED=false or no Gemini key
+	// configured, same convention every AI-consuming engine already
+	// follows) — the export endpoint's executive summary is then simply
+	// omitted, never a reason to fail the whole report (reporting.Assembler's
+	// own fallback contract).
+	AISvc    ai.Service
+	HealthDB handler.Pinger
 
 	Version   string
 	CommitSHA string
@@ -122,7 +130,8 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		documents.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.DeleteDocument)
 	}
 
-	scanH := handler.NewScanHandler(cfg.OrchestratorSvc, v)
+	reportsAssembler := reporting.NewAssembler(cfg.OrchestratorSvc, cfg.ProjectSvc, cfg.AISvc, cfg.Logger)
+	scanH := handler.NewScanHandler(cfg.OrchestratorSvc, reportsAssembler, v)
 	projects.POST("/:id/scans", middleware.RBAC(memberAndAbove...), scanH.Create)
 	projects.GET("/:id/scans", middleware.RBAC(viewerAndAbove...), scanH.List)
 	scans := api.Group("/scans", requireAuth)
@@ -132,6 +141,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		scans.GET("/:id/progress", middleware.RBAC(viewerAndAbove...), scanH.Progress)
 		scans.POST("/:id/cancel", middleware.RBAC(memberAndAbove...), scanH.Cancel)
 		scans.GET("/:id/findings", middleware.RBAC(viewerAndAbove...), scanH.ListFindings)
+		scans.GET("/:id/export", middleware.RBAC(viewerAndAbove...), scanH.Export)
 	}
 
 	ruleH := handler.NewRuleHandler(cfg.AdvisorySvc, v)

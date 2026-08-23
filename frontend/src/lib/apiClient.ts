@@ -119,8 +119,50 @@ async function request<T>(path: string, init: RequestInit = {}, isRetry = false)
   return (isJson ? await response.json() : undefined) as T
 }
 
+/** Filename from a `Content-Disposition: attachment; filename="…"` header,
+ * falling back to a generic name if the header is missing or unparseable —
+ * should never happen against this backend, but a download must never throw
+ * over a cosmetic filename. */
+function filenameFromDisposition(disposition: string | null): string {
+  const match = disposition ? /filename="([^"]+)"/.exec(disposition) : null
+  return match?.[1] ?? 'download'
+}
+
+/** Downloads a binary/file response (e.g. a scan export) — the same auth
+ * header and 401-refresh retry as request<T> above, but returns a Blob
+ * instead of parsing JSON, since request<T> always expects a JSON or empty
+ * body. Feature code should go through a typed wrapper (scansApi.exportScan)
+ * rather than calling this directly, same convention as get/post/etc. */
+async function download(path: string, isRetry = false): Promise<{ blob: Blob; filename: string }> {
+  const token = getAccessToken()
+  const headers = new Headers()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, { headers, credentials: 'include' })
+
+  if (!response.ok) {
+    const problem = await parseProblem(response)
+
+    if (problem.code === 'auth.token_expired' && !isRetry && onTokenExpired) {
+      const newToken = await onTokenExpired()
+      if (newToken) {
+        return download(path, true)
+      }
+    }
+
+    throw new ApiError(problem)
+  }
+
+  const filename = filenameFromDisposition(response.headers.get('Content-Disposition'))
+  const blob = await response.blob()
+  return { blob, filename }
+}
+
 export const apiClient = {
   get: <T>(path: string) => request<T>(path, { method: 'GET' }),
+  download,
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, {
       method: 'POST',

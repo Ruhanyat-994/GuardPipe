@@ -14,13 +14,14 @@ import type { LucideIcon } from 'lucide-react'
 import { ENGINE_META } from '../../lib/engines'
 import { humanizeErrorReason } from '../../lib/engineRunMessages'
 import type { Engine } from '../../lib/rulesApi'
-import type { Job } from '../../lib/scansApi'
+import type { EngineProgress, Job } from '../../lib/scansApi'
 import { EmptyState } from '../ui/EmptyState'
 import { GeminiMark } from '../icons/GeminiMark'
 import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
 import { SonarQubeMark } from '../icons/SonarQubeMark'
+import { ScanProgressBar } from './ScanProgressBar'
 
 type StepState = 'pending' | 'active' | 'done' | 'skipped' | 'failed'
 
@@ -60,6 +61,48 @@ function formatDuration(startedAt: string | null, finishedAt: string | null): st
 function statNumber(stats: Record<string, unknown> | null | undefined, key: string): number | null {
   const v = stats?.[key]
   return typeof v === 'number' ? v : null
+}
+
+/**
+ * pentest's per-run coverage summary (internal/engines/pentest/coverage.go)
+ * — "what did we actually check," derived by the engine from real script
+ * invocations, not a claim layered on afterward. Present on every succeeded
+ * pentest job, clean or not, which is what lets a clean run show something
+ * more honest than "0 files scanned" (a code-scanning stat that never
+ * applied to a network target in the first place).
+ */
+interface PentestCoverage {
+  open_ports: number[]
+  http_services_found: number
+  tls_ports_checked: number
+  technologies_found?: string[]
+  nuclei_categories_run: string[]
+  crawled_paths_found: number
+  script_runs: Record<string, number>
+  total_script_runs: number
+  phases_completed: string[]
+  phases_skipped?: string[]
+}
+
+function pentestCoverage(stats: Record<string, unknown> | null | undefined): PentestCoverage | null {
+  const c = stats?.coverage
+  if (!c || typeof c !== 'object') return null
+  return c as PentestCoverage
+}
+
+const PHASE_LABEL: Record<string, string> = {
+  recon: 'Recon',
+  service_id: 'Service ID',
+  tls: 'TLS posture',
+  headers: 'HTTP headers',
+  crawl: 'Crawl',
+  wordlist: 'Wordlist generation',
+  disclosure: 'Info disclosure',
+  misconfig: 'Misconfiguration',
+}
+
+function phaseLabel(name: string): string {
+  return PHASE_LABEL[name] ?? name
 }
 
 /**
@@ -158,17 +201,27 @@ function StepRow({ step }: { step: Step }) {
 export function EngineRunDetail({
   engine,
   job,
+  liveProgress,
   onClose,
 }: {
   engine: Engine
   job: Job | undefined
+  // The current poll's live entry for this engine (GET /scans/{id}/progress)
+  // — a real, moving percentage plus (for pentest today) the engine's own
+  // actual current stage, e.g. "Fuzzing for hidden files and paths" instead
+  // of a generic "Probing the attested target" the whole time it runs.
+  liveProgress?: EngineProgress
   onClose: () => void
 }) {
   const meta = ENGINE_META[engine]
   const Icon = meta.icon
-  const steps = deriveSteps(job, meta.activity)
+  const isRunning = job?.status === 'running'
+  const activityLabel = (isRunning && liveProgress?.activity) || meta.activity
+  const steps = deriveSteps(job, activityLabel)
+  const isPentest = engine === 'pentest'
   const rulesEvaluated = statNumber(job?.stats, 'rules_evaluated')
   const filesScanned = statNumber(job?.stats, 'files_scanned')
+  const coverage = isPentest ? pentestCoverage(job?.stats) : null
   const duration = job ? formatDuration(job.started_at, job.finished_at) : null
 
   return (
@@ -202,6 +255,12 @@ export function EngineRunDetail({
       </div>
 
       <div className="px-5 py-4">
+        {isRunning && (
+          <div className="mb-3">
+            <ScanProgressBar pct={liveProgress?.progress_pct ?? 0} size="sm" />
+          </div>
+        )}
+
         <div className="flex flex-col divide-y divide-border-default/60">
           {steps.map((step) => (
             <StepRow key={step.label} step={step} />
@@ -210,7 +269,10 @@ export function EngineRunDetail({
 
         {job?.status === 'succeeded' && (
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-border-default pt-3 text-caption text-text-secondary">
-            {filesScanned !== null && (
+            {/* pentest never scans files — "0 files scanned" is a code-scan
+                stat that doesn't apply to a network target, so it's
+                suppressed here rather than shown as a misleading zero. */}
+            {!isPentest && filesScanned !== null && (
               <span>
                 <span className="font-semibold text-text-primary">{filesScanned}</span> files
                 scanned
@@ -218,8 +280,8 @@ export function EngineRunDetail({
             )}
             {rulesEvaluated !== null && (
               <span>
-                <span className="font-semibold text-text-primary">{rulesEvaluated}</span> rules
-                evaluated
+                <span className="font-semibold text-text-primary">{rulesEvaluated}</span>{' '}
+                {isPentest ? 'checks run' : 'rules evaluated'}
               </span>
             )}
             <span>
@@ -227,6 +289,50 @@ export function EngineRunDetail({
               {job.finding_count === 1 ? '' : 's'}
             </span>
             {duration && <span className="ml-auto">Took {duration}</span>}
+          </div>
+        )}
+
+        {job?.status === 'succeeded' && coverage && (
+          <div className="mt-3 border-t border-border-default pt-3">
+            <div className="flex flex-wrap gap-x-5 gap-y-1 text-caption text-text-secondary">
+              <span>
+                <span className="font-semibold text-text-primary">{coverage.open_ports.length}</span>{' '}
+                open port{coverage.open_ports.length === 1 ? '' : 's'}
+                {coverage.open_ports.length > 0 && ` (${coverage.open_ports.join(', ')})`}
+              </span>
+              <span>
+                <span className="font-semibold text-text-primary">
+                  {coverage.http_services_found}
+                </span>{' '}
+                HTTP service{coverage.http_services_found === 1 ? '' : 's'} probed
+              </span>
+              <span>
+                <span className="font-semibold text-text-primary">{coverage.tls_ports_checked}</span>{' '}
+                TLS port{coverage.tls_ports_checked === 1 ? '' : 's'} checked
+              </span>
+              <span>
+                <span className="font-semibold text-text-primary">
+                  {coverage.crawled_paths_found}
+                </span>{' '}
+                path{coverage.crawled_paths_found === 1 ? '' : 's'} discovered by crawl
+              </span>
+            </div>
+            {coverage.nuclei_categories_run.length > 0 && (
+              <p className="mt-1.5 text-caption text-text-tertiary">
+                Vulnerability signature categories checked: {coverage.nuclei_categories_run.join(', ')}
+              </p>
+            )}
+            {coverage.technologies_found && coverage.technologies_found.length > 0 && (
+              <p className="mt-1 text-caption text-text-tertiary">
+                Technologies detected: {coverage.technologies_found.join(', ')}
+              </p>
+            )}
+            <p className="mt-1.5 text-caption text-text-tertiary">
+              Phases completed: {coverage.phases_completed.map(phaseLabel).join(', ')}
+              {coverage.phases_skipped && coverage.phases_skipped.length > 0 && (
+                <> — skipped: {coverage.phases_skipped.map(phaseLabel).join(', ')}</>
+              )}
+            </p>
           </div>
         )}
 
