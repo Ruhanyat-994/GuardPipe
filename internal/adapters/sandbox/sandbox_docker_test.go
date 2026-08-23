@@ -92,6 +92,71 @@ func TestDockerSandbox_Run_EnforcesReadOnlyRootfs(t *testing.T) {
 	require.NotContains(t, string(result.Stdout), "exit=0", "the root filesystem must be read-only")
 }
 
+// pentestSandboxImage must already exist locally (`docker compose build
+// pentest-sandbox`) — it's the one image with iptables/su-exec baked in,
+// alpine:3.20 alone doesn't have them. Skipped, not failed, if absent, so
+// -tags=docker still runs the rest of this file without requiring every
+// contributor to have built the pentest sandbox image.
+const pentestSandboxImage = "guardpipe-pentest-sandbox:latest"
+
+func requirePentestSandboxImage(t *testing.T, docker *dockerx.Client) {
+	t.Helper()
+	exists, err := docker.ImageExists(context.Background(), pentestSandboxImage)
+	require.NoError(t, err)
+	if !exists {
+		t.Skipf("%s not built locally — run `docker compose build pentest-sandbox` first", pentestSandboxImage)
+	}
+}
+
+// TestDockerSandbox_Run_TargetOnlyFirewallsEgress is the true-positive half
+// of Phase 12 Pass 2's network-isolation fix (documentation/12-security-and-
+// threat-model.md TB5/D5, "Sandbox network permits only the pinned IP"): a
+// NetworkTargetOnly container can reach the one IP it was pinned to.
+// 1.1.1.1/8.8.8.8 are used as stand-ins for "the target" and "anything
+// else" rather than a real project target — both are well-known, highly
+// available public IPs, chosen so this test isn't tied to any particular
+// customer domain's uptime.
+func TestDockerSandbox_Run_TargetOnlyFirewallsEgress(t *testing.T) {
+	sb, docker := newTestSandbox(t)
+	requirePentestSandboxImage(t, docker)
+	ctx := context.Background()
+
+	result, err := sb.Run(ctx, sandbox.RunSpec{
+		Image:   pentestSandboxImage,
+		Cmd:     []string{"sh", "-c", "curl -sS -o /dev/null -w %{http_code} --max-time 8 https://1.1.1.1"},
+		Network: sandbox.NetworkTargetOnly([]string{"1.1.1.1"}, []int{443}),
+		Timeout: 20 * time.Second,
+	})
+	require.NoError(t, err)
+	require.False(t, result.TimedOut)
+	// Any real HTTP status line proves the TCP/TLS connection to the pinned
+	// IP succeeded — Cloudflare's own root path can answer 200 or a 3xx
+	// redirect depending on how it's asked, either is a successful egress,
+	// not a firewall failure. What must never happen is an empty string
+	// (curl couldn't connect at all).
+	require.NotEmpty(t, string(result.Stdout), "curl to the pinned target IP must get a real HTTP response")
+}
+
+// TestDockerSandbox_Run_TargetOnlyBlocksEverythingElse is the near-miss
+// complement — the exact same container must not be able to reach any host
+// other than the one it was pinned to, even a stable, unrelated public IP.
+func TestDockerSandbox_Run_TargetOnlyBlocksEverythingElse(t *testing.T) {
+	sb, docker := newTestSandbox(t)
+	requirePentestSandboxImage(t, docker)
+	ctx := context.Background()
+
+	result, err := sb.Run(ctx, sandbox.RunSpec{
+		Image:   pentestSandboxImage,
+		Cmd:     []string{"sh", "-c", "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://8.8.8.8 || echo BLOCKED"},
+		Network: sandbox.NetworkTargetOnly([]string{"1.1.1.1"}, []int{443}),
+		Timeout: 20 * time.Second,
+	})
+	require.NoError(t, err)
+	require.False(t, result.TimedOut)
+	require.Contains(t, string(result.Stdout), "BLOCKED", "curl to any host other than the pinned target IP must fail")
+	require.NotContains(t, string(result.Stdout), "200")
+}
+
 func TestDockerSandbox_SweepOrphans_RemovesLeakedContainers(t *testing.T) {
 	sb, docker := newTestSandbox(t)
 	ctx := context.Background()

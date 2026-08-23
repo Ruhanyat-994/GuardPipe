@@ -83,6 +83,12 @@ type ProjectResponse struct {
 	Status        string              `json:"status"`
 	Repository    *RepositoryResponse `json:"repository"`
 	HasCredential bool                `json:"has_credential"`
+	// HasPentestTarget lets the frontend's engine picker (which engines to
+	// show/offer for this project) decide without a second GET
+	// .../targets round trip — a cheap boolean, not the full target object,
+	// since targets stay their own resource. documentation/07-api-specification.md
+	// addendum, needs its second reviewer (contract doc).
+	HasPentestTarget bool `json:"has_pentest_target"`
 	// LatestScan is always null until the `scans` table exists
 	// (BUILD_GUIDE.md Phase 6) — present per the "nulls are present, not
 	// omitted" convention (documentation/07-api-specification.md §1).
@@ -92,14 +98,15 @@ type ProjectResponse struct {
 
 func FromProjectDetail(d *project.ProjectDetail) ProjectResponse {
 	return ProjectResponse{
-		ID:            d.ID.String(),
-		Name:          d.Name,
-		Description:   d.Description,
-		Status:        string(d.Status),
-		Repository:    FromRepository(d.Repository),
-		HasCredential: d.HasCredential,
-		LatestScan:    nil,
-		CreatedAt:     d.CreatedAt,
+		ID:               d.ID.String(),
+		Name:             d.Name,
+		Description:      d.Description,
+		Status:           string(d.Status),
+		Repository:       FromRepository(d.Repository),
+		HasCredential:    d.HasCredential,
+		HasPentestTarget: d.HasAttestedTarget,
+		LatestScan:       nil,
+		CreatedAt:        d.CreatedAt,
 	}
 }
 

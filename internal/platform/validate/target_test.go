@@ -36,55 +36,50 @@ func TestResolveTarget(t *testing.T) {
 		target       string
 		resolver     fakeResolver
 		allowPrivate bool
-		allowlist    []string
+		denylist     []string
 		wantHost     string
 		wantErr      error
 	}{
 		{
-			// True positive: a public, allowlisted host resolves and passes.
-			name:      "allowlisted public host is accepted",
-			target:    "https://staging.acme.example/health",
-			resolver:  fakeResolver{"staging.acme.example": ipAddrs("203.0.113.10")},
-			allowlist: []string{"acme.example"},
-			wantHost:  "staging.acme.example",
+			// True positive: any public host not on the denylist resolves
+			// and passes — there is no allowlist to be on.
+			name:     "public host not on denylist is accepted",
+			target:   "https://staging.acme.example/health",
+			resolver: fakeResolver{"staging.acme.example": ipAddrs("203.0.113.10")},
+			wantHost: "staging.acme.example",
 		},
 		{
-			// Near-miss: same public address, but the host isn't
-			// allowlisted — must not fire just because the range check
-			// passed.
-			name:      "public host outside allowlist is blocked",
-			target:    "https://evil.example",
-			resolver:  fakeResolver{"evil.example": ipAddrs("203.0.113.20")},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetBlocked,
+			// Near-miss: same kind of public address, but the host is on
+			// the denylist — must fire even though the range check passed.
+			name:     "public host on denylist is blocked",
+			target:   "https://evil.example",
+			resolver: fakeResolver{"evil.example": ipAddrs("203.0.113.20")},
+			denylist: []string{"evil.example"},
+			wantErr:  validate.ErrTargetBlocked,
 		},
 		{
-			name:      "RFC1918 private address is blocked by default",
-			target:    "internal.acme.example",
-			resolver:  fakeResolver{"internal.acme.example": ipAddrs("192.168.1.50")},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetBlocked,
+			name:     "RFC1918 private address is blocked by default",
+			target:   "internal.acme.example",
+			resolver: fakeResolver{"internal.acme.example": ipAddrs("192.168.1.50")},
+			wantErr:  validate.ErrTargetBlocked,
 		},
 		{
-			name:      "loopback address is blocked",
-			target:    "localhost.acme.example",
-			resolver:  fakeResolver{"localhost.acme.example": ipAddrs("127.0.0.1")},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetBlocked,
+			name:     "loopback address is blocked",
+			target:   "localhost.acme.example",
+			resolver: fakeResolver{"localhost.acme.example": ipAddrs("127.0.0.1")},
+			wantErr:  validate.ErrTargetBlocked,
 		},
 		{
-			name:      "cloud metadata address is blocked",
-			target:    "metadata.acme.example",
-			resolver:  fakeResolver{"metadata.acme.example": ipAddrs("169.254.169.254")},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetBlocked,
+			name:     "cloud metadata address is blocked",
+			target:   "metadata.acme.example",
+			resolver: fakeResolver{"metadata.acme.example": ipAddrs("169.254.169.254")},
+			wantErr:  validate.ErrTargetBlocked,
 		},
 		{
-			name:      "IPv6 unique-local address is blocked",
-			target:    "ula.acme.example",
-			resolver:  fakeResolver{"ula.acme.example": ipAddrs("fd00::1")},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetBlocked,
+			name:     "IPv6 unique-local address is blocked",
+			target:   "ula.acme.example",
+			resolver: fakeResolver{"ula.acme.example": ipAddrs("fd00::1")},
+			wantErr:  validate.ErrTargetBlocked,
 		},
 		{
 			// Near-miss: private range explicitly permitted by config —
@@ -93,37 +88,43 @@ func TestResolveTarget(t *testing.T) {
 			target:       "internal.acme.example",
 			resolver:     fakeResolver{"internal.acme.example": ipAddrs("192.168.1.50")},
 			allowPrivate: true,
-			allowlist:    []string{"acme.example"},
 			wantHost:     "internal.acme.example",
 		},
 		{
-			name:      "unresolvable host is rejected",
-			target:    "ghost.acme.example",
-			resolver:  fakeResolver{},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetUnresolvable,
+			name:     "unresolvable host is rejected",
+			target:   "ghost.acme.example",
+			resolver: fakeResolver{},
+			wantErr:  validate.ErrTargetUnresolvable,
 		},
 		{
-			name:      "malformed target is rejected",
-			target:    "   ",
-			resolver:  fakeResolver{},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetMalformed,
+			name:     "malformed target is rejected",
+			target:   "   ",
+			resolver: fakeResolver{},
+			wantErr:  validate.ErrTargetMalformed,
 		},
 		{
-			// Near-miss: a similarly-named domain must not match an
-			// allowlist entry via naive substring matching.
-			name:      "lookalike domain does not match allowlist suffix",
-			target:    "https://notacme.example",
-			resolver:  fakeResolver{"notacme.example": ipAddrs("203.0.113.30")},
-			allowlist: []string{"acme.example"},
-			wantErr:   validate.ErrTargetBlocked,
+			// Near-miss: a similarly-named domain must not match a denylist
+			// entry via naive substring matching.
+			name:     "lookalike domain does not match denylist suffix",
+			target:   "https://notevil.example",
+			resolver: fakeResolver{"notevil.example": ipAddrs("203.0.113.30")},
+			denylist: []string{"evil.example"},
+			wantHost: "notevil.example",
+		},
+		{
+			// True positive: a subdomain of a denylisted host is still
+			// blocked via suffix matching.
+			name:     "subdomain of denylisted host is blocked",
+			target:   "https://sub.evil.example",
+			resolver: fakeResolver{"sub.evil.example": ipAddrs("203.0.113.40")},
+			denylist: []string{"evil.example"},
+			wantErr:  validate.ErrTargetBlocked,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := validate.ResolveTarget(context.Background(), tt.resolver, tt.target, tt.allowPrivate, tt.allowlist)
+			got, err := validate.ResolveTarget(context.Background(), tt.resolver, tt.target, tt.allowPrivate, tt.denylist)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("ResolveTarget() error = %v, want %v", err, tt.wantErr)

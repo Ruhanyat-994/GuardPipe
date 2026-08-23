@@ -113,7 +113,7 @@ type Scanning struct {
 type Pentest struct {
 	Enabled             bool
 	AllowPrivateTargets bool
-	Allowlist           []string
+	Denylist            []string
 	RateLimit           int
 	Ports               string
 }
@@ -241,7 +241,7 @@ func Load() (*Config, error) {
 		Pentest: Pentest{
 			Enabled:             getBool("GUARDPIPE_PENTEST_ENABLED", true, p),
 			AllowPrivateTargets: getBool("GUARDPIPE_ALLOW_PRIVATE_TARGETS", false, p),
-			Allowlist:           getCSV("GUARDPIPE_PENTEST_ALLOWLIST", nil),
+			Denylist:            getCSV("GUARDPIPE_PENTEST_DENYLIST", nil),
 			RateLimit:           getInt("GUARDPIPE_PENTEST_RATE_LIMIT", 10, p),
 			Ports:               getString("GUARDPIPE_PENTEST_PORTS", "top100"),
 		},

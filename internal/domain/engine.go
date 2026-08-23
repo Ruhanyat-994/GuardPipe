@@ -78,6 +78,25 @@ type ScanInput struct {
 	Target       *PentestTarget
 	Documents    []DocumentRef
 	Options      map[string]any // engine-specific, validated by the engine
+
+	// ReportProgress lets an engine that has real, named stages of its own
+	// (pentest's recon/service_id/tls/... phases, today) publish live "what
+	// is actually happening right now" progress — pct in [0,100), a real
+	// fact about how far through its own work it is, and activity, a short
+	// human-readable label naming the stage ("Fuzzing for hidden paths and
+	// files", not a generic "Running…"). Purely optional: an engine that
+	// never calls this simply doesn't have named stages to report — the
+	// orchestrator falls back to an elapsed-time-based estimate for it
+	// instead of inventing fake per-stage detail (worker.go/service.go's
+	// own doc comments explain that fallback).
+	//
+	// nil unless the caller sets it (worker.go always does; a ScanInput
+	// built directly in a test literal does not) — an engine that wants to
+	// call this must nil-check first, e.g. `if in.ReportProgress != nil { … }`.
+	// Never call this with 100 — the orchestrator itself sets the terminal
+	// 100% once the job actually finishes, so an engine reporting its own
+	// "done" prematurely can't race that.
+	ReportProgress func(pct int, activity string)
 }
 
 // SkipReason names one rule that an engine chose not to evaluate and why —

@@ -60,12 +60,86 @@ func TestBuildContainerSpec_EnvIsFormattedKeyEqualsValue(t *testing.T) {
 	require.Contains(t, config.Env, "TARGET=example.com")
 }
 
+// TestBuildContainerSpec_TargetOnlyAddsFirewallCapabilities is the
+// true-positive half: only a TargetOnly run gets the NET_ADMIN/NET_RAW
+// exception and its Cmd rewritten to self-firewall first.
+func TestBuildContainerSpec_TargetOnlyAddsFirewallCapabilities(t *testing.T) {
+	spec := applyDefaults(RunSpec{
+		Image: "alpine:3.20", Cmd: []string{"nmap", "-p-", "203.0.113.10"},
+		Network: NetworkTargetOnly([]string{"203.0.113.10"}, []int{80, 443}),
+	})
+	config, hostConfig := buildContainerSpec(spec)
+
+	require.Equal(t, []string{"ALL"}, hostConfig.CapDrop, "CapDrop:ALL is never relaxed, only narrowly added back")
+	require.ElementsMatch(t, []string{"NET_ADMIN", "NET_RAW", "SETUID", "SETGID"}, hostConfig.CapAdd, "SETUID/SETGID are what let su-exec actually drop root to nobody")
+	// The container briefly starts as root (User left unset/empty) so the
+	// iptables bootstrap can run at all — Alpine's nftables-backed iptables
+	// refuses the same operation from a non-root process even with
+	// NET_ADMIN/NET_RAW granted via file capabilities (confirmed against
+	// the real sandbox image). firewalledCmd's own su-exec drop is what
+	// actually keeps the real tool script off of root, asserted below.
+	require.Equal(t, "", config.User, "TargetOnly starts as root only long enough to firewall, then su-execs down")
+	require.Contains(t, hostConfig.Tmpfs, "/run", "iptables' lock file needs a writable /run under ReadonlyRootfs")
+
+	require.Equal(t, []string{"/bin/sh", "-c"}, config.Cmd[:2])
+	bootstrap := config.Cmd[2]
+	require.Contains(t, bootstrap, "iptables -P OUTPUT DROP")
+	require.Contains(t, bootstrap, "-d 203.0.113.10 -j ACCEPT")
+	require.Contains(t, bootstrap, "--dport 53 -j ACCEPT", "DNS must stay reachable — every tool resolves TARGET_HOST for TLS/SNI/vhost routing, confirmed the hard way against a real CDN-fronted target")
+	require.Contains(t, bootstrap, `exec su-exec nobody "$@"`, "the real tool script must never run as root")
+	require.Equal(t, []string{"nmap", "-p-", "203.0.113.10"}, config.Cmd[4:], "the original Cmd must still run, unmodified, as the trailing exec args")
+}
+
+// TestBuildContainerSpec_NetworkNoneNeverGetsFirewallCapabilities is the
+// near-miss complement — NetworkNone (containerscan's image-extraction use)
+// must not fire the TargetOnly-only exception just because CapAdd exists as
+// a mechanism now.
+func TestBuildContainerSpec_NetworkNoneNeverGetsFirewallCapabilities(t *testing.T) {
+	spec := applyDefaults(RunSpec{Image: "alpine:3.20", Cmd: []string{"echo", "hi"}, Network: NetworkNone()})
+	config, hostConfig := buildContainerSpec(spec)
+
+	require.Nil(t, hostConfig.CapAdd)
+	require.Equal(t, []string{"echo", "hi"}, config.Cmd, "Cmd must pass through unmodified when there is no firewall to bootstrap")
+}
+
+// TestFirewalledCmd_EmptyTargetIPFailsClosed is the near-miss for
+// firewalledCmd's own doc comment: an empty targetIP must never fall back
+// to allowing everything.
+func TestFirewalledCmd_EmptyTargetIPFailsClosed(t *testing.T) {
+	cmd := firewalledCmd(nil, []string{"true"})
+	bootstrap := cmd[2]
+	require.NotContains(t, bootstrap, "-j ACCEPT -d", "must not contain a malformed/empty-destination ACCEPT rule")
+	require.Contains(t, bootstrap, "iptables -P OUTPUT DROP")
+	require.NotContains(t, bootstrap, " -d  -j ACCEPT", "an empty target must never produce an ACCEPT rule with no destination")
+	require.Contains(t, bootstrap, "exec su-exec nobody", "even the fail-closed path must still drop to a non-root user before exec")
+	require.Contains(t, bootstrap, "--dport 53 -j ACCEPT", "DNS stays reachable even on the fail-closed path — it's an independent, deliberate exception, not tied to a valid target being present")
+}
+
+func TestBuildContainerSpec_ScriptMountUsesNamedVolumeSubpath(t *testing.T) {
+	spec := applyDefaults(RunSpec{
+		Image:   "alpine:3.20",
+		Network: NetworkNone(),
+		ScriptMount: &VolumeMount{
+			VolumeName: "guardpipe-workspace", Subpath: "pentest-scripts", Target: "/pentest-scripts",
+		},
+	})
+	_, hostConfig := buildContainerSpec(spec)
+
+	require.Len(t, hostConfig.Mounts, 1)
+	m := hostConfig.Mounts[0]
+	require.Equal(t, "guardpipe-workspace", m.Source)
+	require.Equal(t, "/pentest-scripts", m.Target)
+	require.True(t, m.ReadOnly)
+	require.NotNil(t, m.VolumeOptions)
+	require.Equal(t, "pentest-scripts", m.VolumeOptions.Subpath)
+}
+
 func TestNetworkNone_And_TargetOnly(t *testing.T) {
 	none := NetworkNone()
 	require.Equal(t, NetworkKindNone, none.Kind)
 
-	target := NetworkTargetOnly("10.0.0.5", []int{80, 443})
+	target := NetworkTargetOnly([]string{"10.0.0.5"}, []int{80, 443})
 	require.Equal(t, NetworkKindTargetOnly, target.Kind)
-	require.Equal(t, "10.0.0.5", target.TargetIP)
+	require.Equal(t, []string{"10.0.0.5"}, target.TargetIPs)
 	require.Equal(t, []int{80, 443}, target.TargetPorts)
 }
