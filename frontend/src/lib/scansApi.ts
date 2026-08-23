@@ -46,6 +46,10 @@ export interface EngineProgress {
   engine: Engine
   status: JobStatus
   progress_pct: number
+  // A real, live "what's happening right now" label when the engine has
+  // one (pentest's actual phase names, e.g. "Fuzzing for hidden files and
+  // paths") — absent for engines with no named stages of their own.
+  activity?: string
   finding_count: number
 }
 
@@ -215,4 +219,25 @@ export function cancelScan(scanId: string): Promise<void> {
 
 export function listFindings(scanId: string): Promise<FindingList> {
   return apiClient.get<FindingList>(`/scans/${scanId}/findings?page_size=100`)
+}
+
+export type ExportFormat = 'json' | 'csv' | 'pdf'
+
+/** Downloads a scan report (`GET /scans/{id}/export?format=…`) and triggers
+ * the browser's native save — a self-contained report snapshot (coverage,
+ * every finding, an AI-authored executive summary when available), distinct
+ * from the live paginated getScan/listFindings above. */
+export async function exportScan(scanId: string, format: ExportFormat): Promise<void> {
+  const { blob, filename } = await apiClient.download(`/scans/${scanId}/export?format=${format}`)
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  // Revoked on a delay, not immediately — revoking synchronously right
+  // after click() can race the browser's own download start in some
+  // browsers, silently producing an empty/failed download.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }

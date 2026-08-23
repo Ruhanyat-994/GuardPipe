@@ -12,10 +12,12 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import { ENGINE_META, isEngineEnabled } from '../../lib/engines'
+import { engineRequirementReason, ENGINE_META, isEngineRunnable } from '../../lib/engines'
+import type { Project } from '../../lib/projectsApi'
 import type { Engine } from '../../lib/rulesApi'
 import type { Job, JobStatus, Progress, Scan } from '../../lib/scansApi'
 import { EngineRunDetail } from './EngineRunDetail'
+import { ScanProgressBar } from './ScanProgressBar'
 import { GeminiMark } from '../icons/GeminiMark'
 import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
@@ -272,10 +274,15 @@ export function SupplyChainPipeline({
   progress,
   jobs,
   scan,
+  project,
 }: {
   progress: Progress | null
   jobs: Job[]
   scan?: Pick<Scan, 'id' | 'type' | 'branch' | 'queued_at'>
+  // Optional — a caller without the project handy yet (e.g. mid-fetch) just
+  // gets no repo/target-based disabling this render; every node still shows
+  // its real job status either way.
+  project?: Pick<Project, 'repository' | 'has_pentest_target'> | null
 }) {
   const scanStarted = progress !== null || jobs.length > 0
   const anyRunningOrDone =
@@ -312,6 +319,16 @@ export function SupplyChainPipeline({
         <StatusBadge status={status} />
       </div>
 
+      {/* Real, live overall progress — the real fraction of this scan's jobs
+          that have reached a terminal state (orchestrator's own GetProgress),
+          not a fabricated animation. Shown for every scan, not just pentest,
+          from the moment it starts until it's fully done. */}
+      {scanStarted && (
+        <div className="border-b border-border-default px-5 py-3">
+          <ScanProgressBar pct={progress?.progress_pct ?? 0} />
+        </div>
+      )}
+
       {/* graph — left-to-right, GitHub Actions' own flow direction
           (documentation/09-ui-ux-design-system.md §4.8): one stage after
           another rather than a tall stacked column. The six parallel
@@ -340,7 +357,11 @@ export function SupplyChainPipeline({
                 {PARALLEL_ENGINES.map((engine) => {
                   const meta = ENGINE_META[engine]
                   const state = resolveEngineState(engine, progress, jobs)
-                  const clickable = scanStarted && isEngineEnabled(engine)
+                  const runnable = project ? isEngineRunnable(engine, project) : true
+                  const clickable = scanStarted && runnable
+                  const requirementReason = project
+                    ? engineRequirementReason(engine, project)
+                    : null
                   return (
                     <Node
                       key={engine}
@@ -352,7 +373,7 @@ export function SupplyChainPipeline({
                       kubernetesMark={meta.hasKubernetesMark}
                       githubMark={meta.hasGitHubMark}
                       geminiMark={meta.hasGeminiMark}
-                      tooltip={state.reason}
+                      tooltip={state.reason ?? requirementReason}
                       onClick={clickable ? () => toggleEngine(engine) : undefined}
                       selected={selectedEngine === engine}
                     />
@@ -388,9 +409,12 @@ export function SupplyChainPipeline({
               label="Pentest"
               icon={ShieldAlert}
               status={pentestState.status}
-              tooltip={pentestState.reason}
+              tooltip={
+                pentestState.reason ??
+                (project ? engineRequirementReason('pentest', project) : null)
+              }
               onClick={
-                scanStarted && isEngineEnabled('pentest')
+                scanStarted && (project ? isEngineRunnable('pentest', project) : true)
                   ? () => toggleEngine('pentest')
                   : undefined
               }
@@ -405,6 +429,7 @@ export function SupplyChainPipeline({
           <EngineRunDetail
             engine={selectedEngine}
             job={jobs.find((j) => j.engine === selectedEngine)}
+            liveProgress={progress?.engines.find((e) => e.engine === selectedEngine)}
             onClose={() => setSelectedEngine(null)}
           />
         </div>
