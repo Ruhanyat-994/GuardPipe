@@ -31,14 +31,18 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 	if err != nil {
 		return fmt.Errorf("repo: encode finding counts: %w", err)
 	}
+	pentestConfigJSON, err := marshalPentestConfig(s.PentestConfig)
+	if err != nil {
+		return fmt.Errorf("repo: encode pentest config: %w", err)
+	}
 
 	const q = `
-		INSERT INTO scans (id, project_id, triggered_by, type, status, requested_engines, branch, finding_counts, queued_at)
-		VALUES ($1, $2, $3, $4, $5, $6::engine_id[], $7, $8, now())
+		INSERT INTO scans (id, project_id, triggered_by, type, status, requested_engines, branch, finding_counts, pentest_config, queued_at)
+		VALUES ($1, $2, $3, $4, $5, $6::engine_id[], $7, $8, $9, now())
 		RETURNING queued_at`
 	err = r.db.QueryRow(ctx, q,
 		s.ID, s.ProjectID, s.TriggeredBy, string(s.Type), string(s.Status),
-		engineIDsToStrings(s.RequestedEngines), s.Branch, countsJSON,
+		engineIDsToStrings(s.RequestedEngines), s.Branch, countsJSON, pentestConfigJSON,
 	).Scan(&s.QueuedAt)
 	if err != nil {
 		return fmt.Errorf("repo: insert scan: %w", err)
@@ -61,7 +65,7 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 func (r *ScanRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Scan, error) {
 	const q = `
 		SELECT id, project_id, triggered_by, type, status, requested_engines, commit_sha, branch,
-			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts,
+			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts, pentest_config,
 			(SELECT count(*) FROM scans s2 WHERE s2.project_id = scans.project_id AND s2.created_at <= scans.created_at)
 		FROM scans WHERE id = $1`
 	return scanRowScan(r.db.QueryRow(ctx, q, id))
@@ -82,7 +86,7 @@ func (r *ScanRepo) ListByProject(ctx context.Context, projectID uuid.UUID, page 
 	// down to one page, so pagination never skews the numbering.
 	const listQ = `
 		SELECT id, project_id, triggered_by, type, status, requested_engines, commit_sha, branch,
-			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts,
+			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts, pentest_config,
 			ROW_NUMBER() OVER (ORDER BY created_at ASC)
 		FROM scans WHERE project_id = $1
 		ORDER BY created_at DESC
@@ -181,16 +185,31 @@ func (r *ScanRepo) SetCancelRequested(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// MarkStarted is a no-op past the first call for a given scan — the
+// `WHERE status = 'queued'` guard is what makes calling this on every job
+// claim (worker.go) safe rather than racing a later job's completion
+// (JobResultRepo's own terminal UPDATE) into re-opening an already-finished
+// scan. Zero RowsAffected is the expected, common case (every job after the
+// first for the same scan), not an error.
+func (r *ScanRepo) MarkStarted(ctx context.Context, id uuid.UUID) error {
+	const q = `UPDATE scans SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued'`
+	if _, err := r.db.Exec(ctx, q, id); err != nil {
+		return fmt.Errorf("repo: mark scan started: %w", err)
+	}
+	return nil
+}
+
 func scanRowScan(row pgx.Row) (*domain.Scan, error) {
 	var s domain.Scan
 	var scanType, status string
 	var requestedEngines []string
 	var findingCounts map[string]int
+	var pentestConfigJSON []byte
 
 	err := row.Scan(
 		&s.ID, &s.ProjectID, &s.TriggeredBy, &scanType, &status, &requestedEngines,
 		&s.CommitSHA, &s.Branch, &s.CancelRequested, &s.ErrorReason,
-		&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &s.ScanNumber,
+		&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &pentestConfigJSON, &s.ScanNumber,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -203,7 +222,32 @@ func scanRowScan(row pgx.Row) (*domain.Scan, error) {
 	s.Status = domain.ScanStatus(status)
 	s.RequestedEngines = stringsToEngineIDs(requestedEngines)
 	s.FindingCounts = stringMapToSeverityMap(findingCounts)
+	s.PentestConfig, err = unmarshalPentestConfig(pentestConfigJSON)
+	if err != nil {
+		return nil, fmt.Errorf("repo: decode pentest config: %w", err)
+	}
 	return &s, nil
+}
+
+// marshalPentestConfig/unmarshalPentestConfig round-trip domain.Scan.PentestConfig
+// through the nullable `pentest_config JSONB` column (migration 00014) — nil
+// in, nil out, same as every other optional JSONB field in this repo.
+func marshalPentestConfig(cfg *domain.PentestScanConfig) ([]byte, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	return json.Marshal(cfg)
+}
+
+func unmarshalPentestConfig(raw []byte) (*domain.PentestScanConfig, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var cfg domain.PentestScanConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
 func engineIDsToStrings(ids []domain.EngineID) []string {

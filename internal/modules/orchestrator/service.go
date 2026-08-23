@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -45,6 +47,15 @@ type ScanRepository interface {
 	ListByProject(ctx context.Context, projectID uuid.UUID, page Page) ([]domain.Scan, int, error)
 	ListByOrg(ctx context.Context, orgID uuid.UUID, page Page) ([]OrgScanSummary, int, error)
 	SetCancelRequested(ctx context.Context, id uuid.UUID) error
+	// MarkStarted records the scan's transition out of `queued` — status
+	// `running` and `started_at = now()` — the first time any of its jobs is
+	// claimed. Idempotent (`WHERE status = 'queued'`): every later job claim
+	// for the same scan calls this too, and must be a safe no-op rather than
+	// clobbering the real start time or overwriting a terminal status set by
+	// a fast-finishing job in the meantime. Previously nothing called this at
+	// all — every scan's started_at stayed NULL forever ("Scan window: not
+	// started" in a completed scan's export report is what surfaced this).
+	MarkStarted(ctx context.Context, id uuid.UUID) error
 }
 
 // ScanJobRepository is defined by this package. Note there is no
@@ -98,18 +109,32 @@ type JobResultRepository interface {
 // ProjectAccess is the subset of project.Service this package needs —
 // defined here (the consumer) even though project.Service is already the
 // concrete dependency, so a future narrower fake doesn't need the whole
-// interface.
+// interface. GetAttestedTarget mirrors worker.go's own TargetProvider
+// interface exactly (same underlying project.Service method) — resolveEngines
+// needs the same "does this project have a usable pentest target" answer the
+// worker already asks for at execution time, just earlier, at scan creation.
 type ProjectAccess interface {
 	Get(ctx context.Context, actor domain.Actor, id uuid.UUID) (*project.ProjectDetail, error)
+	GetAttestedTarget(ctx context.Context, projectID uuid.UUID) (*project.Target, error)
 }
 
 type service struct {
-	scans    ScanRepository
-	jobs     ScanJobRepository
-	findings FindingRepository
-	projects ProjectAccess
-	queue    Enqueuer
-	registry *Registry
+	scans          ScanRepository
+	jobs           ScanJobRepository
+	findings       FindingRepository
+	projects       ProjectAccess
+	queue          Enqueuer
+	registry       *Registry
+	pentestCeiling domain.PentestScanConfig
+	// progress/engineTimeouts/defaultTimeout back GetProgress's per-engine
+	// percentage: progress is the live store Pool writes to as an engine
+	// reports real stage progress (nil-safe — a nil store just means every
+	// running job falls back to the elapsed-time estimate below); the
+	// timeouts are what that estimate is computed against. All three may be
+	// zero-valued in a test that doesn't exercise GetProgress.
+	progress       *LiveProgress
+	engineTimeouts map[domain.EngineID]time.Duration
+	defaultTimeout time.Duration
 }
 
 // Enqueuer is the subset of adapters/queue.JobQueue this package needs —
@@ -118,19 +143,33 @@ type Enqueuer interface {
 	Enqueue(ctx context.Context, jobID string) error
 }
 
-func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, projects ProjectAccess, q Enqueuer, registry *Registry) Service {
-	return &service{scans: scans, jobs: jobs, findings: findings, projects: projects, queue: q, registry: registry}
+// NewService's pentestCeiling is the hard cap CreateScan clamps every
+// pentest_config against, named or custom alike (BUILD_GUIDE.md Phase 12) —
+// callers normally build it from platform/config's Pentest.RateLimit atop
+// domain.PentestPresetDeepConfig(), since Deep's own numbers are meant to
+// already sit at the ceiling by construction (see
+// domain.ClampPentestScanConfig's doc comment).
+// progress may be nil (falls back to elapsedFallbackPct for every running
+// job, never a frozen constant); engineTimeouts/defaultTimeout should be
+// the same values Pool itself uses so the estimate matches what the worker
+// will actually enforce.
+func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, projects ProjectAccess, q Enqueuer, registry *Registry, pentestCeiling domain.PentestScanConfig, progress *LiveProgress, engineTimeouts map[domain.EngineID]time.Duration, defaultTimeout time.Duration) Service {
+	return &service{
+		scans: scans, jobs: jobs, findings: findings, projects: projects, queue: q, registry: registry, pentestCeiling: pentestCeiling,
+		progress: progress, engineTimeouts: engineTimeouts, defaultTimeout: defaultTimeout,
+	}
 }
 
 func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in CreateScanInput) (*ScanDetail, error) {
-	if _, err := s.projects.Get(ctx, actor, projectID); err != nil {
+	detail, err := s.projects.Get(ctx, actor, projectID)
+	if err != nil {
 		return nil, err // already 404-not-403 per project.Service's own rule
 	}
 	if !in.Type.Valid() {
 		return nil, apperrors.Validation("scan.invalid_input", "type must be a recognised scan type", nil)
 	}
 
-	engines, err := s.resolveEngines(in)
+	engines, err := s.resolveEngines(ctx, projectID, detail, in)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +188,18 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 		triggeredBy := actor.UserID
 		scan.TriggeredBy = &triggeredBy
 	}
+
+	var clampedFields []string
+	if slices.Contains(engines, domain.EnginePentest) {
+		requested := domain.DefaultPentestScanConfig()
+		if in.PentestConfig != nil {
+			requested = *in.PentestConfig
+		}
+		clamped, fields := domain.ClampPentestScanConfig(requested, s.pentestCeiling)
+		scan.PentestConfig = &clamped
+		clampedFields = fields
+	}
+
 	if err := s.scans.Create(ctx, scan); err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("create scan: %w", err))
 	}
@@ -171,27 +222,119 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 	for i, j := range jobs {
 		details[i] = JobDetail{ScanJob: j}
 	}
-	return &ScanDetail{Scan: *scan, Jobs: details}, nil
+	return &ScanDetail{Scan: *scan, Jobs: details, PentestConfigClamped: clampedFields}, nil
 }
 
-// resolveEngines picks which engines a scan runs: an explicit list for a
-// partial scan (validated against what's actually registered), or every
-// registered engine for a full_supply_chain scan — "every engine" is
-// deliberately registry-driven, not a hardcoded seven-engine list, since
-// only depscan exists this phase.
-func (s *service) resolveEngines(in CreateScanInput) ([]domain.EngineID, error) {
-	if in.Type != domain.ScanTypePartial {
-		return s.registry.IDs(), nil
+// engineRequiresRepository is every registered engine except pentest (needs
+// an attested target instead of a repository) and docreview (tolerates no
+// repository at all — worker.go special-cases it to keep processing with an
+// empty WorkspaceDir rather than failing "workspace_unavailable" like every
+// other engine). Kept here, not in domain, since "what a project needs to
+// have attached before this engine's job is even worth creating" is a
+// scan-creation-time policy question, not an engine-intrinsic fact the way
+// domain.Engine's own methods are.
+func engineRequiresRepository(e domain.EngineID) bool {
+	return e != domain.EnginePentest && e != domain.EngineDocReview
+}
+
+// hasAttestedTarget reports whether projectID has a usable pentest target,
+// treating "no attested target" as false rather than an error — most
+// projects simply don't have one, which is normal, not a failure.
+func (s *service) hasAttestedTarget(ctx context.Context, projectID uuid.UUID) (bool, error) {
+	_, err := s.projects.GetAttestedTarget(ctx, projectID)
+	switch {
+	case err == nil:
+		return true, nil
+	case isNotFound(err):
+		return false, nil
+	default:
+		return false, apperrors.Internal(fmt.Errorf("check attested pentest target: %w", err))
 	}
-	if len(in.Engines) == 0 {
-		return nil, apperrors.Validation("scan.invalid_input", "engines is required for a partial scan", nil)
+}
+
+// unavailableReason explains, in the same plain language style every
+// engine's own Applicable() reason already uses, why an explicitly-requested
+// partial-scan engine can't run against this project's current shape.
+func unavailableReason(e domain.EngineID, hasRepo, hasTarget bool) string {
+	if e == domain.EnginePentest {
+		return "no attested pentest target attached to this project"
 	}
-	for _, e := range in.Engines {
-		if !s.registry.Has(e) {
-			return nil, apperrors.Unprocessable("scan.engine_unavailable", fmt.Sprintf("engine %q is not registered", e))
+	if engineRequiresRepository(e) && !hasRepo {
+		return "no repository attached to this project"
+	}
+	_ = hasTarget
+	return "this engine cannot run against this project"
+}
+
+// resolveEngines picks which engines a scan runs, and — since real jobs are
+// about to be created for whatever it returns — is also the actual
+// enforcement behind "a URL-only project only ever runs pentest, a
+// repository-only project never runs pentest": a repo-based engine's job is
+// never created at all for a target-only project (rather than created and
+// then hard-failing "workspace_unavailable" inside the worker, which is what
+// happened before this check existed).
+//
+//   - pentest_only resolves to exactly [pentest], 422 if no target is
+//     attested yet — documentation/07-api-specification.md §5's FR-PEN-013
+//     example.
+//   - full_supply_chain is every registered engine whose requirement (a
+//     repository, or an attested target for pentest) this project actually
+//     satisfies. pentest is included here too when a target exists — a
+//     project with both a repository and a target gets everything from one
+//     "Run All Scans" call, not a separate pentest_only request.
+//   - partial keeps the explicit list the client asked for, but now also
+//     rejects (422, not a silent drop) a named engine that structurally
+//     can't run here — an explicit selection should error loudly, matching
+//     the existing "not registered" case's own treatment, not vanish.
+func (s *service) resolveEngines(ctx context.Context, projectID uuid.UUID, detail *project.ProjectDetail, in CreateScanInput) ([]domain.EngineID, error) {
+	hasRepo := detail.Repository != nil
+	hasTarget, err := s.hasAttestedTarget(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	runnable := func(e domain.EngineID) bool {
+		if e == domain.EnginePentest {
+			return hasTarget
 		}
+		if engineRequiresRepository(e) {
+			return hasRepo
+		}
+		return true // docreview
 	}
-	return in.Engines, nil
+
+	switch in.Type {
+	case domain.ScanTypePentestOnly:
+		if !s.registry.Has(domain.EnginePentest) {
+			return nil, apperrors.Unprocessable("scan.engine_unavailable", "pentest engine is not registered")
+		}
+		if !hasTarget {
+			return nil, apperrors.Unprocessable("scan.no_pentest_target", "project has no attested pentest target")
+		}
+		return []domain.EngineID{domain.EnginePentest}, nil
+
+	case domain.ScanTypePartial:
+		if len(in.Engines) == 0 {
+			return nil, apperrors.Validation("scan.invalid_input", "engines is required for a partial scan", nil)
+		}
+		for _, e := range in.Engines {
+			if !s.registry.Has(e) {
+				return nil, apperrors.Unprocessable("scan.engine_unavailable", fmt.Sprintf("engine %q is not registered", e))
+			}
+			if !runnable(e) {
+				return nil, apperrors.Unprocessable("scan.engine_unavailable", fmt.Sprintf("engine %q cannot run: %s", e, unavailableReason(e, hasRepo, hasTarget)))
+			}
+		}
+		return in.Engines, nil
+
+	default: // ScanTypeFullSupplyChain
+		var out []domain.EngineID
+		for _, e := range s.registry.IDs() {
+			if runnable(e) {
+				out = append(out, e)
+			}
+		}
+		return out, nil
+	}
 }
 
 func (s *service) GetScan(ctx context.Context, actor domain.Actor, scanID uuid.UUID) (*ScanDetail, error) {
@@ -240,26 +383,35 @@ func (s *service) GetProgress(ctx context.Context, actor domain.Actor, scanID uu
 	}
 
 	engines := make([]EngineProgress, len(jobs))
-	done := 0
+	pctSum := 0
 	for i, j := range jobs {
 		count, err := s.findings.CountByJob(ctx, j.ID)
 		if err != nil {
 			return nil, apperrors.Internal(fmt.Errorf("count job findings: %w", err))
 		}
 		pct := 0
+		var activity string
 		switch j.Status {
 		case domain.JobStatusSucceeded, domain.JobStatusFailed, domain.JobStatusSkipped, domain.JobStatusCancelled:
 			pct = 100
-			done++
 		case domain.JobStatusRunning:
-			pct = 50
+			pct, activity = s.runningJobProgress(j)
 		}
-		engines[i] = EngineProgress{Engine: j.Engine, Status: j.Status, ProgressPct: pct, FindingCount: count}
+		pctSum += pct
+		engines[i] = EngineProgress{Engine: j.Engine, Status: j.Status, ProgressPct: pct, Activity: activity, FindingCount: count}
 	}
 
+	// The mean of every job's own real pct — not "how many jobs are fully
+	// done," which is a coarse, discontinuous signal at low job counts: a
+	// pentest_only scan has exactly one job, so that measure sits frozen at
+	// 0 for the scan's entire running time and then jumps straight to 100.
+	// Averaging the same real per-job values engines[] already carries
+	// (each one live-reported or elapsed-time-estimated, see
+	// runningJobProgress) gives a genuinely moving overall number instead,
+	// while still only reaching 100 once every job actually has.
 	overallPct := 0
 	if len(jobs) > 0 {
-		overallPct = done * 100 / len(jobs)
+		overallPct = pctSum / len(jobs)
 	}
 
 	return &Progress{ScanID: scan.ID, Status: scan.Status, ProgressPct: overallPct, Engines: engines}, nil
@@ -294,6 +446,28 @@ func (s *service) ListFindings(ctx context.Context, actor domain.Actor, scanID u
 		return nil, 0, err
 	}
 	return s.findings.ListByScan(ctx, scanID, page)
+}
+
+// runningJobProgress answers "what's actually happening right now" for one
+// running job: an engine-reported live stage (pentest's real phases) if one
+// exists, otherwise a real elapsed-time-against-timeout estimate — never a
+// frozen constant. The activity string is empty in the fallback case; the
+// frontend already has a sensible generic per-engine label for that
+// (lib/engines.ts's meta.activity) and doesn't need this to invent one.
+func (s *service) runningJobProgress(j domain.ScanJob) (pct int, activity string) {
+	if s.progress != nil {
+		if live, ok := s.progress.Get(j.ID); ok {
+			return live.Pct, live.Activity
+		}
+	}
+	if j.StartedAt == nil {
+		return 5, "" // claimed but no StartedAt yet (shouldn't happen — MarkRunning sets both together) — a small non-zero value beats a misleading 0
+	}
+	timeout := s.engineTimeouts[j.Engine]
+	if timeout <= 0 {
+		timeout = s.defaultTimeout
+	}
+	return elapsedFallbackPct(*j.StartedAt, timeout), ""
 }
 
 // getOwnedScan loads a scan and confirms actor's organisation owns its

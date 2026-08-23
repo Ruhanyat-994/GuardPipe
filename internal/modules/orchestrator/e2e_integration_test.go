@@ -157,7 +157,7 @@ func TestEndToEnd_ScanThroughOrchestrator_FindingsLandInPostgres(t *testing.T) {
 	cloneInfo := e2eStaticCloneInfo{projectID: projectID}
 	svc := orchestrator.NewService(
 		repo.NewScanRepo(pool), repo.NewScanJobRepo(pool), repo.NewFindingRepo(pool),
-		cloneInfo, jobQueue, registry,
+		cloneInfo, jobQueue, registry, domain.PentestPresetDeepConfig(), nil, nil, 0,
 	)
 
 	fixtureDir, err := filepath.Abs(filepath.Join("..", "..", "..", "testdata", "fixtures", "fixture-vulnerable"))

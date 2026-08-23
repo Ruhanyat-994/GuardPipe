@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -45,6 +47,26 @@ type CloneInfoProvider interface {
 // receives.
 type DocumentProvider interface {
 	GetDocuments(ctx context.Context, projectID uuid.UUID) ([]project.Document, error)
+}
+
+// TargetProvider is the subset of modules/project.Service the worker needs
+// to run a pentest job — same no-actor, background-job shape as
+// CloneInfoProvider/DocumentProvider above.
+type TargetProvider interface {
+	GetAttestedTarget(ctx context.Context, projectID uuid.UUID) (*project.Target, error)
+}
+
+// pinnedIPStrings converts project.Target's netip.Addr slice (pgx/v5's own
+// mapping for Postgres inet[], documentation/06-database-design.md §4.7)
+// into the plain []string domain.PentestTarget carries — domain stays free
+// of a pgx-shaped type, and engines/pentest compares these against
+// validate.ResolveTarget's net.IP-derived strings at execution time.
+func pinnedIPStrings(ips []netip.Addr) []string {
+	out := make([]string, len(ips))
+	for i, ip := range ips {
+		out[i] = ip.String()
+	}
+	return out
 }
 
 // errCredentialInvalid is what prepareWorkspace wraps its returned error
@@ -90,11 +112,18 @@ type Pool struct {
 	JobResults     JobResultRepository
 	Projects       CloneInfoProvider
 	Documents      DocumentProvider
+	Targets        TargetProvider
 	Cloner         Cloner
 	WorkspaceRoot  string
 	EngineTimeouts map[domain.EngineID]time.Duration
 	DefaultTimeout time.Duration
-	Log            *slog.Logger
+	// Progress is the live store an engine's ScanInput.ReportProgress
+	// writes to (nil is fine — a nil store just means ReportProgress calls
+	// are silently dropped, same as never calling it). Service.GetProgress
+	// reads the same instance; wire the identical pointer into both at
+	// construction time (main.go).
+	Progress *LiveProgress
+	Log      *slog.Logger
 
 	workspaces workspaceCache
 }
@@ -196,53 +225,107 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		p.Log.Error("orchestrator: mark running failed", "job_id", jobID, "error", err)
 		return
 	}
+	// Idempotent — a no-op for every job after the first one claimed for
+	// this scan (MarkStarted's own WHERE guard). Best-effort: a failure here
+	// shouldn't abort a job that's otherwise ready to run, just leave
+	// started_at unset for this attempt.
+	if err := p.Scans.MarkStarted(ctx, scan.ID); err != nil {
+		p.Log.Error("orchestrator: mark scan started failed", "scan_id", scan.ID, "error", err)
+	}
 
-	// acquire, not prepareWorkspace directly: every job for the same scan
-	// shares one clone (documentation/05-module-specifications.md §5's
-	// pipeline diagram draws one "workspace prep" node feeding every
-	// engine) — the first job for this scan.ID actually clones, every other
-	// job concurrently or later in the same scan reuses that same
-	// directory instead of re-cloning the repository from scratch.
-	workspaceDir, releaseWorkspace, err := p.workspaces.acquire(ctx, scan.ID, func() (string, error) {
-		dir, _, prepErr := p.prepareWorkspace(ctx, scan.ProjectID)
-		return dir, prepErr
-	})
-	if err != nil {
-		// docreview is the one engine that can run from uploaded documents
-		// alone (documentation/05-module-specifications.md §11) — a project
-		// with no repository attached at all isn't a failure for that job
-		// specifically, even though the shared workspace acquisition still
-		// reports it as one for whichever engine in this scan actually needs
-		// a checkout. Every other engine keeps failing exactly as before.
-		if job.Engine == domain.EngineDocReview && isNoRepositoryAttached(err) {
-			workspaceDir = ""
-			releaseWorkspace = func() {}
-		} else {
-			reason := "workspace_unavailable"
-			if errors.Is(err, errCredentialInvalid) {
-				reason = "credential_invalid"
-			}
-			p.Log.Error("orchestrator: workspace preparation failed", "job_id", jobID, "error", err)
-			p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: reason})
+	var scanInput domain.ScanInput
+	var releaseWorkspace func()
+
+	if job.Engine == domain.EnginePentest {
+		// pentest branches directly off scan start — it never waits on the
+		// repository clone every other engine shares
+		// (documentation/09-ui-ux-design-system.md §4.8; BUILD_GUIDE.md
+		// Phase 12), so it skips workspace acquisition entirely rather than
+		// going through prepareWorkspace/workspaces.acquire below.
+		scanInput = domain.ScanInput{ScanID: scan.ID, JobID: jobID, ProjectID: scan.ProjectID}
+		releaseWorkspace = func() {}
+
+		if p.Targets == nil {
+			p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: "no_pentest_target_attached"})
 			return
+		}
+		target, err := p.Targets.GetAttestedTarget(ctx, scan.ProjectID)
+		if err != nil {
+			p.Log.Error("orchestrator: no attested pentest target", "job_id", jobID, "project_id", scan.ProjectID, "error", err)
+			p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: "no_pentest_target_attached"})
+			return
+		}
+		scanInput.Target = &domain.PentestTarget{Host: target.NormalizedHost, IPs: pinnedIPStrings(target.PinnedIPs)}
+
+		cfg := scan.PentestConfig
+		if cfg == nil {
+			// Literal default-to-Stealth (BUILD_GUIDE.md Phase 12) — a scan
+			// row persisted with no pentest_config still runs quiet, not
+			// unconfigured.
+			def := domain.DefaultPentestScanConfig()
+			cfg = &def
+		}
+		scanInput.Options = map[string]any{"pentest_config": *cfg}
+	} else {
+		// acquire, not prepareWorkspace directly: every job for the same scan
+		// shares one clone (documentation/05-module-specifications.md §5's
+		// pipeline diagram draws one "workspace prep" node feeding every
+		// engine) — the first job for this scan.ID actually clones, every
+		// other job concurrently or later in the same scan reuses that same
+		// directory instead of re-cloning the repository from scratch.
+		workspaceDir, release, err := p.workspaces.acquire(ctx, scan.ID, func() (string, error) {
+			dir, _, prepErr := p.prepareWorkspace(ctx, scan.ProjectID)
+			return dir, prepErr
+		})
+		if err != nil {
+			// docreview is the one engine that can run from uploaded documents
+			// alone (documentation/05-module-specifications.md §11) — a project
+			// with no repository attached at all isn't a failure for that job
+			// specifically, even though the shared workspace acquisition still
+			// reports it as one for whichever engine in this scan actually needs
+			// a checkout. Every other engine keeps failing exactly as before.
+			if job.Engine == domain.EngineDocReview && isNoRepositoryAttached(err) {
+				workspaceDir = ""
+				release = func() {}
+			} else {
+				reason := "workspace_unavailable"
+				if errors.Is(err, errCredentialInvalid) {
+					reason = "credential_invalid"
+				}
+				p.Log.Error("orchestrator: workspace preparation failed", "job_id", jobID, "error", err)
+				p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusFailed, ErrorReason: reason})
+				return
+			}
+		}
+		releaseWorkspace = release
+		scanInput = domain.ScanInput{ScanID: scan.ID, JobID: jobID, ProjectID: scan.ProjectID, WorkspaceDir: workspaceDir}
+
+		// Uploaded documents are project-scoped data, not part of the git
+		// checkout prepareWorkspace already cloned — only docreview needs
+		// them, so this read is skipped for every other engine's jobs.
+		if job.Engine == domain.EngineDocReview && p.Documents != nil {
+			docs, err := p.Documents.GetDocuments(ctx, scan.ProjectID)
+			if err != nil {
+				p.Log.Error("orchestrator: load documents failed", "job_id", jobID, "project_id", scan.ProjectID, "error", err)
+			} else {
+				scanInput.Documents = make([]domain.DocumentRef, len(docs))
+				for i, d := range docs {
+					scanInput.Documents[i] = domain.DocumentRef{Path: d.Filename, Content: string(d.Content)}
+				}
+			}
 		}
 	}
 	defer releaseWorkspace()
 
-	scanInput := domain.ScanInput{ScanID: scan.ID, JobID: jobID, ProjectID: scan.ProjectID, WorkspaceDir: workspaceDir}
-
-	// Uploaded documents are project-scoped data, not part of the git
-	// checkout prepareWorkspace already cloned — only docreview needs them,
-	// so this read is skipped for the other six engines' jobs.
-	if job.Engine == domain.EngineDocReview && p.Documents != nil {
-		docs, err := p.Documents.GetDocuments(ctx, scan.ProjectID)
-		if err != nil {
-			p.Log.Error("orchestrator: load documents failed", "job_id", jobID, "project_id", scan.ProjectID, "error", err)
-		} else {
-			scanInput.Documents = make([]domain.DocumentRef, len(docs))
-			for i, d := range docs {
-				scanInput.Documents[i] = domain.DocumentRef{Path: d.Filename, Content: string(d.Content)}
-			}
+	// Always set here (unlike a hand-built ScanInput literal in a test) so
+	// every engine actually running through the real worker can call it.
+	// Engines that never call it simply never populate p.Progress for this
+	// job, and Service.GetProgress's own fallback (an elapsed-time estimate)
+	// covers that case. A nil p.Progress (not wired, e.g. some tests) means
+	// every call here is silently dropped.
+	scanInput.ReportProgress = func(pct int, activity string) {
+		if p.Progress != nil {
+			p.Progress.Set(jobID, pct, activity)
 		}
 	}
 
@@ -267,8 +350,11 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 
 	if runErr != nil {
 		reason := "engine_error"
-		if runCtx.Err() != nil {
+		switch {
+		case runCtx.Err() != nil:
 			reason = "timeout"
+		case errors.Is(runErr, domain.ErrPentestDNSRebindingSuspected):
+			reason = "dns_rebinding_suspected"
 		}
 		// The underlying error only ever reaches this log line — JobResult's
 		// ErrorReason is a short machine code, not free text, so without this
@@ -282,13 +368,28 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		return
 	}
 
+	// result.Stats carries whatever engine-specific detail the engine chose to
+	// report (pentest's coverage summary, an engine's tool-version metadata,
+	// etc.) — merged under the two universal counters rather than discarded,
+	// so a clean run still has something real to show beyond "0 findings"
+	// (previously dropped here entirely; see BUILD_GUIDE.md's pentest-report
+	// coverage note for why that was a real gap, not just cosmetic).
 	stats := map[string]any{"rules_evaluated": result.RulesEvaluated, "files_scanned": result.FilesScanned}
+	maps.Copy(stats, result.Stats)
 	p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusSucceeded, Stats: stats, Findings: findings})
 }
 
 func (p *Pool) persist(ctx context.Context, result JobResult) {
 	if err := p.JobResults.PersistJobResult(ctx, result); err != nil {
 		p.Log.Error("orchestrator: persist job result failed", "job_id", result.JobID, "status", result.Status, "error", err)
+	}
+	// Every call here is a job reaching a terminal status (JobResult has no
+	// other caller) — clear its live-progress entry so a finished job's
+	// last-reported "87%, fuzzing…" can never leak into a later read
+	// (GetProgress already reports 100% for any terminal job status
+	// independent of this map).
+	if p.Progress != nil {
+		p.Progress.Clear(result.JobID)
 	}
 }
 
