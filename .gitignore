@@ -6,6 +6,9 @@
 # a fake secret, not a real one; must be tracked for the rule to fire in CI.
 !testdata/fixtures/fixture-vulnerable/.env
 
+# Docker Compose bind-mount data (postgres/redis persistent storage)
+/.docker-data/
+
 # Go
 /guardpipe
 *.exe

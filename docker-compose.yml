@@ -10,7 +10,14 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Bind mount, not a named volume, so the data directory is a real,
+      # browsable/backup-able host folder instead of living opaquely inside
+      # Docker Desktop's own VM disk. Defaults to a repo-local, gitignored
+      # folder so this works with zero setup on any contributor's machine;
+      # override GUARDPIPE_POSTGRES_DATA_DIR in your own .env to point it
+      # somewhere else (e.g. a dedicated data drive) — see
+      # documentation/13-devops-and-environments.md §5.
+      - ${GUARDPIPE_POSTGRES_DATA_DIR:-./.docker-data/postgres}:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-guardpipe}"]
       interval: 5s
@@ -19,8 +26,18 @@ services:
 
   redis:
     image: redis:7-alpine
+    # --appendonly yes: Redis is still explicitly losable by design
+    # (03-architecture-overview.md / CLAUDE.md "Technology baseline" — nothing
+    # in the queue/cache layer assumes data survives a restart), but there's
+    # no reason to throw away a working local dev queue on every `docker
+    # compose down` when persisting it is free. AOF, not just the default RDB
+    # snapshot interval, so a clean `docker compose down` (SIGTERM) flushes
+    # state rather than only periodic snapshots.
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
+    volumes:
+      - ${GUARDPIPE_REDIS_DATA_DIR:-./.docker-data/redis}:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -77,6 +94,20 @@ services:
       timeout: 5s
       retries: 10
 
+  # Phase 12 Pass 2 (pentest): the sandboxed tool image — never distroless
+  # (needs a real shell plus a long CLI tool list), never pushed to any
+  # registry, only ever referenced by the local tag `docker compose build`
+  # gives it. Not started as a long-running service — no `command:`/ports —
+  # adapters/sandbox creates one short-lived container per script
+  # invocation from this image via the Docker socket, the same
+  # Docker-outside-of-Docker shape sonar-scanner/Trivy already use.
+  pentest-sandbox:
+    build:
+      context: .
+      dockerfile: internal/scripts/pentest/Dockerfile
+    profiles:
+      - build-only
+
   # Phase 7 (codescan, ADR-0011): self-hosted SonarQube Community Edition,
   # not SonarCloud — keeps the zero-budget/local-only constraint intact and
   # supports private repos. Dedicated Postgres DB, not shared with `postgres`
@@ -128,7 +159,6 @@ services:
     # (WSL2 backend), that's a vm.max_map_count issue, not a config bug here.
 
 volumes:
-  pgdata:
   # Named explicitly (see the networks.default note below for why) —
   # codescan's sonar-scanner container (internal/adapters/sonarqube/scanner.go)
   # mounts this volume *by name* (GUARDPIPE_WORKSPACE_VOLUME) to read the
