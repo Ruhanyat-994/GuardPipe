@@ -3,6 +3,7 @@ package reporting
 import (
 	_ "embed"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -166,6 +167,10 @@ func scopePage(data *ReportData) core.Page {
 	p.Add(sectionHeading("Scope"))
 	p.Add(scopeRows(data)...)
 
+	p.Add(row.New(4), sectionHeading("Authorisation & responsibility"))
+	p.Add(requestedByRows(data)...)
+	p.Add(text.NewAutoRow(data.Disclaimer, props.Text{Size: 8, Style: fontstyle.Italic, Color: &mutedText, Top: 2}))
+
 	if data.ExecutiveSummary != "" {
 		p.Add(
 			row.New(4),
@@ -216,6 +221,27 @@ func scopeRows(data *ReportData) []core.Row {
 		metaRow("Findings", fmt.Sprintf("%d total — %s", data.TotalFindings, formatFindingCounts(data.FindingCounts))),
 		metaRow("Report generated", data.GeneratedAt.Format("2006-01-02 15:04 MST")),
 	)
+	return rows
+}
+
+// requestedByRows renders the report's accountability watermark — who
+// requested this scan and from what IP, GuardPipe's answer to "who is
+// responsible for this scan actually being authorised." Both rows are
+// omitted (not shown as "—") when unknown — a scan that predates this
+// field, or whose triggering user was since deleted, rather than a
+// misleading blank value.
+func requestedByRows(data *ReportData) []core.Row {
+	var rows []core.Row
+	if data.RequestedByName != "" {
+		who := data.RequestedByName
+		if data.RequestedByEmail != "" {
+			who += " (" + data.RequestedByEmail + ")"
+		}
+		rows = append(rows, metaRow("Requested by", who))
+	}
+	if data.RequestedFromIP != "" {
+		rows = append(rows, metaRow("Source IP", data.RequestedFromIP))
+	}
 	return rows
 }
 
@@ -312,6 +338,12 @@ func coverageDetailRows(cov *PentestCoverage) []core.Row {
 	add("Vulnerability signature categories checked", strings.Join(cov.NucleiCategoriesRun, ", "))
 	if cov.CrawledPathsFound > 0 {
 		add("Paths discovered by crawl", fmt.Sprintf("%d", cov.CrawledPathsFound))
+	}
+	// Only shown when the phase actually ran (present in PhasesCompleted) —
+	// a scan with SubdomainEnum disabled must not show a misleading
+	// "Subdomains found: 0" as if the check happened.
+	if slices.Contains(cov.PhasesCompleted, "subdomain_enum") {
+		add("Additional subdomains found", fmt.Sprintf("%d", cov.SubdomainsFound))
 	}
 	add("Total checks run", fmt.Sprintf("%d", cov.TotalScriptRuns))
 	add("Phases completed", strings.Join(cov.PhasesCompleted, ", "))

@@ -1,0 +1,10 @@
+# internal/scripts/pentest is go:embed'd verbatim into the guardpipe binary
+# and then run byte-for-byte as POSIX sh inside the Linux pentest-sandbox
+# container. A CRLF checkout (core.autocrlf=true on Windows, the default for
+# many contributors) silently corrupts every line here — "$(dirname "$0")"
+# resolving to a path with a trailing \r, "not found" sourcing common.sh —
+# which fails instantly and identically across every script (naabu, nmap,
+# nuclei, ...), well before any tool-specific logic runs. Forcing LF here
+# regardless of checkout platform is what actually fixes it; see
+# PROGRESS-LOG.md for the incident this line-ending bug caused.
+internal/scripts/pentest/** text eol=lf

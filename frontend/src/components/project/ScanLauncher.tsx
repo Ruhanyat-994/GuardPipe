@@ -19,8 +19,9 @@ import {
   type Project,
   type Target,
 } from '../../lib/projectsApi'
-import { createScan, type Scan } from '../../lib/scansApi'
+import { createScan, type PentestConfigInput, type Scan } from '../../lib/scansApi'
 import { DocumentUploadForm } from './DocumentUploadForm'
+import { PentestOptionsPanel } from './PentestOptionsPanel'
 import { GeminiMark } from '../icons/GeminiMark'
 import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
@@ -63,6 +64,12 @@ export function ScanLauncher({
   )
   const [starting, setStarting] = useState<'all' | 'selected' | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Empty object, not undefined — an untouched panel still resolves
+  // server-side to a real config (the literal Stealth default), so "the
+  // client configured nothing" and "the client explicitly picked Stealth"
+  // are the same request body, matching CreateScanInput's own doc comment.
+  const [pentestConfig, setPentestConfig] = useState<PentestConfigInput>({})
 
   // Only relevant while pentest is enabled but this project has no attested
   // target yet — fetched lazily so a project that already has one (or never
@@ -143,7 +150,12 @@ export function ScanLauncher({
     setStarting('all')
     setError(null)
     try {
-      onStarted(await createScan(project.id, { type: 'full_supply_chain' }))
+      onStarted(
+        await createScan(project.id, {
+          type: 'full_supply_chain',
+          ...(isSelectable('pentest') ? { pentest_config: pentestConfig } : {}),
+        }),
+      )
     } catch (err) {
       setError(err instanceof ApiError ? err.problem.detail : 'Could not start the scan.')
       setStarting(null)
@@ -163,7 +175,13 @@ export function ScanLauncher({
     setStarting('selected')
     setError(null)
     try {
-      onStarted(await createScan(project.id, { type: 'partial', engines: Array.from(selected) }))
+      onStarted(
+        await createScan(project.id, {
+          type: 'partial',
+          engines: Array.from(selected),
+          ...(selected.has('pentest') ? { pentest_config: pentestConfig } : {}),
+        }),
+      )
     } catch (err) {
       setError(err instanceof ApiError ? err.problem.detail : 'Could not start the scan.')
       setStarting(null)
@@ -248,6 +266,10 @@ export function ScanLauncher({
 
       {selected.has('docreview') && isEngineEnabled('docreview') && (
         <DocumentUploadForm projectId={project.id} variant="embedded" />
+      )}
+
+      {selected.has('pentest') && isSelectable('pentest') && (
+        <PentestOptionsPanel value={pentestConfig} onChange={setPentestConfig} />
       )}
 
       {/* Mandatory authorisation-attestation gate (FR-PEN-001/NFR-CMP-001) —

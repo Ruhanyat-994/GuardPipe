@@ -49,9 +49,19 @@ func (s ScanStatus) Valid() bool {
 // Scan is one run of one or more engines against one project. Field shapes
 // mirror the `scans` table (documentation/06-database-design.md §4.9).
 type Scan struct {
-	ID               uuid.UUID
-	ProjectID        uuid.UUID
-	TriggeredBy      *uuid.UUID // nil if the triggering user was later deleted
+	ID          uuid.UUID
+	ProjectID   uuid.UUID
+	TriggeredBy *uuid.UUID // nil if the triggering user was later deleted
+	// RequestedFromIP is the requesting client's IP at the moment this scan
+	// was created (captured from the HTTP request, see
+	// transport/http/handler/scan_handler.go's Create) — empty when unknown
+	// (e.g. a pre-migration scan). Same accountability shape
+	// target_attestations.source_ip already gives the one-time target
+	// attestation, applied per scan-execution instead: reporting.Assembler
+	// surfaces this as the exported report's "requested by / from IP"
+	// section, GuardPipe's answer to "who actually ran this scan" the way
+	// Nessus/Qualys-class tools stamp their own reports.
+	RequestedFromIP  string
 	Type             ScanType
 	Status           ScanStatus
 	RequestedEngines []EngineID

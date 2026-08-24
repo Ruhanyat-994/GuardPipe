@@ -23,6 +23,39 @@ export interface Job {
   skip_reason: string | null
 }
 
+export type PentestPreset = 'stealth' | 'standard' | 'deep' | 'custom'
+export type PentestPortBreadth = 'top100' | 'top1000' | 'top1000_service_detect'
+export type PentestWordlistTier = 'small' | 'medium' | 'large'
+
+// PentestConfig mirrors dto.PentestConfigResponse — the resolved,
+// already-clamped-to-the-ceiling scan-intensity config a pentest job
+// actually ran (or will run) with.
+export interface PentestConfig {
+  preset: PentestPreset
+  request_rate_per_sec: number
+  port_breadth: PentestPortBreadth
+  nuclei_categories: string[]
+  phase_budget_seconds: number
+  wordlist_tier: PentestWordlistTier
+  subdomain_enum: boolean
+  // Field names the server reduced to fit the operator-configured ceiling
+  // — present only on the response to the CreateScan call itself.
+  clamped_fields?: string[]
+}
+
+// PentestConfigInput mirrors dto.PentestConfigRequest — every field is
+// optional, since a client normally sends only `preset` and lets every
+// other value come from that preset's own bundle server-side.
+export interface PentestConfigInput {
+  preset?: PentestPreset
+  request_rate_per_sec?: number
+  port_breadth?: PentestPortBreadth
+  nuclei_categories?: string[]
+  phase_budget_seconds?: number
+  wordlist_tier?: PentestWordlistTier
+  subdomain_enum?: boolean
+}
+
 export interface Scan {
   id: string
   project_id: string
@@ -40,6 +73,8 @@ export interface Scan {
   // This scan's 1-based position among its own project's scans (oldest =
   // 1) — rendered as "Scan #N" in place of the raw UUID prefix.
   scan_number: number
+  // null for a scan with no pentest job.
+  pentest_config: PentestConfig | null
 }
 
 export interface EngineProgress {
@@ -92,6 +127,15 @@ export interface Location {
   package?: string
   version?: string
   manifest_path?: string
+  // network — pentest. `url` is the literal endpoint the check actually
+  // probed (scheme://host:port, or a full path for ffuf/nuclei-sourced
+  // findings) — see internal/engines/pentest/findings.go's probedURL.
+  host?: string
+  ip?: string
+  port?: number
+  protocol?: string
+  service?: string
+  url?: string
   [key: string]: unknown
 }
 
@@ -188,6 +232,10 @@ export interface CreateScanInput {
   // (documentation/07-api-specification.md §5: 'full_supply_chain' always
   // runs every registered engine).
   engines?: Engine[]
+  // Ignored server-side unless the resolved engine set includes pentest.
+  // Omitted entirely means "run pentest at the literal Stealth default" —
+  // the same server-side fallback a raw API call with no body gets.
+  pentest_config?: PentestConfigInput
 }
 
 export function createScan(

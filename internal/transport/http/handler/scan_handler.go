@@ -58,7 +58,7 @@ func (h *ScanHandler) Create(c *gin.Context) {
 		return
 	}
 
-	detail, err := h.svc.CreateScan(c.Request.Context(), actor, projectID, req.ToInput())
+	detail, err := h.svc.CreateScan(c.Request.Context(), actor, projectID, req.ToInput(c.ClientIP()))
 	if err != nil {
 		c.Error(err)
 		return

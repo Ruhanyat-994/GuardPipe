@@ -78,6 +78,10 @@ interface PentestCoverage {
   technologies_found?: string[]
   nuclei_categories_run: string[]
   crawled_paths_found: number
+  // Only meaningful when 'subdomain_enum' appears in phases_completed below
+  // — 0 there means "ran, found nothing"; 0 with the phase absent from
+  // phases_completed means the phase was disabled, not that it ran clean.
+  subdomains_found: number
   script_runs: Record<string, number>
   total_script_runs: number
   phases_completed: string[]
@@ -101,6 +105,7 @@ const PHASE_LABEL: Record<string, string> = {
   wordlist: 'Wordlist generation',
   disclosure: 'Info disclosure',
   misconfig: 'Misconfiguration',
+  subdomain_enum: 'Subdomain enumeration',
 }
 
 function phaseLabel(name: string): string {
@@ -322,6 +327,14 @@ export function EngineRunDetail({
                 </span>{' '}
                 path{coverage.crawled_paths_found === 1 ? '' : 's'} discovered by crawl
               </span>
+              {coverage.phases_completed.includes('subdomain_enum') && (
+                <span>
+                  <span className="font-semibold text-text-primary">
+                    {coverage.subdomains_found}
+                  </span>{' '}
+                  additional subdomain{coverage.subdomains_found === 1 ? '' : 's'} found
+                </span>
+              )}
             </div>
             {coverage.nuclei_categories_run.length > 0 && (
               <p className="mt-1.5 text-caption text-text-tertiary">

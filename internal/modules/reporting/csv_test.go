@@ -64,6 +64,53 @@ func TestRenderCSV_OneRowPerFinding(t *testing.T) {
 	}
 }
 
+// TestRenderCSV_IncludesAccountabilityWatermark is this feature's own
+// contract for the CSV export: who requested the scan, from what IP, and
+// the fixed responsibility disclaimer must all appear in the scan-info
+// section, the same accountability stamp the PDF's "Authorisation &
+// responsibility" section carries.
+func TestRenderCSV_IncludesAccountabilityWatermark(t *testing.T) {
+	data := &reporting.ReportData{
+		ProjectName:      "Demo Project",
+		RequestedByName:  "Ada Lovelace",
+		RequestedByEmail: "ada@example.com",
+		RequestedFromIP:  "203.0.113.10",
+		Disclaimer:       "This scan was initiated by the account identified above.",
+	}
+
+	out, err := reporting.RenderCSV(data)
+	if err != nil {
+		t.Fatalf("RenderCSV() unexpected error = %v", err)
+	}
+	text := string(out)
+
+	for _, want := range []string{"Ada Lovelace", "ada@example.com", "203.0.113.10", "This scan was initiated by the account identified above."} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output missing accountability watermark content %q", want)
+		}
+	}
+}
+
+// TestRenderCSV_NearMiss_NoRequesterOmitsWatermarkRows is the near-miss
+// half: a report with no attributable requester (empty RequestedByName/IP)
+// must not emit a misleading blank "Requested By"/"Source IP" row.
+func TestRenderCSV_NearMiss_NoRequesterOmitsWatermarkRows(t *testing.T) {
+	data := &reporting.ReportData{ProjectName: "Demo Project"}
+
+	out, err := reporting.RenderCSV(data)
+	if err != nil {
+		t.Fatalf("RenderCSV() unexpected error = %v", err)
+	}
+	text := string(out)
+
+	if strings.Contains(text, "Requested By") {
+		t.Error("output should not have a Requested By row when no requester is known")
+	}
+	if strings.Contains(text, "Source IP") {
+		t.Error("output should not have a Source IP row when none is recorded")
+	}
+}
+
 func TestRenderCSV_NearMiss_CleanScanStillHasRealContent(t *testing.T) {
 	// The bug this fixes: a 0-finding scan's CSV used to be nothing but a
 	// bare header row. It must now still show the scan's own metadata and

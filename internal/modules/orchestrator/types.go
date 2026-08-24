@@ -29,6 +29,12 @@ type CreateScanInput struct {
 	// (Stealth, literally, not just a UI suggestion — BUILD_GUIDE.md Phase
 	// 12). Ignored when the resolved engine set doesn't include pentest.
 	PentestConfig *domain.PentestScanConfig
+	// SourceIP is the requesting client's IP, captured by the handler
+	// (c.ClientIP()) the same way dto.AttestTargetRequest.ToInput already
+	// does for target.attested — persisted onto the scan row and surfaced by
+	// reporting.Assembler as the exported report's accountability watermark
+	// (who ran this scan, and from where).
+	SourceIP string
 }
 
 // ScanDetail is a Scan plus its jobs — documentation/07-api-specification.md

@@ -10,10 +10,24 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 )
+
+// fakeUserReader is a hand-written reporting.UserReader stub — no mocking
+// framework, matching every other fake in this file.
+type fakeUserReader struct {
+	byID map[uuid.UUID]*identity.User
+}
+
+func (f *fakeUserReader) GetByID(_ context.Context, id uuid.UUID) (*identity.User, error) {
+	if u, ok := f.byID[id]; ok {
+		return u, nil
+	}
+	return nil, errors.New("user not found")
+}
 
 type fakeScanReader struct {
 	detail   *orchestrator.ScanDetail
@@ -121,7 +135,7 @@ func TestAssembler_Build_AssemblesScanProjectAndCoverage(t *testing.T) {
 	scans := &fakeScanReader{detail: sampleScanDetail(), findings: findings}
 	projects := &fakeProjectReader{detail: sampleProjectDetail()}
 
-	a := reporting.NewAssembler(scans, projects, nil, nil)
+	a := reporting.NewAssembler(scans, projects, nil, nil, nil)
 	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
 	if err != nil {
 		t.Fatalf("Build() unexpected error = %v", err)
@@ -165,6 +179,69 @@ func TestAssembler_Build_AssemblesScanProjectAndCoverage(t *testing.T) {
 	}
 }
 
+// TestAssembler_Build_AttachesRequestedByWatermark is this feature's own
+// contract: a report must carry who ran the scan (name/email, resolved from
+// domain.Scan.TriggeredBy) and from where (RequestedFromIP, already on the
+// scan row), plus the fixed responsibility disclaimer — GuardPipe's
+// accountability watermark, the same "who ran this and from where" stamp
+// Nessus/Qualys-class tools already carry on their own exported reports.
+func TestAssembler_Build_AttachesRequestedByWatermark(t *testing.T) {
+	userID := uuid.New()
+	detail := sampleScanDetail()
+	detail.TriggeredBy = &userID
+	detail.RequestedFromIP = "203.0.113.10"
+
+	scans := &fakeScanReader{detail: detail, findings: nil}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	users := &fakeUserReader{byID: map[uuid.UUID]*identity.User{
+		userID: {ID: userID, DisplayName: "Ada Lovelace", Email: "ada@example.com"},
+	}}
+
+	a := reporting.NewAssembler(scans, projects, users, nil, nil)
+	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v", err)
+	}
+
+	if data.RequestedByName != "Ada Lovelace" {
+		t.Errorf("RequestedByName = %q, want %q", data.RequestedByName, "Ada Lovelace")
+	}
+	if data.RequestedByEmail != "ada@example.com" {
+		t.Errorf("RequestedByEmail = %q, want %q", data.RequestedByEmail, "ada@example.com")
+	}
+	if data.RequestedFromIP != "203.0.113.10" {
+		t.Errorf("RequestedFromIP = %q, want %q", data.RequestedFromIP, "203.0.113.10")
+	}
+	if data.Disclaimer == "" {
+		t.Error("Disclaimer must never be empty — every report carries the fixed responsibility statement")
+	}
+}
+
+// TestAssembler_Build_NoTriggeringUser_OmitsWatermarkWithoutError is the
+// near-miss half: a scan with no recorded triggering user (nil TriggeredBy,
+// or a UserReader lookup failure) must still produce a complete report —
+// RequestedByName/Email just stay empty, never a Build failure.
+func TestAssembler_Build_NoTriggeringUser_OmitsWatermarkWithoutError(t *testing.T) {
+	detail := sampleScanDetail()
+	detail.TriggeredBy = nil
+
+	scans := &fakeScanReader{detail: detail}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	users := &fakeUserReader{byID: map[uuid.UUID]*identity.User{}}
+
+	a := reporting.NewAssembler(scans, projects, users, nil, nil)
+	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v", err)
+	}
+	if data.RequestedByName != "" || data.RequestedByEmail != "" {
+		t.Errorf("RequestedByName/Email = %q/%q, want empty when no triggering user is recorded", data.RequestedByName, data.RequestedByEmail)
+	}
+	if data.Disclaimer == "" {
+		t.Error("Disclaimer must still be present even with no attributable requester")
+	}
+}
+
 func TestAssembler_Build_SortsFindingsWorstFirst(t *testing.T) {
 	findings := []domain.Finding{
 		{Engine: domain.EngineDepScan, RuleID: "a", Title: "Low", Severity: domain.SeverityLow},
@@ -174,7 +251,7 @@ func TestAssembler_Build_SortsFindingsWorstFirst(t *testing.T) {
 	scans := &fakeScanReader{detail: sampleScanDetail(), findings: findings}
 	projects := &fakeProjectReader{detail: sampleProjectDetail()}
 
-	a := reporting.NewAssembler(scans, projects, nil, nil)
+	a := reporting.NewAssembler(scans, projects, nil, nil, nil)
 	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
 	if err != nil {
 		t.Fatalf("Build() unexpected error = %v", err)
@@ -195,7 +272,7 @@ func TestAssembler_Build_AttachesAIExecutiveSummaryWhenAvailable(t *testing.T) {
 		TopPriorities: []string{"Fix the CVE", "Rotate credentials", "Enable HSTS"},
 	}}}
 
-	a := reporting.NewAssembler(scans, projects, stub, nil)
+	a := reporting.NewAssembler(scans, projects, nil, stub, nil)
 	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
 	if err != nil {
 		t.Fatalf("Build() unexpected error = %v", err)
@@ -216,7 +293,7 @@ func TestAssembler_Build_NearMiss_AIFailureNeverFailsBuild(t *testing.T) {
 	projects := &fakeProjectReader{detail: sampleProjectDetail()}
 	stub := &fakeAI{err: errors.New("gemini: 429 resource exhausted")}
 
-	a := reporting.NewAssembler(scans, projects, stub, nil)
+	a := reporting.NewAssembler(scans, projects, nil, stub, nil)
 	data, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
 	if err != nil {
 		t.Fatalf("Build() unexpected error = %v — an AI failure must not fail the whole report", err)

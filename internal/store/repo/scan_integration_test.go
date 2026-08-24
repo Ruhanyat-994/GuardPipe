@@ -44,7 +44,7 @@ func TestScanRepo_CreateAndGet_RoundTrip(t *testing.T) {
 	scan := &domain.Scan{
 		ID: id.New(), ProjectID: projectID, Type: domain.ScanTypeFullSupplyChain,
 		Status: domain.ScanStatusQueued, RequestedEngines: []domain.EngineID{domain.EngineDepScan},
-		Branch: &branch, FindingCounts: map[domain.Severity]int{},
+		Branch: &branch, FindingCounts: map[domain.Severity]int{}, RequestedFromIP: "203.0.113.10",
 	}
 	require.NoError(t, scans.Create(ctx, scan))
 	require.False(t, scan.QueuedAt.IsZero(), "Create() must populate QueuedAt from the DB default")
@@ -57,6 +57,28 @@ func TestScanRepo_CreateAndGet_RoundTrip(t *testing.T) {
 	require.Equal(t, "main", *got.Branch)
 	require.False(t, got.CancelRequested)
 	require.Equal(t, 1, got.ScanNumber, "GetByID must return the same scan_number Create did")
+	require.Equal(t, "203.0.113.10", got.RequestedFromIP, "the scan's requesting IP must round-trip through the nullable INET column")
+}
+
+// TestScanRepo_CreateAndGet_NoRequestedIP is the near-miss half of the IP
+// round-trip above: an empty RequestedFromIP must persist as SQL NULL and
+// come back as an empty string, not error or a bogus "0.0.0.0"-style value.
+func TestScanRepo_CreateAndGet_NoRequestedIP(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	scans := repo.NewScanRepo(pool)
+
+	scan := &domain.Scan{
+		ID: id.New(), ProjectID: projectID, Type: domain.ScanTypeFullSupplyChain,
+		Status: domain.ScanStatusQueued, RequestedEngines: []domain.EngineID{domain.EngineDepScan},
+		FindingCounts: map[domain.Severity]int{},
+	}
+	require.NoError(t, scans.Create(ctx, scan))
+
+	got, err := scans.GetByID(ctx, scan.ID)
+	require.NoError(t, err)
+	require.Equal(t, "", got.RequestedFromIP, "no IP was provided, so none should come back")
 }
 
 // TestScanRepo_ListByProject_NewestFirstAndScopedToProject exercises the

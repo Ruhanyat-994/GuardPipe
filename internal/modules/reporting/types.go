@@ -45,6 +45,25 @@ type ReportData struct {
 	FindingCounts map[domain.Severity]int `json:"finding_counts"`
 	TotalFindings int                     `json:"total_findings"`
 
+	// RequestedByName/Email/IP are this scan's accountability stamp — who
+	// triggered it and from where (domain.Scan.TriggeredBy/RequestedFromIP,
+	// resolved to a display name/email by Assembler.Build). Empty when the
+	// triggering user was since deleted or the scan predates this field —
+	// every renderer treats that as "omit the line," never a placeholder.
+	// This is GuardPipe's watermark: the same "who ran this and from where"
+	// stamp Nessus/Qualys-class tools carry on their own exported reports,
+	// so responsibility for the scan itself — was the target's owner
+	// actually authorised? — stays attributable to the account that ran it,
+	// not to GuardPipe.
+	RequestedByName  string `json:"requested_by_name,omitempty"`
+	RequestedByEmail string `json:"requested_by_email,omitempty"`
+	RequestedFromIP  string `json:"requested_from_ip,omitempty"`
+	// Disclaimer is fixed, not AI-authored or configurable per report —
+	// every export carries the same responsibility statement regardless of
+	// scan content. Not a substitute for real legal review before this
+	// becomes a customer-facing SaaS term.
+	Disclaimer string `json:"disclaimer"`
+
 	Jobs     []JobSummary `json:"jobs"`
 	Findings []FindingRow `json:"findings"`
 
@@ -83,9 +102,14 @@ type PentestCoverage struct {
 	TechnologiesFound   []string `json:"technologies_found,omitempty"`
 	NucleiCategoriesRun []string `json:"nuclei_categories_run"`
 	CrawledPathsFound   int      `json:"crawled_paths_found"`
-	TotalScriptRuns     int      `json:"total_script_runs"`
-	PhasesCompleted     []string `json:"phases_completed"`
-	PhasesSkipped       []string `json:"phases_skipped,omitempty"`
+	// SubdomainsFound is meaningful only when "subdomain_enum" appears in
+	// PhasesCompleted below — 0 there means "ran, found nothing," 0 with
+	// the phase absent from PhasesCompleted means "didn't run" (disabled
+	// via PentestScanConfig.SubdomainEnum).
+	SubdomainsFound int      `json:"subdomains_found"`
+	TotalScriptRuns int      `json:"total_script_runs"`
+	PhasesCompleted []string `json:"phases_completed"`
+	PhasesSkipped   []string `json:"phases_skipped,omitempty"`
 }
 
 // FindingRow is one Finding flattened for a report — Location is

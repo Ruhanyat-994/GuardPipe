@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -12,9 +13,20 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 )
+
+// responsibilityDisclaimer is every report's fixed accountability statement
+// — modelled on the same "the tool doesn't authorise anything, the operator
+// does" posture Nessus/Qualys/Burp Suite-class scanners already put on
+// their own output, since GuardPipe's target-admission model (denylist, not
+// allowlist — CLAUDE.md's security-posture section) accepts any
+// publicly-resolvable host by design and relies on the attestation, not a
+// pre-approval list, as the real authorisation control. Not legal advice —
+// review with counsel before this is a customer-facing ToS.
+const responsibilityDisclaimer = "This scan was initiated by the account identified above, who attested ownership of or explicit authorisation to test the scanned target and is solely responsible for ensuring that authorisation is genuine, current, and sufficient in scope. GuardPipe is a testing tool; it does not verify real-world authorisation on the requester's behalf and accepts no liability for scans run without it. Every scan is logged against the initiating account and source IP address."
 
 // ScanReader is the subset of orchestrator.Service Assembler needs — defined
 // here (the consumer), same convention internal/modules/orchestrator/worker.go's
@@ -29,6 +41,15 @@ type ScanReader interface {
 // narrow-consumer-interface convention as ScanReader above.
 type ProjectReader interface {
 	Get(ctx context.Context, actor domain.Actor, id uuid.UUID) (*project.ProjectDetail, error)
+}
+
+// UserReader resolves a scan's triggering user for the report's
+// accountability stamp — implemented directly by *store/repo.UserRepo
+// (already exposes exactly this method for identity's own auth flows), no
+// new repository code needed. A lookup failure (e.g. the user was since
+// deleted) is tolerated, not fatal to Build — see attachRequestedBy.
+type UserReader interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*identity.User, error)
 }
 
 // findingsPageSize is how many findings Assembler.Build asks
@@ -51,6 +72,7 @@ const topPrioritiesCount = 5
 type Assembler struct {
 	scans    ScanReader
 	projects ProjectReader
+	users    UserReader
 	ai       ai.Service // nil disables the AI executive summary entirely
 	log      *slog.Logger
 }
@@ -58,11 +80,13 @@ type Assembler struct {
 // NewAssembler wires an Assembler. aiSvc may be nil (AI disabled or no
 // Gemini key configured — same convention every AI-consuming engine already
 // follows) — Build still succeeds, just without ExecutiveSummary/TopPriorities.
-func NewAssembler(scans ScanReader, projects ProjectReader, aiSvc ai.Service, log *slog.Logger) *Assembler {
+// users may also be nil (a test that doesn't care about the accountability
+// stamp) — Build then just leaves RequestedByName/Email empty.
+func NewAssembler(scans ScanReader, projects ProjectReader, users UserReader, aiSvc ai.Service, log *slog.Logger) *Assembler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Assembler{scans: scans, projects: projects, ai: aiSvc, log: log}
+	return &Assembler{scans: scans, projects: projects, users: users, ai: aiSvc, log: log}
 }
 
 // Build assembles one report. actor's org must own the scan (both
@@ -84,17 +108,20 @@ func (a *Assembler) Build(ctx context.Context, actor domain.Actor, scanID uuid.U
 	}
 
 	data := &ReportData{
-		GeneratedAt:   time.Now().UTC(),
-		ProjectName:   proj.Name,
-		ScanID:        detail.ID,
-		ScanNumber:    detail.ScanNumber,
-		ScanType:      detail.Type,
-		ScanStatus:    detail.Status,
-		QueuedAt:      detail.QueuedAt,
-		StartedAt:     detail.StartedAt,
-		FinishedAt:    detail.FinishedAt,
-		FindingCounts: detail.FindingCounts,
+		GeneratedAt:     time.Now().UTC(),
+		ProjectName:     proj.Name,
+		ScanID:          detail.ID,
+		ScanNumber:      detail.ScanNumber,
+		ScanType:        detail.Type,
+		ScanStatus:      detail.Status,
+		QueuedAt:        detail.QueuedAt,
+		StartedAt:       detail.StartedAt,
+		FinishedAt:      detail.FinishedAt,
+		FindingCounts:   detail.FindingCounts,
+		RequestedFromIP: detail.RequestedFromIP,
+		Disclaimer:      responsibilityDisclaimer,
 	}
+	a.attachRequestedBy(ctx, data, detail.TriggeredBy)
 	if detail.CommitSHA != nil {
 		data.CommitSHA = *detail.CommitSHA
 	}
@@ -147,6 +174,25 @@ func (a *Assembler) Build(ctx context.Context, actor domain.Actor, scanID uuid.U
 	a.attachExecutiveSummary(ctx, data)
 
 	return data, nil
+}
+
+// attachRequestedBy resolves triggeredBy to the display name/email the
+// report's accountability stamp shows — tolerant of every failure mode
+// (nil users reader, no triggering user recorded, the user was since
+// deleted): Build must still succeed and produce a complete report, just
+// with RequestedByName/Email left empty, exactly the same fallback contract
+// attachExecutiveSummary already follows for a missing/failed AI call.
+func (a *Assembler) attachRequestedBy(ctx context.Context, data *ReportData, triggeredBy *uuid.UUID) {
+	if a.users == nil || triggeredBy == nil {
+		return
+	}
+	u, err := a.users.GetByID(ctx, *triggeredBy)
+	if err != nil {
+		a.log.Warn("reporting: could not resolve requesting user for report watermark", "scan_id", data.ScanID, "user_id", *triggeredBy, "error", err)
+		return
+	}
+	data.RequestedByName = u.DisplayName
+	data.RequestedByEmail = u.Email
 }
 
 // fetchAllFindings pages through orchestrator.Service.ListFindings until
@@ -278,6 +324,9 @@ func formatCoverageForPrompt(cov *PentestCoverage) string {
 	}
 	if len(cov.NucleiCategoriesRun) > 0 {
 		parts = append(parts, fmt.Sprintf("vuln signature categories: %s", strings.Join(cov.NucleiCategoriesRun, ",")))
+	}
+	if slices.Contains(cov.PhasesCompleted, "subdomain_enum") {
+		parts = append(parts, fmt.Sprintf("%d additional subdomain(s) found", cov.SubdomainsFound))
 	}
 	parts = append(parts, fmt.Sprintf("%d checks across phases %s", cov.TotalScriptRuns, strings.Join(cov.PhasesCompleted, ",")))
 	if len(cov.PhasesSkipped) > 0 {
