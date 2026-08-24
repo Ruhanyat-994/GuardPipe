@@ -32,7 +32,31 @@ function locationSummary(f: FindingListItem): string | null {
       ? `${loc.path} (layer ${String(loc.layer_digest).slice(7, 19)})`
       : loc.path
   }
+  if (loc.type === 'network') {
+    // pentest. `url` is the literal endpoint the check probed — always
+    // prefer it over reassembling host:port/protocol by hand, mirroring
+    // internal/modules/reporting.FormatLocation's own precedence so the
+    // dashboard and the exported report never disagree on what to show.
+    if (loc.url) return loc.url
+    if (loc.host && loc.port) {
+      return `${loc.host}${loc.ip && loc.ip !== loc.host ? ` (${loc.ip})` : ''}:${loc.port}/${(loc.protocol || 'tcp').toLowerCase()}`
+    }
+    return loc.host ?? null
+  }
   return null
+}
+
+/**
+ * A pentest finding's endpoint (`loc.url`) is always an absolute
+ * http(s)://host:port[/path] the sandboxed scripts actually requested
+ * against the client's own attested target — safe, and useful, to open
+ * directly so the client can go verify the exposure themselves. Guarded to
+ * only ever return an http(s) URL: a Location's `url` is scan output, not
+ * something to trust blindly into an href.
+ */
+function networkEndpointUrl(loc: FindingListItem['location']): string | null {
+  if (loc.type !== 'network' || !loc.url) return null
+  return /^https?:\/\//i.test(loc.url) ? loc.url : null
 }
 
 /**
@@ -112,6 +136,7 @@ export function FindingRow({
   const summary = locationSummary(finding)
   const resourcePath = k8sResourcePath(finding.location)
   const blobUrl = buildFindingBlobUrl(finding.location, repository, gitRef)
+  const endpointUrl = networkEndpointUrl(finding.location)
   const impact = finding.metadata?.impact
   const attackPath = finding.metadata?.attack_path
 
@@ -189,6 +214,17 @@ export function FindingRow({
                     className="inline-flex items-center gap-1 text-caption font-medium text-accent hover:underline"
                   >
                     View in repository
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>
+                )}
+                {endpointUrl && (
+                  <a
+                    href={endpointUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-caption font-medium text-accent hover:underline"
+                  >
+                    Open endpoint
                     <ExternalLink className="h-3 w-3" aria-hidden="true" />
                   </a>
                 )}

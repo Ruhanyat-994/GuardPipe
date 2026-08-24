@@ -39,6 +39,7 @@ type NetworkModeKind string
 const (
 	NetworkKindNone       NetworkModeKind = "none"
 	NetworkKindTargetOnly NetworkModeKind = "target_only"
+	NetworkKindOpenEgress NetworkModeKind = "open_egress"
 )
 
 // NetworkMode selects the sandbox's network isolation. Use NetworkNone() or
@@ -86,6 +87,35 @@ func NetworkNone() NetworkMode {
 // recon step this whole engine starts with.
 func NetworkTargetOnly(ips []string, ports []int) NetworkMode {
 	return NetworkMode{Kind: NetworkKindTargetOnly, TargetIPs: ips, TargetPorts: ports}
+}
+
+// NetworkOpenEgress gives the container full outbound internet access — no
+// per-destination firewall at all — for the one class of pentest script that
+// doesn't talk to the attested target in the first place: passive subdomain/
+// asset enumeration (`subfinder`, `amass enum -passive`), which queries
+// third-party public sources (certificate-transparency logs, DNS
+// aggregators) *about* the target rather than sending it a single packet.
+// `NetworkTargetOnly`'s firewall can't serve this case — that mode's whole
+// design point is "reach only the one host the attestation actually covers,"
+// and these tools structurally need to reach dozens of unrelated public
+// hosts whose addresses aren't known in advance and change as each tool's
+// own source list evolves; hand-maintaining an allowlist of OSINT-provider
+// hostnames would be exactly the kind of fragile, silently-stale mapping
+// documentation/12-security-and-threat-model.md's threat model warns against
+// elsewhere. This is not a weaker container, only a different network: every
+// other §7.2 setting (read-only rootfs, `--cap-drop=ALL`, non-root, resource
+// caps, time limit) still applies unconditionally — see buildContainerSpec,
+// which only special-cases capabilities/user for NetworkKindTargetOnly, not
+// this kind. The actual scope boundary this relies on lives one layer up, in
+// engines/pentest: BUILD_GUIDE.md Phase 12's Phase 7 "hard rule, not a
+// suggestion" — anything an open-egress script discovers is reported as an
+// informational finding only, never fed back into this or any later phase's
+// own target list. A script run under this mode must never be handed
+// anything secret (it can freely exfiltrate whatever env vars/mounts it can
+// see) — today that's just TARGET_HOST/RATE/PHASE_BUDGET_SECONDS, no
+// credential ever reaches a pentest sandbox container of any network kind.
+func NetworkOpenEgress() NetworkMode {
+	return NetworkMode{Kind: NetworkKindOpenEgress}
 }
 
 // VolumeMount mounts a named Docker volume (optionally at a subpath) into
@@ -445,15 +475,30 @@ if [ -n "${TARGET_HOST:-}" ]; then
   done
 fi`
 	bootstrap += " && (command -v ip6tables >/dev/null 2>&1 && ip6tables -P OUTPUT DROP || true)"
-	bootstrap += ` && exec su-exec nobody "$@"`
+	// su-exec nobody resets HOME to "nobody"'s own passwd entry ("/") —
+	// confirmed against the real image: `su-exec nobody sh -c 'echo $HOME'`
+	// prints "/" even when this whole bootstrap's own process already has
+	// HOME=/tmp set (RunSpec.Env, pentestsandbox.Runner). That silently
+	// broke ffuf/nuclei/katana (anything that writes a per-user config/cache
+	// under $HOME/.config on first run) for every script that goes through
+	// this TargetOnly path — they'd fail fast with "open /.config/<tool>/...:
+	// no such file or directory" and get recorded as a near-instant
+	// exit-code-1 evidence entry, easy to mistake for "ran cleanly, found
+	// nothing." `env HOME=/tmp` re-sets it for just the final exec'd
+	// command's own environment, after su-exec's reset, rather than
+	// depending on an outer Env value su-exec is going to discard anyway.
+	bootstrap += ` && exec su-exec nobody env HOME=/tmp "$@"`
 	return append([]string{"/bin/sh", "-c", bootstrap, "sh"}, cmd...)
 }
 
-// networkMode maps NetworkMode onto Docker's HostConfig.NetworkMode. Both
-// kinds use the same underlying bridge/none topology as before —
+// networkMode maps NetworkMode onto Docker's HostConfig.NetworkMode.
+// TargetOnly and OpenEgress both get the same permissive "bridge" topology —
 // TargetOnly's real restriction to one IP is enforced by firewalledCmd's
-// iptables bootstrap above, inside the container's own netns, which holds
-// regardless of which Docker network the container is attached to.
+// iptables bootstrap above, inside the container's own netns (which holds
+// regardless of which Docker network the container is attached to), not by
+// this function; OpenEgress deliberately applies no restriction at all, see
+// NetworkOpenEgress's own doc comment for why that's the correct choice for
+// the one script class it's used for.
 func networkMode(mode NetworkMode) container.NetworkMode {
 	if mode.Kind == NetworkKindNone {
 		return "none"

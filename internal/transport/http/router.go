@@ -39,6 +39,10 @@ type RouterConfig struct {
 	ProjectSvc      project.Service
 	AdvisorySvc     advisory.Service
 	OrchestratorSvc orchestrator.Service
+	// Users backs the export report's accountability watermark (who
+	// requested this scan) — reporting.UserReader, satisfied directly by
+	// *store/repo.UserRepo.
+	Users reporting.UserReader
 	// AISvc may be nil (GUARDPIPE_AI_ENABLED=false or no Gemini key
 	// configured, same convention every AI-consuming engine already
 	// follows) — the export endpoint's executive summary is then simply
@@ -130,7 +134,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		documents.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.DeleteDocument)
 	}
 
-	reportsAssembler := reporting.NewAssembler(cfg.OrchestratorSvc, cfg.ProjectSvc, cfg.AISvc, cfg.Logger)
+	reportsAssembler := reporting.NewAssembler(cfg.OrchestratorSvc, cfg.ProjectSvc, cfg.Users, cfg.AISvc, cfg.Logger)
 	scanH := handler.NewScanHandler(cfg.OrchestratorSvc, reportsAssembler, v)
 	projects.POST("/:id/scans", middleware.RBAC(memberAndAbove...), scanH.Create)
 	projects.GET("/:id/scans", middleware.RBAC(viewerAndAbove...), scanH.List)

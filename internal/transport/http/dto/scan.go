@@ -21,12 +21,12 @@ type CreateScanRequest struct {
 	PentestConfig *PentestConfigRequest `json:"pentest_config,omitempty"`
 }
 
-func (r CreateScanRequest) ToInput() orchestrator.CreateScanInput {
+func (r CreateScanRequest) ToInput(sourceIP string) orchestrator.CreateScanInput {
 	engines := make([]domain.EngineID, len(r.Engines))
 	for i, e := range r.Engines {
 		engines[i] = domain.EngineID(e)
 	}
-	in := orchestrator.CreateScanInput{Type: domain.ScanType(r.Type), Engines: engines, Branch: r.Branch}
+	in := orchestrator.CreateScanInput{Type: domain.ScanType(r.Type), Engines: engines, Branch: r.Branch, SourceIP: sourceIP}
 	if r.PentestConfig != nil {
 		cfg := r.PentestConfig.toDomain()
 		in.PentestConfig = &cfg
@@ -45,6 +45,14 @@ type PentestConfigRequest struct {
 	PortBreadth        string   `json:"port_breadth,omitempty" validate:"omitempty,oneof=top100 top1000 top1000_service_detect"`
 	NucleiCategories   []string `json:"nuclei_categories,omitempty"`
 	PhaseBudgetSeconds int      `json:"phase_budget_seconds,omitempty"`
+	// WordlistTier ("small"/"medium"/"large") sizes the subdomain-enum
+	// phase's active DNS brute-force wordlist (and the disclosure phase's
+	// dynamic-wordlist cap) — omitted means "use the preset's own tier."
+	WordlistTier string `json:"wordlist_tier,omitempty" validate:"omitempty,oneof=small medium large"`
+	// SubdomainEnum toggles the whole subdomain/asset-enumeration phase —
+	// a pointer so "omitted" (use the preset's own default, true) is
+	// distinguishable from an explicit `false` override.
+	SubdomainEnum *bool `json:"subdomain_enum,omitempty"`
 }
 
 func (r *PentestConfigRequest) toDomain() domain.PentestScanConfig {
@@ -72,6 +80,14 @@ func (r *PentestConfigRequest) toDomain() domain.PentestScanConfig {
 		base.PhaseBudget = time.Duration(r.PhaseBudgetSeconds) * time.Second
 		base.Preset = domain.PentestPresetCustom
 	}
+	if r.WordlistTier != "" {
+		base.WordlistTier = r.WordlistTier
+		base.Preset = domain.PentestPresetCustom
+	}
+	if r.SubdomainEnum != nil {
+		base.SubdomainEnum = *r.SubdomainEnum
+		base.Preset = domain.PentestPresetCustom
+	}
 	return base
 }
 
@@ -88,6 +104,8 @@ type PentestConfigResponse struct {
 	PortBreadth        string   `json:"port_breadth"`
 	NucleiCategories   []string `json:"nuclei_categories"`
 	PhaseBudgetSeconds int      `json:"phase_budget_seconds"`
+	WordlistTier       string   `json:"wordlist_tier"`
+	SubdomainEnum      bool     `json:"subdomain_enum"`
 	ClampedFields      []string `json:"clamped_fields,omitempty"`
 }
 
@@ -99,7 +117,8 @@ func fromPentestConfig(cfg *domain.PentestScanConfig, clampedFields []string) *P
 		Preset: string(cfg.Preset), RequestRatePerSec: cfg.RequestRatePerSec,
 		PortBreadth: string(cfg.PortBreadth), NucleiCategories: cfg.NucleiCategories,
 		PhaseBudgetSeconds: int(cfg.PhaseBudget / time.Second),
-		ClampedFields:      clampedFields,
+		WordlistTier:       cfg.WordlistTier, SubdomainEnum: cfg.SubdomainEnum,
+		ClampedFields: clampedFields,
 	}
 }
 

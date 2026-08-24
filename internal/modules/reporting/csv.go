@@ -67,6 +67,22 @@ func writeScanInfoSection(w *csv.Writer, data *ReportData) error {
 		[]string{"Findings", fmt.Sprintf("%d total (%s)", data.TotalFindings, formatFindingCounts(data.FindingCounts))},
 		[]string{"Report Generated", data.GeneratedAt.Format("2006-01-02 15:04 MST")},
 	)
+	// Accountability watermark — who requested this scan and from where, so
+	// the CSV export carries the same "who is responsible for authorisation"
+	// stamp the PDF's own "Authorisation & responsibility" section does.
+	if data.RequestedByName != "" {
+		who := data.RequestedByName
+		if data.RequestedByEmail != "" {
+			who += " (" + data.RequestedByEmail + ")"
+		}
+		rows = append(rows, []string{"Requested By", who})
+	}
+	if data.RequestedFromIP != "" {
+		rows = append(rows, []string{"Source IP", data.RequestedFromIP})
+	}
+	if data.Disclaimer != "" {
+		rows = append(rows, []string{"Disclaimer", data.Disclaimer})
+	}
 	for _, r := range rows {
 		if err := w.Write(r); err != nil {
 			return err

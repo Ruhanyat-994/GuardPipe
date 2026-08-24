@@ -3,6 +3,7 @@ package sandbox
 import (
 	"testing"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/stretchr/testify/require"
 )
 
@@ -86,7 +87,7 @@ func TestBuildContainerSpec_TargetOnlyAddsFirewallCapabilities(t *testing.T) {
 	require.Contains(t, bootstrap, "iptables -P OUTPUT DROP")
 	require.Contains(t, bootstrap, "-d 203.0.113.10 -j ACCEPT")
 	require.Contains(t, bootstrap, "--dport 53 -j ACCEPT", "DNS must stay reachable — every tool resolves TARGET_HOST for TLS/SNI/vhost routing, confirmed the hard way against a real CDN-fronted target")
-	require.Contains(t, bootstrap, `exec su-exec nobody "$@"`, "the real tool script must never run as root")
+	require.Contains(t, bootstrap, `exec su-exec nobody env HOME=/tmp "$@"`, "the real tool script must never run as root, and must get a writable HOME — su-exec resets HOME to nobody's own passwd entry (\"/\"), which broke any tool that writes a per-user config/cache on first run")
 	require.Equal(t, []string{"nmap", "-p-", "203.0.113.10"}, config.Cmd[4:], "the original Cmd must still run, unmodified, as the trailing exec args")
 }
 
@@ -142,4 +143,30 @@ func TestNetworkNone_And_TargetOnly(t *testing.T) {
 	require.Equal(t, NetworkKindTargetOnly, target.Kind)
 	require.Equal(t, []string{"10.0.0.5"}, target.TargetIPs)
 	require.Equal(t, []int{80, 443}, target.TargetPorts)
+}
+
+func TestNetworkOpenEgress_Kind(t *testing.T) {
+	open := NetworkOpenEgress()
+	require.Equal(t, NetworkKindOpenEgress, open.Kind)
+}
+
+// TestBuildContainerSpec_OpenEgressStillLockedDownExceptNetwork is
+// NetworkOpenEgress's own contract: bridge networking (unlike NetworkNone),
+// but every other §7.2 container setting stays exactly as strict as
+// NetworkNone/TargetOnly get — no firewall capability escalation, runs as
+// nobody immediately (no root-then-drop needed, since there's no iptables
+// bootstrap to run), Cmd passes through unmodified.
+func TestBuildContainerSpec_OpenEgressStillLockedDownExceptNetwork(t *testing.T) {
+	spec := applyDefaults(RunSpec{
+		Image: "alpine:3.20", Cmd: []string{"subfinder", "-d", "example.com"},
+		Network: NetworkOpenEgress(),
+	})
+	config, hostConfig := buildContainerSpec(spec)
+
+	require.Equal(t, container.NetworkMode("bridge"), hostConfig.NetworkMode, "open egress still needs a real network attached, unlike NetworkNone")
+	require.Equal(t, []string{"ALL"}, hostConfig.CapDrop)
+	require.Nil(t, hostConfig.CapAdd, "no firewall to bootstrap means no capability exception is needed")
+	require.Equal(t, "nobody", config.User, "runs as nobody immediately — no root-then-drop needed without an iptables bootstrap")
+	require.Equal(t, []string{"subfinder", "-d", "example.com"}, config.Cmd, "Cmd must pass through unmodified, same as NetworkNone")
+	require.True(t, hostConfig.ReadonlyRootfs)
 }

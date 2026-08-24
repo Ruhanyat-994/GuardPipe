@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -35,13 +36,17 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 	if err != nil {
 		return fmt.Errorf("repo: encode pentest config: %w", err)
 	}
+	requestedIP, err := parseOptionalIP(s.RequestedFromIP)
+	if err != nil {
+		return fmt.Errorf("repo: scan requested IP %q is not a valid address: %w", s.RequestedFromIP, err)
+	}
 
 	const q = `
-		INSERT INTO scans (id, project_id, triggered_by, type, status, requested_engines, branch, finding_counts, pentest_config, queued_at)
-		VALUES ($1, $2, $3, $4, $5, $6::engine_id[], $7, $8, $9, now())
+		INSERT INTO scans (id, project_id, triggered_by, requested_ip, type, status, requested_engines, branch, finding_counts, pentest_config, queued_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::engine_id[], $8, $9, $10, now())
 		RETURNING queued_at`
 	err = r.db.QueryRow(ctx, q,
-		s.ID, s.ProjectID, s.TriggeredBy, string(s.Type), string(s.Status),
+		s.ID, s.ProjectID, s.TriggeredBy, requestedIP, string(s.Type), string(s.Status),
 		engineIDsToStrings(s.RequestedEngines), s.Branch, countsJSON, pentestConfigJSON,
 	).Scan(&s.QueuedAt)
 	if err != nil {
@@ -64,7 +69,7 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 
 func (r *ScanRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Scan, error) {
 	const q = `
-		SELECT id, project_id, triggered_by, type, status, requested_engines, commit_sha, branch,
+		SELECT id, project_id, triggered_by, requested_ip, type, status, requested_engines, commit_sha, branch,
 			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts, pentest_config,
 			(SELECT count(*) FROM scans s2 WHERE s2.project_id = scans.project_id AND s2.created_at <= scans.created_at)
 		FROM scans WHERE id = $1`
@@ -85,7 +90,7 @@ func (r *ScanRepo) ListByProject(ctx context.Context, projectID uuid.UUID, page 
 	// clause matches — it's computed before the outer ORDER BY/LIMIT trims
 	// down to one page, so pagination never skews the numbering.
 	const listQ = `
-		SELECT id, project_id, triggered_by, type, status, requested_engines, commit_sha, branch,
+		SELECT id, project_id, triggered_by, requested_ip, type, status, requested_engines, commit_sha, branch,
 			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts, pentest_config,
 			ROW_NUMBER() OVER (ORDER BY created_at ASC)
 		FROM scans WHERE project_id = $1
@@ -205,9 +210,10 @@ func scanRowScan(row pgx.Row) (*domain.Scan, error) {
 	var requestedEngines []string
 	var findingCounts map[string]int
 	var pentestConfigJSON []byte
+	var requestedIP *netip.Addr
 
 	err := row.Scan(
-		&s.ID, &s.ProjectID, &s.TriggeredBy, &scanType, &status, &requestedEngines,
+		&s.ID, &s.ProjectID, &s.TriggeredBy, &requestedIP, &scanType, &status, &requestedEngines,
 		&s.CommitSHA, &s.Branch, &s.CancelRequested, &s.ErrorReason,
 		&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &pentestConfigJSON, &s.ScanNumber,
 	)
@@ -222,11 +228,29 @@ func scanRowScan(row pgx.Row) (*domain.Scan, error) {
 	s.Status = domain.ScanStatus(status)
 	s.RequestedEngines = stringsToEngineIDs(requestedEngines)
 	s.FindingCounts = stringMapToSeverityMap(findingCounts)
+	if requestedIP != nil {
+		s.RequestedFromIP = requestedIP.String()
+	}
 	s.PentestConfig, err = unmarshalPentestConfig(pentestConfigJSON)
 	if err != nil {
 		return nil, fmt.Errorf("repo: decode pentest config: %w", err)
 	}
 	return &s, nil
+}
+
+// parseOptionalIP parses ip into a *netip.Addr for the nullable `INET`
+// requested_ip column — nil (NULL) when ip is empty, matching every other
+// optional field this repo writes, rather than erroring on the common case
+// of a scan created without a capturable client IP.
+func parseOptionalIP(ip string) (*netip.Addr, error) {
+	if ip == "" {
+		return nil, nil
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return nil, err
+	}
+	return &addr, nil
 }
 
 // marshalPentestConfig/unmarshalPentestConfig round-trip domain.Scan.PentestConfig

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
@@ -126,6 +128,7 @@ type service struct {
 	queue          Enqueuer
 	registry       *Registry
 	pentestCeiling domain.PentestScanConfig
+	audit          audit.Service
 	// progress/engineTimeouts/defaultTimeout back GetProgress's per-engine
 	// percentage: progress is the live store Pool writes to as an engine
 	// reports real stage progress (nil-safe — a nil store just means every
@@ -153,10 +156,10 @@ type Enqueuer interface {
 // job, never a frozen constant); engineTimeouts/defaultTimeout should be
 // the same values Pool itself uses so the estimate matches what the worker
 // will actually enforce.
-func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, projects ProjectAccess, q Enqueuer, registry *Registry, pentestCeiling domain.PentestScanConfig, progress *LiveProgress, engineTimeouts map[domain.EngineID]time.Duration, defaultTimeout time.Duration) Service {
+func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, projects ProjectAccess, q Enqueuer, registry *Registry, pentestCeiling domain.PentestScanConfig, progress *LiveProgress, engineTimeouts map[domain.EngineID]time.Duration, defaultTimeout time.Duration, auditSvc audit.Service) Service {
 	return &service{
 		scans: scans, jobs: jobs, findings: findings, projects: projects, queue: q, registry: registry, pentestCeiling: pentestCeiling,
-		progress: progress, engineTimeouts: engineTimeouts, defaultTimeout: defaultTimeout,
+		progress: progress, engineTimeouts: engineTimeouts, defaultTimeout: defaultTimeout, audit: auditSvc,
 	}
 }
 
@@ -179,7 +182,7 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 
 	scan := &domain.Scan{
 		ID: id.New(), ProjectID: projectID, Type: in.Type, Status: domain.ScanStatusQueued,
-		RequestedEngines: engines, FindingCounts: map[domain.Severity]int{},
+		RequestedEngines: engines, FindingCounts: map[domain.Severity]int{}, RequestedFromIP: in.SourceIP,
 	}
 	if in.Branch != "" {
 		scan.Branch = &in.Branch
@@ -222,8 +225,27 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 	for i, j := range jobs {
 		details[i] = JobDetail{ScanJob: j}
 	}
+
+	// Accountability record for this specific scan execution — same
+	// convention target.attested already establishes (project/service.go),
+	// applied per-run rather than once per target: who (actor), from where
+	// (SourceIP), against what (scan.ID), doing what (which engines).
+	if s.audit != nil {
+		var ipAddr *netip.Addr
+		if parsed, err := netip.ParseAddr(in.SourceIP); err == nil {
+			ipAddr = &parsed
+		}
+		s.audit.Log(ctx, audit.Entry{
+			OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "scan.started",
+			ResourceType: strPtr("scan"), ResourceID: &scan.ID, IP: ipAddr,
+			Detail: map[string]any{"project_id": projectID.String(), "type": string(in.Type), "engines": engines},
+		})
+	}
+
 	return &ScanDetail{Scan: *scan, Jobs: details, PentestConfigClamped: clampedFields}, nil
 }
+
+func strPtr(s string) *string { return &s }
 
 // engineRequiresRepository is every registered engine except pentest (needs
 // an attested target instead of a repository) and docreview (tolerates no

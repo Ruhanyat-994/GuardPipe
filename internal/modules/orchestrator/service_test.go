@@ -10,11 +10,35 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 )
+
+// fakeAuditService is a hand-written fake — no mocking framework, same
+// convention modules/project's own fakeAuditService (service_test.go)
+// already establishes for this exact interface.
+type fakeAuditService struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (f *fakeAuditService) Log(_ context.Context, e audit.Entry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append(f.entries, e)
+}
+
+func (f *fakeAuditService) last() *audit.Entry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.entries) == 0 {
+		return nil
+	}
+	return &f.entries[len(f.entries)-1]
+}
 
 // --- hand-written fakes (no mocking framework) ---
 
@@ -390,7 +414,7 @@ func newTestOrchestrator(t *testing.T) (orchestrator.Service, *fakeScanRepo, *fa
 		Repository: &project.Repository{},
 	}}
 
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, nil)
 	return svc, scans, jobs, findings, enqueuer, jobResults
 }
 
@@ -410,6 +434,46 @@ func TestCreateScan_FullSupplyChain_UsesAllRegisteredEngines(t *testing.T) {
 	require.Equal(t, domain.EngineDepScan, stored.Engine)
 
 	require.Len(t, enqueuer.enqueued, 1, "every created job must be enqueued")
+}
+
+// TestCreateScan_RecordsAuditEntryWithActorAndIP is this feature's own
+// accountability contract: every scan creation must be attributable to an
+// actor, an org, and a source IP — the same "who did this and from where"
+// shape target.attested already gives the one-time target attestation
+// (modules/project/service_test.go's own audit tests), now per scan
+// execution too, since reporting.Assembler's exported-report watermark
+// reads straight off domain.Scan.RequestedFromIP + TriggeredBy.
+func TestCreateScan_RecordsAuditEntryWithActorAndIP(t *testing.T) {
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	enqueuer := &fakeEnqueuer{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(fakeEngine{id: domain.EngineDepScan})
+	projectID := id.New()
+	projects := &fakeProjectAccess{detail: &project.ProjectDetail{
+		Project: project.Project{ID: projectID}, Repository: &project.Repository{},
+	}}
+	auditSvc := &fakeAuditService{}
+
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, auditSvc)
+	actor := newActor()
+
+	detail, err := svc.CreateScan(context.Background(), actor, projectID, orchestrator.CreateScanInput{
+		Type: domain.ScanTypeFullSupplyChain, SourceIP: "203.0.113.10",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "203.0.113.10", detail.RequestedFromIP, "the scan row itself must carry the requesting IP")
+
+	entry := auditSvc.last()
+	require.NotNil(t, entry, "CreateScan must log an audit entry")
+	require.Equal(t, "scan.started", entry.Action)
+	require.Equal(t, &actor.OrgID, entry.OrgID)
+	require.Equal(t, &actor.UserID, entry.ActorID)
+	require.NotNil(t, entry.ResourceID)
+	require.Equal(t, detail.ID, *entry.ResourceID)
+	require.NotNil(t, entry.IP, "source IP must round-trip into the audit entry")
+	require.Equal(t, "203.0.113.10", entry.IP.String())
 }
 
 func TestCreateScan_Partial_RejectsUnregisteredEngine(t *testing.T) {
@@ -444,7 +508,7 @@ func newGatingOrchestrator(t *testing.T, projects *fakeProjectAccess) orchestrat
 	registry := orchestrator.NewRegistry()
 	registry.Register(fakeEngine{id: domain.EngineDepScan})
 	registry.Register(fakeEngine{id: domain.EnginePentest})
-	return orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
+	return orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, nil)
 }
 
 // TestCreateScan_FullSupplyChain_ExcludesEnginesTheProjectCantRun is the
@@ -570,7 +634,7 @@ func TestCreateScan_UnknownProject_ReturnsNotFound(t *testing.T) {
 	registry := orchestrator.NewRegistry()
 	registry.Register(fakeEngine{id: domain.EngineDepScan})
 	projects := &fakeProjectAccess{err: apperrors.NotFound("project.not_found", "project not found")}
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, nil)
 
 	_, err := svc.CreateScan(context.Background(), newActor(), id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
 	require.Error(t, err)
@@ -631,7 +695,7 @@ func TestListScans_CrossOrgProject_ReturnsNotFound(t *testing.T) {
 	enqueuer := &fakeEnqueuer{}
 	registry := orchestrator.NewRegistry()
 	projects := &fakeProjectAccess{err: apperrors.NotFound("project.not_found", "project not found")}
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, nil)
 
 	_, _, err := svc.ListScans(context.Background(), newActor(), id.New(), orchestrator.Page{Page: 1, PageSize: 10})
 	require.Error(t, err)
@@ -685,7 +749,7 @@ func TestGetProgress_PrefersLiveEngineReportedProgressOverElapsedFallback(t *tes
 	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}}}
 	liveProgress := orchestrator.NewLiveProgress()
 	timeouts := map[domain.EngineID]time.Duration{domain.EngineDepScan: 10 * time.Minute}
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), liveProgress, timeouts, 5*time.Minute)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), liveProgress, timeouts, 5*time.Minute, nil)
 
 	actor := newActor()
 	detail, err := svc.CreateScan(context.Background(), actor, projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
@@ -719,7 +783,7 @@ func TestGetProgress_NearMiss_FallsBackToRealElapsedTimeWhenEngineReportsNothing
 	projects := &fakeProjectAccess{detail: &project.ProjectDetail{Project: project.Project{ID: projectID}, Repository: &project.Repository{}}}
 	liveProgress := orchestrator.NewLiveProgress() // no Set() call for this job — nothing reported
 	timeouts := map[domain.EngineID]time.Duration{domain.EngineDepScan: time.Second}
-	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), liveProgress, timeouts, 5*time.Minute)
+	svc := orchestrator.NewService(scans, jobs, findings, projects, enqueuer, registry, domain.PentestPresetDeepConfig(), liveProgress, timeouts, 5*time.Minute, nil)
 
 	actor := newActor()
 	detail, err := svc.CreateScan(context.Background(), actor, projectID, orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})

@@ -284,7 +284,7 @@ func run() error {
 	orchestratorSvc := orchestrator.NewService(
 		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),
 		projectSvc, jobQueue, registry, pentestCeiling,
-		liveProgress, cfg.Scanning.EngineTimeouts, defaultEngineTimeout,
+		liveProgress, cfg.Scanning.EngineTimeouts, defaultEngineTimeout, auditSvc,
 	)
 
 	pool := &orchestrator.Pool{
@@ -331,6 +331,7 @@ func run() error {
 		ProjectSvc:      projectSvc,
 		AdvisorySvc:     advisorySvc,
 		OrchestratorSvc: orchestratorSvc,
+		Users:           repo.NewUserRepo(db.Pool),
 		AISvc:           aiSvc,
 		HealthDB:        db,
 		Version:         version,
