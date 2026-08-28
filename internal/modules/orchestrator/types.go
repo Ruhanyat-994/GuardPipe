@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 )
 
 // CreateScanInput matches `POST /projects/{id}/scans`
@@ -80,6 +81,23 @@ type EngineProgress struct {
 	// that don't report named stages.
 	Activity     string
 	FindingCount int
+}
+
+// RiskAssessmentRecord is a scoring.RiskAssessment plus the scan-context
+// fields only the orchestrator (not the pure scoring package) can know:
+// which scan it's for, and the previous score for the delta
+// (documentation/11-risk-scoring-and-severity.md §6) — scoring.Compute has
+// no access to other scans, so that lookup happens here, one layer up.
+type RiskAssessmentRecord struct {
+	ScanID         uuid.UUID
+	Score          int
+	Verdict        domain.Verdict
+	EngineScores   map[domain.EngineID]int
+	Breakdown      []scoring.Contribution
+	PreviousScore  *int
+	IsPartial      bool
+	FormulaVersion string
+	ComputedAt     time.Time
 }
 
 // Progress is the whole polling response — deliberately tiny, served from

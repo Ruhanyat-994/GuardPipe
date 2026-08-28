@@ -17,6 +17,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 )
@@ -617,4 +618,112 @@ func TestPool_ProcessJob_SymlinkEscapingWorkspaceRoot_IsRemoved(t *testing.T) {
 	require.Equal(t, domain.JobStatusSucceeded, job.Status)
 	require.False(t, sawEscaping, "a symlink resolving outside the workspace root must be removed before an engine ever sees it")
 	require.True(t, sawInternal, "a symlink resolving inside the workspace root must be left alone")
+}
+
+// TestPool_ProcessJob_LastJobFinalizes_ComputesAndPersistsRiskAssessment is
+// the core proof that scoring runs from the orchestrator layer, exactly
+// once, right after the scan's last job goes terminal — not from inside
+// JobResultRepo's own SQL-only transaction (see worker.go's finalizeScoring
+// doc comment for why that split matters).
+func TestPool_ProcessJob_LastJobFinalizes_ComputesAndPersistsRiskAssessment(t *testing.T) {
+	engine := &scriptedEngine{
+		id: domain.EngineCodeScan, applicable: true,
+		findings: []domain.Finding{
+			{ID: id.New(), Engine: domain.EngineCodeScan, RuleID: "codescan.injection.sql-string-concat", Severity: domain.SeverityCritical, Status: domain.StatusOpen},
+		},
+	}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
+	riskAssessments := &fakeRiskAssessmentRepo{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
+		Projects:      &fakeCloneInfo{},
+		Cloner:        &fakeCloner{},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log:             discardLogger(),
+		Findings:        findings,
+		RiskAssessments: riskAssessments,
+		Scorer:          scoring.NewDefaultScorer(),
+	}
+	scanID, jobID := seedScanAndJob(t, scans, jobs, domain.EngineCodeScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	record := riskAssessments.last()
+	require.NotNil(t, record, "the scan's only job just went terminal — a RiskAssessment must have been persisted")
+	require.Equal(t, scanID, record.ScanID)
+	require.GreaterOrEqual(t, record.Score, 70, "one critical finding must floor the score at 70")
+	require.Equal(t, domain.VerdictBlock, record.Verdict)
+	require.False(t, record.IsPartial, "the only job succeeded")
+	require.Equal(t, "1.0", record.FormulaVersion)
+}
+
+// TestPool_ProcessJob_ScanCancelled_DoesNotScore: a cancelled scan's last
+// job still finalizes it (to `cancelled`, not `completed`) — that must not
+// trigger scoring, which only makes sense for a scan that actually ran to
+// completion.
+func TestPool_ProcessJob_ScanCancelled_DoesNotScore(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineCodeScan, applicable: true}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
+	riskAssessments := &fakeRiskAssessmentRepo{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
+		Projects:      &fakeCloneInfo{},
+		Cloner:        &fakeCloner{},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log:             discardLogger(),
+		Findings:        findings,
+		RiskAssessments: riskAssessments,
+		Scorer:          scoring.NewDefaultScorer(),
+	}
+	scanID, jobID := seedScanAndJob(t, scans, jobs, domain.EngineCodeScan)
+	require.NoError(t, scans.SetCancelRequested(context.Background(), scanID))
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	scan, err := scans.GetByID(context.Background(), scanID)
+	require.NoError(t, err)
+	require.Equal(t, domain.ScanStatusCancelled, scan.Status)
+	require.Nil(t, riskAssessments.last(), "a cancelled scan must not get a risk assessment")
+}
+
+// TestPool_ProcessJob_ScoringNotWired_NeverPanics is the defensive-nil-check
+// case: most tests (newTestPool) never wire Findings/RiskAssessments/Scorer
+// at all, since scoring is orthogonal to what they're exercising — this
+// must degrade to "don't score," not panic. Every other test in this file
+// already proves this implicitly by passing; this one asserts it directly.
+func TestPool_ProcessJob_ScoringNotWired_NeverPanics(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineDepScan, applicable: true}
+	pool, scans, jobs, _, q := newTestPool(t, engine, &fakeCloner{})
+	scanID, jobID := seedScanAndJob(t, scans, jobs, domain.EngineDepScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	require.NotPanics(t, func() { pool.Start(ctx) })
+
+	scan, err := scans.GetByID(context.Background(), scanID)
+	require.NoError(t, err)
+	require.Equal(t, domain.ScanStatusCompleted, scan.Status)
 }

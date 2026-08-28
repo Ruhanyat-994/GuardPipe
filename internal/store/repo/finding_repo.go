@@ -72,6 +72,33 @@ func (r *FindingRepo) ListByScan(ctx context.Context, scanID uuid.UUID, page orc
 	return out, total, nil
 }
 
+// ListAllByScan is the unpaginated form scoring.Compute needs — the formula
+// has to see every finding for the scan to sum severities per engine, not
+// one page of them. No evidence attach: scoring never looks at Evidence,
+// and a scan can carry thousands of findings, so skipping it here avoids a
+// second batch query scoring has no use for.
+func (r *FindingRepo) ListAllByScan(ctx context.Context, scanID uuid.UUID) ([]domain.Finding, error) {
+	q := findingSelectColumns + ` WHERE scan_id = $1 ORDER BY severity, created_at`
+	rows, err := r.db.Query(ctx, q, scanID)
+	if err != nil {
+		return nil, fmt.Errorf("repo: list all findings: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Finding
+	for rows.Next() {
+		f, err := findingRowScan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("repo: scan finding row: %w", err)
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo: iterate findings: %w", err)
+	}
+	return out, nil
+}
+
 // attachEvidence batch-fetches finding_evidence for every finding in one
 // query (not per-row — a list endpoint returning up to 100 findings must
 // not run 100 evidence queries) and fills in each Finding.Evidence slice in

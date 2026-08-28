@@ -42,6 +42,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/config"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/logger"
@@ -287,22 +288,33 @@ func run() error {
 		liveProgress, cfg.Scanning.EngineTimeouts, defaultEngineTimeout, auditSvc,
 	)
 
+	// scorer's thresholds come from the same GUARDPIPE_GATE_WARN/BLOCK config
+	// values documentation/11-risk-scoring-and-severity.md §3.8 names —
+	// everything else in scoring.DefaultConfig() is a calibrated constant
+	// with no environment override (see that function's own doc comment).
+	scorerConfig := scoring.DefaultConfig()
+	scorerConfig.Thresholds = scoring.Thresholds{Warn: cfg.Gate.Warn, Block: cfg.Gate.Block}
+	scorer := scoring.NewScorer(scorerConfig)
+
 	pool := &orchestrator.Pool{
-		Size:           cfg.Scanning.WorkerCount,
-		Queue:          orchestrator.NewJobQueueClaimer(jobQueue.Claim, jobQueue.Ack),
-		Registry:       registry,
-		Scans:          repo.NewScanRepo(db.Pool),
-		Jobs:           repo.NewScanJobRepo(db.Pool),
-		JobResults:     repo.NewJobResultRepo(db.Pool),
-		Projects:       projectSvc,
-		Documents:      projectSvc,
-		Targets:        projectSvc,
-		Cloner:         vcsSvc,
-		WorkspaceRoot:  cfg.Scanning.WorkspaceRoot,
-		EngineTimeouts: cfg.Scanning.EngineTimeouts,
-		DefaultTimeout: defaultEngineTimeout,
-		Progress:       liveProgress,
-		Log:            log,
+		Size:            cfg.Scanning.WorkerCount,
+		Queue:           orchestrator.NewJobQueueClaimer(jobQueue.Claim, jobQueue.Ack),
+		Registry:        registry,
+		Scans:           repo.NewScanRepo(db.Pool),
+		Jobs:            repo.NewScanJobRepo(db.Pool),
+		JobResults:      repo.NewJobResultRepo(db.Pool),
+		Projects:        projectSvc,
+		Documents:       projectSvc,
+		Targets:         projectSvc,
+		Cloner:          vcsSvc,
+		WorkspaceRoot:   cfg.Scanning.WorkspaceRoot,
+		EngineTimeouts:  cfg.Scanning.EngineTimeouts,
+		DefaultTimeout:  defaultEngineTimeout,
+		Progress:        liveProgress,
+		Log:             log,
+		Findings:        repo.NewFindingRepo(db.Pool),
+		RiskAssessments: repo.NewRiskAssessmentRepo(db.Pool),
+		Scorer:          scorer,
 	}
 
 	// GUARDPIPE_ROLE=api never runs the worker pool; GUARDPIPE_ROLE=all

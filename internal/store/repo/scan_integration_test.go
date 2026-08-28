@@ -276,12 +276,13 @@ func TestJobResultRepo_PersistJobResult_OneJobScan_FindingsPersistAndScanFinaliz
 		Evidence: []domain.Evidence{{Kind: domain.EvidenceKindManifestExcerpt, Value: "no lockfile present"}},
 	}
 
-	err := jobResults.PersistJobResult(ctx, orchestrator.JobResult{
+	finalized, err := jobResults.PersistJobResult(ctx, orchestrator.JobResult{
 		JobID: job.ID, ScanID: scan.ID, ProjectID: projectID, Engine: domain.EngineDepScan,
 		Status: domain.JobStatusSucceeded, Stats: map[string]any{"files_scanned": 1},
 		Findings: []domain.Finding{finding},
 	})
 	require.NoError(t, err)
+	require.True(t, finalized, "the only job for this scan just went terminal")
 
 	gotJob, err := jobs.GetByID(ctx, job.ID)
 	require.NoError(t, err)
@@ -342,10 +343,11 @@ func TestFindingRepo_ListByScan_EvidenceDoesNotLeakBetweenFindings(t *testing.T)
 		Evidence: []domain.Evidence{{Kind: domain.EvidenceKindManifestExcerpt, Value: `"left-pad": "*"`}},
 	}
 
-	require.NoError(t, jobResults.PersistJobResult(ctx, orchestrator.JobResult{
+	_, err := jobResults.PersistJobResult(ctx, orchestrator.JobResult{
 		JobID: job.ID, ScanID: scan.ID, ProjectID: projectID, Engine: domain.EngineDepScan,
 		Status: domain.JobStatusSucceeded, Findings: []domain.Finding{secretFinding, wildcardFinding},
-	}))
+	})
+	require.NoError(t, err)
 
 	list, total, err := findings.ListByScan(ctx, scan.ID, orchestrator.Page{Page: 1, PageSize: 25})
 	require.NoError(t, err)
@@ -390,12 +392,14 @@ func TestJobResultRepo_PersistJobResult_IdempotentOnRerun(t *testing.T) {
 	}
 	result := orchestrator.JobResult{JobID: job.ID, ScanID: scan.ID, ProjectID: projectID, Engine: domain.EngineDepScan, Status: domain.JobStatusSucceeded, Findings: []domain.Finding{finding}}
 
-	require.NoError(t, jobResults.PersistJobResult(ctx, result))
+	_, err := jobResults.PersistJobResult(ctx, result)
+	require.NoError(t, err)
 	// Re-run with a fresh finding ID but the same fingerprint — simulating
 	// the same job re-executing (NFR-REL-002: re-runs are idempotent).
 	finding.ID = id.New()
 	result.Findings = []domain.Finding{finding}
-	require.NoError(t, jobResults.PersistJobResult(ctx, result))
+	_, err = jobResults.PersistJobResult(ctx, result)
+	require.NoError(t, err)
 
 	_, total, err := findings.ListByScan(ctx, scan.ID, orchestrator.Page{Page: 1, PageSize: 25})
 	require.NoError(t, err)
@@ -416,13 +420,17 @@ func TestJobResultRepo_PersistJobResult_MultiJobScan_DoesNotFinalizeUntilLastJob
 	jobB := domain.ScanJob{ID: id.New(), ScanID: scan.ID, Engine: domain.EngineCodeScan, Status: domain.JobStatusQueued}
 	require.NoError(t, jobs.CreateMany(ctx, []domain.ScanJob{jobA, jobB}))
 
-	require.NoError(t, jobResults.PersistJobResult(ctx, orchestrator.JobResult{JobID: jobA.ID, ScanID: scan.ID, ProjectID: projectID, Engine: domain.EngineDepScan, Status: domain.JobStatusSucceeded}))
+	finalizedA, err := jobResults.PersistJobResult(ctx, orchestrator.JobResult{JobID: jobA.ID, ScanID: scan.ID, ProjectID: projectID, Engine: domain.EngineDepScan, Status: domain.JobStatusSucceeded})
+	require.NoError(t, err)
+	require.False(t, finalizedA, "jobB is still queued")
 
 	gotScan, err := scans.GetByID(ctx, scan.ID)
 	require.NoError(t, err)
 	require.Equal(t, domain.ScanStatusQueued, gotScan.Status, "must not finalise while jobB is still queued")
 
-	require.NoError(t, jobResults.PersistJobResult(ctx, orchestrator.JobResult{JobID: jobB.ID, ScanID: scan.ID, ProjectID: projectID, Engine: domain.EngineCodeScan, Status: domain.JobStatusSkipped, SkipReason: "no manifest"}))
+	finalizedB, err := jobResults.PersistJobResult(ctx, orchestrator.JobResult{JobID: jobB.ID, ScanID: scan.ID, ProjectID: projectID, Engine: domain.EngineCodeScan, Status: domain.JobStatusSkipped, SkipReason: "no manifest"})
+	require.NoError(t, err)
+	require.True(t, finalizedB, "jobB was the last job")
 
 	gotScan, err = scans.GetByID(ctx, scan.ID)
 	require.NoError(t, err)
