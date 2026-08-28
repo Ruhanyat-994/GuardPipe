@@ -146,10 +146,11 @@ type ProjectAccess interface {
 }
 
 type service struct {
-	scans          ScanRepository
-	jobs           ScanJobRepository
-	findings       FindingRepository
-	projects       ProjectAccess
+	scans           ScanRepository
+	jobs            ScanJobRepository
+	findings        FindingRepository
+	riskAssessments RiskAssessmentRepository
+	projects        ProjectAccess
 	queue          Enqueuer
 	registry       *Registry
 	pentestCeiling domain.PentestScanConfig
@@ -181,9 +182,9 @@ type Enqueuer interface {
 // job, never a frozen constant); engineTimeouts/defaultTimeout should be
 // the same values Pool itself uses so the estimate matches what the worker
 // will actually enforce.
-func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, projects ProjectAccess, q Enqueuer, registry *Registry, pentestCeiling domain.PentestScanConfig, progress *LiveProgress, engineTimeouts map[domain.EngineID]time.Duration, defaultTimeout time.Duration, auditSvc audit.Service) Service {
+func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, riskAssessments RiskAssessmentRepository, projects ProjectAccess, q Enqueuer, registry *Registry, pentestCeiling domain.PentestScanConfig, progress *LiveProgress, engineTimeouts map[domain.EngineID]time.Duration, defaultTimeout time.Duration, auditSvc audit.Service) Service {
 	return &service{
-		scans: scans, jobs: jobs, findings: findings, projects: projects, queue: q, registry: registry, pentestCeiling: pentestCeiling,
+		scans: scans, jobs: jobs, findings: findings, riskAssessments: riskAssessments, projects: projects, queue: q, registry: registry, pentestCeiling: pentestCeiling,
 		progress: progress, engineTimeouts: engineTimeouts, defaultTimeout: defaultTimeout, audit: auditSvc,
 	}
 }
@@ -401,7 +402,38 @@ func (s *service) GetScan(ctx context.Context, actor domain.Actor, scanID uuid.U
 		}
 		details[i] = JobDetail{ScanJob: j, FindingCount: count}
 	}
-	return &ScanDetail{Scan: *scan, Jobs: details}, nil
+
+	risk, err := s.getRiskAssessment(ctx, scanID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ScanDetail{Scan: *scan, Jobs: details, Risk: risk}, nil
+}
+
+// getRiskAssessment loads scanID's RiskAssessmentRecord, if one exists, and
+// fills in Delta (Score - PreviousScore) — computed here rather than stored,
+// since it's derivable and storing it would just be another place it could
+// drift from the two numbers it's computed from. nil, nil (not an error)
+// whenever no score has been computed yet — a queued/running scan, or a
+// riskAssessments dependency this particular caller didn't wire (nil-safe,
+// same convention Pool.finalizeScoring's own three-field nil-check uses).
+func (s *service) getRiskAssessment(ctx context.Context, scanID uuid.UUID) (*RiskAssessmentRecord, error) {
+	if s.riskAssessments == nil {
+		return nil, nil
+	}
+	rec, err := s.riskAssessments.GetByScanID(ctx, scanID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("get risk assessment: %w", err))
+	}
+	if rec == nil {
+		return nil, nil
+	}
+	if rec.PreviousScore != nil {
+		delta := rec.Score - *rec.PreviousScore
+		rec.Delta = &delta
+	}
+	return rec, nil
 }
 
 // ListScans powers the scan-history page — newest first, paginated. The

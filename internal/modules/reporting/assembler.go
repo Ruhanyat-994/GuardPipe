@@ -171,7 +171,7 @@ func (a *Assembler) Build(ctx context.Context, actor domain.Actor, scanID uuid.U
 	})
 	data.TotalFindings = len(data.Findings)
 
-	a.attachExecutiveSummary(ctx, data)
+	a.attachExecutiveSummary(ctx, data, detail.Risk)
 
 	return data, nil
 }
@@ -220,14 +220,22 @@ func (a *Assembler) fetchAllFindings(ctx context.Context, actor domain.Actor, sc
 // scan's report doesn't spend a second call. Never fails Build: any error,
 // discard, or a nil ai.Service just leaves ExecutiveSummary/TopPriorities
 // empty, the same fallback contract every AI-consuming engine already
-// follows (documentation/10-ai-integration.md §9).
-func (a *Assembler) attachExecutiveSummary(ctx context.Context, data *ReportData) {
+// follows (documentation/10-ai-integration.md §9). risk is detail.Risk from
+// Build's own GetScan call — nil for a scan whose last job hasn't finalized
+// yet (Pool.finalizeScoring, worker.go, hasn't run), in which case the
+// prompt is told exactly that rather than a fabricated number.
+func (a *Assembler) attachExecutiveSummary(ctx context.Context, data *ReportData, risk *orchestrator.RiskAssessmentRecord) {
 	if a.ai == nil {
 		return
 	}
+	riskScore, verdict := "not yet computed for this scan", "not yet computed"
+	if risk != nil {
+		riskScore = fmt.Sprintf("%d", risk.Score)
+		verdict = string(risk.Verdict)
+	}
 	vars := map[string]string{
-		"risk_score":      "not yet computed — modules/scoring is not built in this phase",
-		"verdict":         "not yet computed",
+		"risk_score":      riskScore,
+		"verdict":         verdict,
 		"finding_counts":  formatFindingCounts(data.FindingCounts),
 		"top_findings":    formatTopFindings(data.Findings, topPrioritiesCount),
 		"engine_statuses": formatEngineStatuses(data.Jobs),
