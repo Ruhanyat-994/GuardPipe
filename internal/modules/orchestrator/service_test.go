@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -219,6 +220,17 @@ func (f *fakeFindingRepo) ListByScan(_ context.Context, scanID uuid.UUID, _ orch
 	}
 	return out, len(out), nil
 }
+func (f *fakeFindingRepo) ListAllByScan(_ context.Context, scanID uuid.UUID) ([]domain.Finding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.Finding
+	for _, sf := range f.findings {
+		if sf.Finding.ScanID == scanID {
+			out = append(out, sf.Finding)
+		}
+	}
+	return out, nil
+}
 func (f *fakeFindingRepo) CountByScanAndSeverity(_ context.Context, scanID uuid.UUID) (map[domain.Severity]int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -273,7 +285,7 @@ var terminalJobStatuses = map[domain.JobStatus]bool{
 // findings block already used — a real, `-race`-caught bug the first time
 // a test (TestPool_ProcessJob_SameScanConcurrentJobs_ClonesWorkspaceOnce)
 // actually exercised two jobs of the same scan running concurrently.
-func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestrator.JobResult) error {
+func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestrator.JobResult) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -281,7 +293,7 @@ func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestra
 	job, ok := f.jobs.byID[result.JobID]
 	if !ok {
 		f.jobs.mu.Unlock()
-		return apperrors.NotFound("job.not_found", "job not found")
+		return false, apperrors.NotFound("job.not_found", "job not found")
 	}
 	job.Status = result.Status
 	if result.ErrorReason != "" {
@@ -308,14 +320,14 @@ func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestra
 	f.findings.mu.Unlock()
 
 	if !allTerminal {
-		return nil
+		return false, nil
 	}
 
 	f.scans.mu.Lock()
 	defer f.scans.mu.Unlock()
 	scan, ok := f.scans.byID[result.ScanID]
 	if !ok {
-		return apperrors.NotFound("scan.not_found", "scan not found")
+		return false, apperrors.NotFound("scan.not_found", "scan not found")
 	}
 	counts := map[domain.Severity]int{}
 	f.findings.mu.Lock()
@@ -332,7 +344,57 @@ func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestra
 		scan.Status = domain.ScanStatusCompleted
 	}
 	scan.FindingCounts = counts
+	return true, nil
+}
+
+// fakeRiskAssessmentRepo is a hand-written fake for
+// orchestrator.RiskAssessmentRepository — records every Create call so a
+// test can assert on exactly what Pool.finalizeScoring computed, and
+// serves a scripted previous score per project for the Delta path.
+type fakeRiskAssessmentRepo struct {
+	mu             sync.Mutex
+	created        []orchestrator.RiskAssessmentRecord
+	previousScores map[uuid.UUID]int
+}
+
+func (f *fakeRiskAssessmentRepo) Create(_ context.Context, r orchestrator.RiskAssessmentRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, r)
 	return nil
+}
+
+func (f *fakeRiskAssessmentRepo) GetByScanID(_ context.Context, scanID uuid.UUID) (*orchestrator.RiskAssessmentRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range slices.Backward(f.created) {
+		if r.ScanID == scanID {
+			cp := r
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeRiskAssessmentRepo) GetPreviousScore(_ context.Context, projectID, _ uuid.UUID) (*int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	score, ok := f.previousScores[projectID]
+	if !ok {
+		return nil, nil
+	}
+	cp := score
+	return &cp, nil
+}
+
+func (f *fakeRiskAssessmentRepo) last() *orchestrator.RiskAssessmentRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.created) == 0 {
+		return nil
+	}
+	cp := f.created[len(f.created)-1]
+	return &cp
 }
 
 type fakeProjectAccess struct {
@@ -713,10 +775,11 @@ func TestGetScan_ReturnsJobsWithFindingCounts(t *testing.T) {
 	require.NoError(t, err)
 	jobID := detail.Jobs[0].ID
 
-	require.NoError(t, jobResults.PersistJobResult(context.Background(), orchestrator.JobResult{
+	_, err = jobResults.PersistJobResult(context.Background(), orchestrator.JobResult{
 		JobID: jobID, ScanID: detail.ID, Status: domain.JobStatusSucceeded,
 		Findings: []domain.Finding{{ID: id.New(), ScanID: detail.ID, Severity: domain.SeverityHigh}},
-	}))
+	})
+	require.NoError(t, err)
 
 	got, err := svc.GetScan(context.Background(), actor, detail.ID)
 	require.NoError(t, err)

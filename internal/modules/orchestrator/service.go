@@ -77,6 +77,9 @@ type ScanJobRepository interface {
 // go through JobResultRepository (see its doc comment).
 type FindingRepository interface {
 	ListByScan(ctx context.Context, scanID uuid.UUID, page Page) ([]domain.Finding, int, error)
+	// ListAllByScan is the unpaginated form scoring.Compute needs — the
+	// formula has to see every finding for the scan, not one page of them.
+	ListAllByScan(ctx context.Context, scanID uuid.UUID) ([]domain.Finding, error)
 	CountByScanAndSeverity(ctx context.Context, scanID uuid.UUID) (map[domain.Severity]int, error)
 	CountByJob(ctx context.Context, jobID uuid.UUID) (int, error)
 }
@@ -104,8 +107,30 @@ type JobResult struct {
 // scan's own status/finding_counts once every job for it is terminal.
 // Findings insert is idempotent on (scan_id, fingerprint) — a re-run of
 // the same job never double-counts (NFR-REL-002).
+//
+// PersistJobResult's bool return is true exactly when this call was the one
+// that finalized the scan (every job now terminal) — Pool.persist uses it
+// to compute and persist a RiskAssessment exactly once per scan, from the
+// orchestrator layer rather than from inside this SQL-only transaction
+// (scoring is business logic; CLAUDE.md reserves that for the service/
+// worker layer, never the repository).
 type JobResultRepository interface {
-	PersistJobResult(ctx context.Context, result JobResult) error
+	PersistJobResult(ctx context.Context, result JobResult) (finalized bool, err error)
+}
+
+// RiskAssessmentRepository is defined by this package; implementation lives
+// in internal/store/repo. Create is called exactly once per scan (by
+// Pool's finalizeScoring, when PersistJobResult signals the scan just
+// finalized) but implementations should treat scan_id as idempotent —
+// a redelivered/reclaimed job could plausibly trigger a second call for
+// the same scan, and a second Create must replace, not duplicate.
+type RiskAssessmentRepository interface {
+	Create(ctx context.Context, r RiskAssessmentRecord) error
+	GetByScanID(ctx context.Context, scanID uuid.UUID) (*RiskAssessmentRecord, error)
+	// GetPreviousScore returns the score of the most recent prior completed
+	// scan for projectID (excluding excludeScanID), or nil if there is none
+	// (documentation/11-risk-scoring-and-severity.md §6's Delta source).
+	GetPreviousScore(ctx context.Context, projectID, excludeScanID uuid.UUID) (*int, error)
 }
 
 // ProjectAccess is the subset of project.Service this package needs —

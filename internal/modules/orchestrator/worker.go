@@ -18,6 +18,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
 
@@ -117,6 +118,13 @@ type Pool struct {
 	WorkspaceRoot  string
 	EngineTimeouts map[domain.EngineID]time.Duration
 	DefaultTimeout time.Duration
+	// Findings/RiskAssessments/Scorer back finalizeScoring — all three are
+	// nil-checked and skipped together, so a test Pool that doesn't wire
+	// them (most don't; scoring is orthogonal to what they're testing) just
+	// never scores, rather than panicking.
+	Findings        FindingRepository
+	RiskAssessments RiskAssessmentRepository
+	Scorer          *scoring.Scorer
 	// Progress is the live store an engine's ScanInput.ReportProgress
 	// writes to (nil is fine — a nil store just means ReportProgress calls
 	// are silently dropped, same as never calling it). Service.GetProgress
@@ -380,7 +388,8 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 }
 
 func (p *Pool) persist(ctx context.Context, result JobResult) {
-	if err := p.JobResults.PersistJobResult(ctx, result); err != nil {
+	finalized, err := p.JobResults.PersistJobResult(ctx, result)
+	if err != nil {
 		p.Log.Error("orchestrator: persist job result failed", "job_id", result.JobID, "status", result.Status, "error", err)
 	}
 	// Every call here is a job reaching a terminal status (JobResult has no
@@ -390,6 +399,63 @@ func (p *Pool) persist(ctx context.Context, result JobResult) {
 	// independent of this map).
 	if p.Progress != nil {
 		p.Progress.Clear(result.JobID)
+	}
+	if finalized {
+		p.finalizeScoring(ctx, result.ScanID)
+	}
+}
+
+// finalizeScoring computes and persists the scan's RiskAssessment — called
+// exactly once, right after PersistJobResult signals this job was the one
+// that finalized the scan (every job now terminal). Deliberately outside
+// JobResultRepo's own SQL-only transaction: scoring is business logic
+// (CLAUDE.md's layering rule reserves that for the service/worker layer),
+// not the kind of plain aggregate finalizeScanIfComplete already computes
+// inline. Best-effort: a failure here is logged, never retried or
+// surfaced to the scan itself — a scan that finished without a score is a
+// visible gap in the UI (no RiskGauge), not a broken scan.
+func (p *Pool) finalizeScoring(ctx context.Context, scanID uuid.UUID) {
+	if p.RiskAssessments == nil || p.Findings == nil || p.Scorer == nil {
+		return // scoring not wired — most tests don't need it
+	}
+
+	scan, err := p.Scans.GetByID(ctx, scanID)
+	if err != nil {
+		p.Log.Error("orchestrator: load scan for scoring failed", "scan_id", scanID, "error", err)
+		return
+	}
+	if scan.Status != domain.ScanStatusCompleted {
+		return // a cancelled scan isn't scored
+	}
+
+	findings, err := p.Findings.ListAllByScan(ctx, scanID)
+	if err != nil {
+		p.Log.Error("orchestrator: load findings for scoring failed", "scan_id", scanID, "error", err)
+		return
+	}
+	jobs, err := p.Jobs.ListByScan(ctx, scanID)
+	if err != nil {
+		p.Log.Error("orchestrator: load jobs for scoring failed", "scan_id", scanID, "error", err)
+		return
+	}
+
+	assessment := p.Scorer.Compute(findings, jobs)
+
+	// Best-effort: a failed previous-score lookup still lets this scan get
+	// a real score, just without a delta — better than skipping scoring
+	// entirely over a lookup that isn't the score itself.
+	previousScore, err := p.RiskAssessments.GetPreviousScore(ctx, scan.ProjectID, scanID)
+	if err != nil {
+		p.Log.Error("orchestrator: load previous score failed", "scan_id", scanID, "project_id", scan.ProjectID, "error", err)
+	}
+
+	record := RiskAssessmentRecord{
+		ScanID: scanID, Score: assessment.Score, Verdict: assessment.Verdict,
+		EngineScores: assessment.EngineScores, Breakdown: assessment.Breakdown,
+		PreviousScore: previousScore, IsPartial: assessment.IsPartial, FormulaVersion: assessment.FormulaVersion,
+	}
+	if err := p.RiskAssessments.Create(ctx, record); err != nil {
+		p.Log.Error("orchestrator: persist risk assessment failed", "scan_id", scanID, "error", err)
 	}
 }
 

@@ -37,16 +37,28 @@ var terminalJobStatuses = map[domain.JobStatus]bool{
 	domain.JobStatusSkipped: true, domain.JobStatusCancelled: true,
 }
 
-func (r *JobResultRepo) PersistJobResult(ctx context.Context, result orchestrator.JobResult) error {
-	return tx.WithTx(ctx, r.db, func(pgxTx pgx.Tx) error {
+// PersistJobResult's bool return is true exactly when this call was the one
+// that flipped the scan to a terminal status — i.e. every job for it is now
+// done. A caller (Pool.persist) uses that signal to run scoring exactly
+// once per scan, from the orchestrator layer rather than from inside this
+// SQL-only transaction (CLAUDE.md: "Repository: SQL only... no business
+// rules" — computing a risk score is business logic, unlike the
+// finding_counts aggregate finalizeScanIfComplete already computes, which
+// is a plain count, not a decision).
+func (r *JobResultRepo) PersistJobResult(ctx context.Context, result orchestrator.JobResult) (bool, error) {
+	var finalized bool
+	err := tx.WithTx(ctx, r.db, func(pgxTx pgx.Tx) error {
 		if err := updateJobStatus(ctx, pgxTx, result); err != nil {
 			return err
 		}
 		if err := insertFindings(ctx, pgxTx, result); err != nil {
 			return err
 		}
-		return finalizeScanIfComplete(ctx, pgxTx, result.ScanID)
+		var err error
+		finalized, err = finalizeScanIfComplete(ctx, pgxTx, result.ScanID)
+		return err
 	})
+	return finalized, err
 }
 
 func updateJobStatus(ctx context.Context, pgxTx pgx.Tx, result orchestrator.JobResult) error {
@@ -123,39 +135,41 @@ func insertFindings(ctx context.Context, pgxTx pgx.Tx, result orchestrator.JobRe
 // terminal and, if so, computes finding_counts and writes the scan's own
 // terminal status — inside the same transaction as the job/findings write
 // above, matching documentation/04-backend-architecture.md §5.2 exactly.
-func finalizeScanIfComplete(ctx context.Context, pgxTx pgx.Tx, scanID uuid.UUID) error {
+// Returns whether it actually finalized the scan (false if a job is still
+// in flight).
+func finalizeScanIfComplete(ctx context.Context, pgxTx pgx.Tx, scanID uuid.UUID) (bool, error) {
 	rows, err := pgxTx.Query(ctx, `SELECT status FROM scan_jobs WHERE scan_id = $1`, scanID)
 	if err != nil {
-		return fmt.Errorf("repo: list job statuses: %w", err)
+		return false, fmt.Errorf("repo: list job statuses: %w", err)
 	}
 	var statuses []string
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
 			rows.Close()
-			return fmt.Errorf("repo: scan job status: %w", err)
+			return false, fmt.Errorf("repo: scan job status: %w", err)
 		}
 		statuses = append(statuses, s)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("repo: iterate job statuses: %w", err)
+		return false, fmt.Errorf("repo: iterate job statuses: %w", err)
 	}
 
 	for _, s := range statuses {
 		if !terminalJobStatuses[domain.JobStatus(s)] {
-			return nil // at least one job still in flight
+			return false, nil // at least one job still in flight
 		}
 	}
 
 	var cancelRequested bool
 	if err := pgxTx.QueryRow(ctx, `SELECT cancel_requested FROM scans WHERE id = $1`, scanID).Scan(&cancelRequested); err != nil {
-		return fmt.Errorf("repo: get scan cancel_requested: %w", err)
+		return false, fmt.Errorf("repo: get scan cancel_requested: %w", err)
 	}
 
 	countRows, err := pgxTx.Query(ctx, `SELECT severity, count(*) FROM findings WHERE scan_id = $1 GROUP BY severity`, scanID)
 	if err != nil {
-		return fmt.Errorf("repo: count findings by severity: %w", err)
+		return false, fmt.Errorf("repo: count findings by severity: %w", err)
 	}
 	counts := map[string]int{}
 	for countRows.Next() {
@@ -163,18 +177,18 @@ func finalizeScanIfComplete(ctx context.Context, pgxTx pgx.Tx, scanID uuid.UUID)
 		var n int
 		if err := countRows.Scan(&severity, &n); err != nil {
 			countRows.Close()
-			return fmt.Errorf("repo: scan severity count: %w", err)
+			return false, fmt.Errorf("repo: scan severity count: %w", err)
 		}
 		counts[severity] = n
 	}
 	countRows.Close()
 	if err := countRows.Err(); err != nil {
-		return fmt.Errorf("repo: iterate severity counts: %w", err)
+		return false, fmt.Errorf("repo: iterate severity counts: %w", err)
 	}
 
 	countsJSON, err := json.Marshal(counts)
 	if err != nil {
-		return fmt.Errorf("repo: encode finding counts: %w", err)
+		return false, fmt.Errorf("repo: encode finding counts: %w", err)
 	}
 
 	finalStatus := domain.ScanStatusCompleted
@@ -184,9 +198,9 @@ func finalizeScanIfComplete(ctx context.Context, pgxTx pgx.Tx, scanID uuid.UUID)
 	_, err = pgxTx.Exec(ctx, `UPDATE scans SET status = $2, finished_at = now(), finding_counts = $3 WHERE id = $1`,
 		scanID, string(finalStatus), countsJSON)
 	if err != nil {
-		return fmt.Errorf("repo: finalise scan: %w", err)
+		return false, fmt.Errorf("repo: finalise scan: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // nonNilStrings defaults a nil slice to empty — the TEXT[] columns this
