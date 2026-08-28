@@ -255,7 +255,14 @@ func TestEnricher_EnrichScan_CacheHit_ReleasesReservation(t *testing.T) {
 	}
 }
 
-func TestEnricher_EnrichScan_ExplainCallFails_ReleasesReservationAndSkips(t *testing.T) {
+// TestEnricher_EnrichScan_ExplainCallFails_ReleasesReservationAndCountsAsFailed
+// is the near-miss half of the budget-vs-failure distinction: a genuine
+// provider error must still degrade gracefully for the finding itself
+// (doc §9 — no suggestion persisted, the scan isn't affected) but must be
+// counted as a real Failed, not silently folded into SkippedForBudget —
+// otherwise a real outage (every call erroring) reads identically to
+// ordinary, expected budget management in the logs.
+func TestEnricher_EnrichScan_ExplainCallFails_ReleasesReservationAndCountsAsFailed(t *testing.T) {
 	svc := &fakeAIService{explainErr: errors.New("gemini: 503")}
 	budget := &fakeBudgetTracker{}
 	store := &fakeSuggestionRepo{}
@@ -263,14 +270,36 @@ func TestEnricher_EnrichScan_ExplainCallFails_ReleasesReservationAndSkips(t *tes
 
 	result := e.EnrichScan(context.Background(), uuid.New(), []domain.Finding{testFinding(domain.SeverityHigh)})
 
-	if result.SkippedForBudget != 1 {
-		t.Errorf("result = %+v, want SkippedForBudget:1 (a provider failure is treated the same as a budget skip — §9)", result)
+	if result.Failed != 1 {
+		t.Errorf("result = %+v, want Failed:1 — a genuine provider error is not the same as an ordinary budget skip", result)
+	}
+	if result.SkippedForBudget != 0 {
+		t.Errorf("result = %+v, want SkippedForBudget:0", result)
 	}
 	if budget.reserved != budget.released {
 		t.Errorf("reserved = %d, released = %d — a failed call must give its reservation back", budget.reserved, budget.released)
 	}
 	if len(store.upserted) != 0 {
 		t.Errorf("upserted = %v, want none", store.upserted)
+	}
+}
+
+// TestEnricher_EnrichScan_BudgetExhaustion_CountedSeparatelyFromFailure is
+// the true-positive half — an actual ErrBudgetExhausted must land in
+// SkippedForBudget, not Failed, since it's the expected, non-error outcome
+// §8 documents.
+func TestEnricher_EnrichScan_BudgetExhaustion_CountedSeparatelyFromFailure(t *testing.T) {
+	svc := &fakeAIService{explainResult: explainOK()}
+	store := &fakeSuggestionRepo{}
+	e := ai.NewEnricher(svc, &fakeBudgetTracker{exhausted: true}, store, nil)
+
+	result := e.EnrichScan(context.Background(), uuid.New(), []domain.Finding{testFinding(domain.SeverityHigh)})
+
+	if result.SkippedForBudget != 1 {
+		t.Errorf("result = %+v, want SkippedForBudget:1", result)
+	}
+	if result.Failed != 0 {
+		t.Errorf("result = %+v, want Failed:0 — budget exhaustion is not a failure", result)
 	}
 }
 

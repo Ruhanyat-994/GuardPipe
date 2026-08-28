@@ -82,10 +82,18 @@ type SuggestionRepository interface {
 }
 
 // EnrichScanResult summarises one EnrichScan call for logging — not
-// surfaced to any API response.
+// surfaced to any API response. SkippedForBudget and Failed are counted
+// separately: the first is the expected, documented "we chose not to
+// spend here" case (§8: "exhaustion is not an error"), the second is a
+// genuine problem (the provider call errored, returned something
+// unusable, or persistence failed) — collapsing them into one counter
+// would make a real outage (e.g. every call 404ing on a misconfigured
+// model name, or the provider's quota running out) silently look like
+// ordinary budget management in the logs.
 type EnrichScanResult struct {
 	Enriched         int
 	SkippedForBudget int
+	Failed           int
 }
 
 // Enricher produces and persists AI suggestions for findings, respecting a
@@ -127,10 +135,13 @@ func (e *Enricher) EnrichScan(ctx context.Context, scanID uuid.UUID, findings []
 		if level == EnrichNone {
 			continue
 		}
-		if e.enrichOne(ctx, scanID, f, level) {
+		switch err := e.enrichOne(ctx, scanID, f, level); {
+		case err == nil:
 			result.Enriched++
-		} else {
+		case errors.Is(err, ErrBudgetExhausted):
 			result.SkippedForBudget++
+		default:
+			result.Failed++
 		}
 	}
 	return result
@@ -152,10 +163,14 @@ func prioritise(findings []domain.Finding) []domain.Finding {
 	return out
 }
 
-func (e *Enricher) enrichOne(ctx context.Context, scanID uuid.UUID, f domain.Finding, level EnrichmentLevel) bool {
+func (e *Enricher) enrichOne(ctx context.Context, scanID uuid.UUID, f domain.Finding, level EnrichmentLevel) error {
 	explanation, err := e.explain(ctx, scanID, f)
 	if err != nil {
-		return false // budget exhausted or the call genuinely failed — either way, nothing to persist (doc §9: the finding just shows its deterministic remediation instead)
+		// Budget exhausted or the call genuinely failed — either way,
+		// nothing to persist (doc §9: the finding just shows its
+		// deterministic remediation instead). The caller (EnrichScan)
+		// distinguishes which one this was via errors.Is(err, ErrBudgetExhausted).
+		return err
 	}
 
 	suggestion := Suggestion{
@@ -178,9 +193,9 @@ func (e *Enricher) enrichOne(ctx context.Context, scanID uuid.UUID, f domain.Fin
 
 	if err := e.store.Upsert(ctx, suggestion); err != nil {
 		e.log.Error("ai: persist suggestion failed", "finding_id", f.ID, "error", err)
-		return false
+		return err
 	}
-	return true
+	return nil
 }
 
 // callResult is the common shape explain/patch reduce a Service.Run call

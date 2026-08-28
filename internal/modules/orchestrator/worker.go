@@ -450,7 +450,7 @@ func (p *Pool) enrichFindings(ctx context.Context, scanID uuid.UUID) {
 	}
 
 	result := p.Enricher.EnrichScan(ctx, scanID, findings)
-	p.Log.Info("orchestrator: AI enrichment finished", "scan_id", scanID, "enriched", result.Enriched, "skipped_for_budget", result.SkippedForBudget)
+	p.Log.Info("orchestrator: AI enrichment finished", "scan_id", scanID, "enriched", result.Enriched, "skipped_for_budget", result.SkippedForBudget, "failed", result.Failed)
 }
 
 // finalizeScoring computes and persists the scan's RiskAssessment — called
