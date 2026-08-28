@@ -43,6 +43,10 @@ type RouterConfig struct {
 	// requested this scan) — reporting.UserReader, satisfied directly by
 	// *store/repo.UserRepo.
 	Users reporting.UserReader
+	// ReportingSvc is triage: GET/PATCH /findings/{id}, GET
+	// /findings/{id}/history — a real reporting.Service, distinct from the
+	// Assembler above (which only builds export reports).
+	ReportingSvc reporting.Service
 	// AISvc may be nil (GUARDPIPE_AI_ENABLED=false or no Gemini key
 	// configured, same convention every AI-consuming engine already
 	// follows) — the export endpoint's executive summary is then simply
@@ -146,6 +150,14 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		scans.POST("/:id/cancel", middleware.RBAC(memberAndAbove...), scanH.Cancel)
 		scans.GET("/:id/findings", middleware.RBAC(viewerAndAbove...), scanH.ListFindings)
 		scans.GET("/:id/export", middleware.RBAC(viewerAndAbove...), scanH.Export)
+	}
+
+	findingH := handler.NewFindingHandler(cfg.ReportingSvc, v)
+	findings := api.Group("/findings", requireAuth)
+	{
+		findings.GET("/:id", middleware.RBAC(viewerAndAbove...), findingH.Get)
+		findings.PATCH("/:id/status", middleware.RBAC(memberAndAbove...), findingH.UpdateStatus)
+		findings.GET("/:id/history", middleware.RBAC(viewerAndAbove...), findingH.History)
 	}
 
 	ruleH := handler.NewRuleHandler(cfg.AdvisorySvc, v)

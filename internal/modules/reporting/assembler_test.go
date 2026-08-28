@@ -49,9 +49,16 @@ func (f *fakeScanReader) ListFindings(_ context.Context, _ domain.Actor, _ uuid.
 
 type fakeProjectReader struct {
 	detail *project.ProjectDetail
+	// err, when set, simulates project.Service.Get's own cross-org 404 —
+	// used by service_test.go's authorization tests. Zero value (nil)
+	// preserves every existing caller's "always succeeds" behaviour.
+	err error
 }
 
 func (f *fakeProjectReader) Get(_ context.Context, _ domain.Actor, _ uuid.UUID) (*project.ProjectDetail, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	return f.detail, nil
 }
 

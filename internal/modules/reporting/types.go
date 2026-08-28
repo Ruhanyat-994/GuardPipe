@@ -23,6 +23,17 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 )
 
+// StatusHistoryEntry is one row of a finding's triage audit trail
+// (`finding_status_history`, documentation/06-database-design.md §4.14) —
+// append-only, one row per transition Service.UpdateFindingStatus makes.
+type StatusHistoryEntry struct {
+	FromStatus domain.Status
+	ToStatus   domain.Status
+	Reason     string
+	ChangedBy  *uuid.UUID
+	ChangedAt  time.Time
+}
+
 // ReportData is one scan's report content — everything every renderer
 // (JSON/CSV/PDF) needs, already resolved to plain values (no further DB or
 // service calls at render time).
