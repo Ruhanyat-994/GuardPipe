@@ -2,7 +2,12 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 )
@@ -39,4 +44,42 @@ func (r *AISuggestionRepo) Upsert(ctx context.Context, s ai.Suggestion) error {
 		return fmt.Errorf("repo: upsert ai suggestion: %w", err)
 	}
 	return nil
+}
+
+// GetByFindingID returns findingID's suggestion, or nil if enrichment
+// never produced one for it (a low/informational finding, one whose
+// budget ran out, or one from before AI enrichment existed) — a normal
+// case, not an error.
+func (r *AISuggestionRepo) GetByFindingID(ctx context.Context, findingID uuid.UUID) (*ai.Suggestion, error) {
+	const q = `
+		SELECT finding_id, explanation, patch_diff, patch_status, model, prompt_version, input_hash, tokens_in, tokens_out, generated_at
+		FROM ai_suggestions WHERE finding_id = $1`
+
+	var s ai.Suggestion
+	var explanation, patchDiff *string
+	var tokensIn, tokensOut *int
+	var generatedAt time.Time
+	err := r.db.QueryRow(ctx, q, findingID).Scan(
+		&s.FindingID, &explanation, &patchDiff, &s.PatchStatus, &s.Model, &s.PromptVersion, &s.InputHash, &tokensIn, &tokensOut, &generatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("repo: get ai suggestion: %w", err)
+	}
+	if explanation != nil {
+		s.Explanation = *explanation
+	}
+	if patchDiff != nil {
+		s.PatchDiff = *patchDiff
+	}
+	if tokensIn != nil {
+		s.TokensIn = *tokensIn
+	}
+	if tokensOut != nil {
+		s.TokensOut = *tokensOut
+	}
+	s.GeneratedAt = generatedAt
+	return &s, nil
 }

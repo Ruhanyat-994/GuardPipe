@@ -426,6 +426,7 @@ type FindingListItemResponse struct {
 	CVE         []string           `json:"cve"`
 	OWASP       []string           `json:"owasp"`
 	CVSSScore   *float64           `json:"cvss_score"`
+	CVSSVector  *string            `json:"cvss_vector"`
 	Location    LocationResponse   `json:"location"`
 	Evidence    []EvidenceResponse `json:"evidence"`
 	// Source is "rule" or "ai" — cicdscan (Phase 10) is the first engine
@@ -454,7 +455,7 @@ func FromFinding(f domain.Finding) FindingListItemResponse {
 		Description: f.Description, Remediation: f.Remediation,
 		Severity: string(f.Severity), Confidence: string(f.Confidence), Status: string(f.Status),
 		CWE: emptyIfNilStrings(f.CWE), CVE: emptyIfNilStrings(f.CVE), OWASP: emptyIfNilStrings(f.OWASP),
-		CVSSScore: f.CVSSScore, Location: fromLocation(f.Location), Evidence: evidence,
+		CVSSScore: f.CVSSScore, CVSSVector: f.CVSSVector, Location: fromLocation(f.Location), Evidence: evidence,
 		Metadata: f.Metadata, Source: string(f.Source.Effective()),
 	}
 }
