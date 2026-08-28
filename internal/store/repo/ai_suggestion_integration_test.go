@@ -64,6 +64,28 @@ func TestAISuggestionRepo_Upsert_RoundTrips(t *testing.T) {
 	require.Equal(t, "abc123", inputHash)
 	require.Equal(t, 120, tokensIn)
 	require.Equal(t, 60, tokensOut)
+
+	got, err := suggestions.GetByFindingID(ctx, finding.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "this is exploitable via string concatenation", got.Explanation)
+	require.Equal(t, "--- a\n+++ b\n", got.PatchDiff)
+	require.Equal(t, "unverified", got.PatchStatus)
+	require.Equal(t, "gemini-2.5-flash", got.Model)
+	require.Equal(t, "v1", got.PromptVersion)
+	require.Equal(t, "abc123", got.InputHash)
+	require.Equal(t, 120, got.TokensIn)
+	require.Equal(t, 60, got.TokensOut)
+	require.False(t, got.GeneratedAt.IsZero())
+}
+
+func TestAISuggestionRepo_GetByFindingID_NoRowReturnsNilNotError(t *testing.T) {
+	pool := setupTestDB(t)
+	suggestions := repo.NewAISuggestionRepo(pool)
+
+	got, err := suggestions.GetByFindingID(context.Background(), id.New())
+	require.NoError(t, err)
+	require.Nil(t, got, "no suggestion yet is a normal case, not an error")
 }
 
 // TestAISuggestionRepo_Upsert_IsIdempotentOnFindingID proves the ON

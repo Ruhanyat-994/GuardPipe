@@ -7,12 +7,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 )
 
 func TestFromFindingDetail_OpenFinding_NoStatusChangeFields(t *testing.T) {
 	f := domain.Finding{ID: uuid.New(), Title: "t", Status: domain.StatusOpen}
-	got := FromFindingDetail(f)
+	got := FromFindingDetail(f, nil)
 	if got.StatusChangedBy != nil {
 		t.Errorf("StatusChangedBy = %+v, want nil for a never-triaged finding", got.StatusChangedBy)
 	}
@@ -35,7 +36,7 @@ func TestFromFindingDetail_TriagedFinding_CarriesStatusChangeFields(t *testing.T
 		ID: uuid.New(), Title: "t", Status: domain.StatusFalsePositive,
 		StatusReason: &reason, StatusChangedBy: &changedBy, StatusChangedAt: &changedAt,
 	}
-	got := FromFindingDetail(f)
+	got := FromFindingDetail(f, nil)
 	if got.StatusReason != reason {
 		t.Errorf("StatusReason = %q, want %q", got.StatusReason, reason)
 	}
@@ -44,6 +45,39 @@ func TestFromFindingDetail_TriagedFinding_CarriesStatusChangeFields(t *testing.T
 	}
 	if got.StatusChangedAt == nil || !got.StatusChangedAt.Equal(changedAt) {
 		t.Errorf("StatusChangedAt = %v, want %v", got.StatusChangedAt, changedAt)
+	}
+}
+
+func TestFromFindingDetail_NoSuggestionYet_AISuggestionIsNil(t *testing.T) {
+	f := domain.Finding{ID: uuid.New(), Title: "t", Status: domain.StatusOpen}
+	got := FromFindingDetail(f, nil)
+	if got.AISuggestion != nil {
+		t.Errorf("AISuggestion = %+v, want nil — the finding hasn't been enriched", got.AISuggestion)
+	}
+}
+
+func TestFromFindingDetail_WithSuggestion_MapsEveryField(t *testing.T) {
+	generatedAt := time.Now()
+	f := domain.Finding{ID: uuid.New(), Title: "t", Status: domain.StatusOpen}
+	suggestion := &ai.Suggestion{
+		Explanation: "this is exploitable because...", PatchDiff: "--- a\n+++ b\n",
+		PatchStatus: "unverified", Model: "gemini-2.5-flash", GeneratedAt: generatedAt,
+	}
+	got := FromFindingDetail(f, suggestion)
+	if got.AISuggestion == nil {
+		t.Fatal("AISuggestion is nil, want it populated")
+	}
+	if got.AISuggestion.Explanation != suggestion.Explanation {
+		t.Errorf("Explanation = %q, want %q", got.AISuggestion.Explanation, suggestion.Explanation)
+	}
+	if got.AISuggestion.PatchDiff != suggestion.PatchDiff {
+		t.Errorf("PatchDiff = %q, want %q", got.AISuggestion.PatchDiff, suggestion.PatchDiff)
+	}
+	if got.AISuggestion.PatchStatus != "unverified" {
+		t.Errorf("PatchStatus = %q, want unverified", got.AISuggestion.PatchStatus)
+	}
+	if !got.AISuggestion.GeneratedAt.Equal(generatedAt) {
+		t.Errorf("GeneratedAt = %v, want %v", got.AISuggestion.GeneratedAt, generatedAt)
 	}
 }
 

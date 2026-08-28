@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
@@ -23,13 +24,14 @@ import (
 // internal/modules/reporting's own tests.
 type fakeReportingService struct {
 	finding       *domain.Finding
+	suggestion    *ai.Suggestion
 	changedByName string
 	history       []reporting.StatusHistoryEntry
 	err           error
 }
 
-func (f *fakeReportingService) GetFinding(context.Context, domain.Actor, uuid.UUID) (*domain.Finding, error) {
-	return f.finding, f.err
+func (f *fakeReportingService) GetFinding(context.Context, domain.Actor, uuid.UUID) (*domain.Finding, *ai.Suggestion, error) {
+	return f.finding, f.suggestion, f.err
 }
 func (f *fakeReportingService) UpdateFindingStatus(context.Context, domain.Actor, uuid.UUID, domain.Status, string) (*domain.Finding, string, error) {
 	return f.finding, f.changedByName, f.err
