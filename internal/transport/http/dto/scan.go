@@ -143,25 +143,76 @@ func fromJobDetail(j orchestrator.JobDetail) JobResponse {
 	}
 }
 
+// RiskAssessmentResponse matches `GET /scans/{id}`'s "risk" field
+// (documentation/07-api-specification.md §5). nil (the whole
+// ScanResponse.Risk field, not this type) until the scan's last job
+// finalizes and Pool.finalizeScoring (worker.go) persists one.
+type RiskAssessmentResponse struct {
+	Score         int    `json:"score"`
+	Verdict       string `json:"verdict"`
+	PreviousScore *int   `json:"previous_score"`
+	// Delta is Score - PreviousScore: negative means improving, positive
+	// means regressing (documentation/11-risk-scoring-and-severity.md §6).
+	// nil whenever PreviousScore is nil.
+	Delta        *int           `json:"delta"`
+	IsPartial    bool           `json:"is_partial"`
+	EngineScores map[string]int `json:"engine_scores"`
+	// Breakdown is the ordered, human-readable "why is the score what it
+	// is" explanation a RiskGauge renders underneath itself
+	// (documentation/11-risk-scoring-and-severity.md §4's worked example;
+	// requirement 2, "the UI shows the breakdown"). Doc 07's own §5 example
+	// JSON omits this field, but every other field in that example is
+	// abbreviated too (e.g. jobs shows only 2 of what a real scan has) —
+	// treated as an omission for brevity, not a deliberate exclusion.
+	Breakdown      []ContributionResponse `json:"breakdown"`
+	FormulaVersion string                 `json:"formula_version"`
+}
+
+// ContributionResponse is one entry in RiskAssessmentResponse.Breakdown.
+type ContributionResponse struct {
+	Reason string  `json:"reason"`
+	Engine string  `json:"engine,omitempty"`
+	Detail string  `json:"detail"`
+	Impact float64 `json:"impact"`
+}
+
+func fromRiskAssessment(r *orchestrator.RiskAssessmentRecord) *RiskAssessmentResponse {
+	if r == nil {
+		return nil
+	}
+	engineScores := make(map[string]int, len(r.EngineScores))
+	for e, s := range r.EngineScores {
+		engineScores[string(e)] = s
+	}
+	breakdown := make([]ContributionResponse, len(r.Breakdown))
+	for i, c := range r.Breakdown {
+		breakdown[i] = ContributionResponse{Reason: string(c.Reason), Engine: string(c.Engine), Detail: c.Detail, Impact: c.Impact}
+	}
+	return &RiskAssessmentResponse{
+		Score: r.Score, Verdict: string(r.Verdict), PreviousScore: r.PreviousScore, Delta: r.Delta,
+		IsPartial: r.IsPartial, EngineScores: engineScores, Breakdown: breakdown, FormulaVersion: r.FormulaVersion,
+	}
+}
+
 // ScanResponse matches `POST /projects/{id}/scans`'s 202 body and
 // `GET /scans/{id}`'s 200 body — the same shape serves both.
-// Risk/AI-derived fields are Phase 13's; per the "nulls are present, not
-// omitted" convention (documentation/07-api-specification.md §1), risk is
-// always present as null until that phase builds it, not silently dropped.
+// Risk is nil (not omitted — documentation/07-api-specification.md §1's
+// "nulls are present, not omitted" convention) until the scan's last job
+// finalizes and a real score exists to show.
 type ScanResponse struct {
-	ID               string         `json:"id"`
-	ProjectID        string         `json:"project_id"`
-	Type             string         `json:"type"`
-	Status           string         `json:"status"`
-	RequestedEngines []string       `json:"requested_engines"`
-	Branch           *string        `json:"branch"`
-	CommitSHA        *string        `json:"commit_sha"`
-	QueuedAt         time.Time      `json:"queued_at"`
-	StartedAt        *time.Time     `json:"started_at"`
-	FinishedAt       *time.Time     `json:"finished_at"`
-	FindingCounts    map[string]int `json:"finding_counts"`
-	Risk             any            `json:"risk"`
-	Jobs             []JobResponse  `json:"jobs"`
+	ID               string                  `json:"id"`
+	ProjectID        string                  `json:"project_id"`
+	Type             string                  `json:"type"`
+	Status           string                  `json:"status"`
+	RequestedEngines []string                `json:"requested_engines"`
+	Branch           *string                 `json:"branch"`
+	CommitSHA        *string                 `json:"commit_sha"`
+	QueuedAt         time.Time               `json:"queued_at"`
+	StartedAt        *time.Time              `json:"started_at"`
+	FinishedAt       *time.Time              `json:"finished_at"`
+	FindingCounts    map[string]int          `json:"finding_counts"`
+	Risk             *RiskAssessmentResponse `json:"risk"`
+	Jobs             []JobResponse           `json:"jobs"`
 	// ScanNumber is this scan's 1-based position among its own project's
 	// scans (oldest = 1) — the UI's "Scan #N" in place of a raw UUID prefix.
 	ScanNumber int `json:"scan_number"`
@@ -189,7 +240,7 @@ func FromScanDetail(d *orchestrator.ScanDetail) ScanResponse {
 		ID: d.ID.String(), ProjectID: d.ProjectID.String(), Type: string(d.Type), Status: string(d.Status),
 		RequestedEngines: engines, Branch: d.Branch, CommitSHA: d.CommitSHA,
 		QueuedAt: d.QueuedAt, StartedAt: d.StartedAt, FinishedAt: d.FinishedAt,
-		FindingCounts: counts, Risk: nil, Jobs: jobs, ScanNumber: d.ScanNumber,
+		FindingCounts: counts, Risk: fromRiskAssessment(d.Risk), Jobs: jobs, ScanNumber: d.ScanNumber,
 		PentestConfig: fromPentestConfig(d.PentestConfig, d.PentestConfigClamped),
 	}
 }

@@ -284,7 +284,7 @@ func run() error {
 	liveProgress := orchestrator.NewLiveProgress()
 
 	orchestratorSvc := orchestrator.NewService(
-		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool),
+		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool), repo.NewRiskAssessmentRepo(db.Pool),
 		projectSvc, jobQueue, registry, pentestCeiling,
 		liveProgress, cfg.Scanning.EngineTimeouts, defaultEngineTimeout, auditSvc,
 	)

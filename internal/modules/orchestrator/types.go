@@ -49,6 +49,12 @@ type ScanDetail struct {
 	// populated only by CreateScan's own response, not persisted or
 	// returned by GetScan later (BUILD_GUIDE.md Phase 12).
 	PentestConfigClamped []string
+	// Risk is nil until the scan's last job finalizes and Pool.finalizeScoring
+	// (worker.go) persists a RiskAssessmentRecord for it — a queued or
+	// running scan, or one that finished before scoring existed, has no
+	// score yet, which is a real state the API and UI must both represent
+	// honestly rather than fabricate a number for.
+	Risk *RiskAssessmentRecord
 }
 
 // OrgScanSummary is one row of the org-wide scan history (`GET /scans`) —
@@ -94,7 +100,12 @@ type RiskAssessmentRecord struct {
 	Verdict        domain.Verdict
 	EngineScores   map[domain.EngineID]int
 	Breakdown      []scoring.Contribution
-	PreviousScore  *int
+	PreviousScore *int
+	// Delta is Score - PreviousScore, computed at read time (GetScan) rather
+	// than stored — negative means improving, positive means regressing
+	// (documentation/11-risk-scoring-and-severity.md §6). nil whenever
+	// PreviousScore is nil (no prior completed scan to compare against).
+	Delta          *int
 	IsPartial      bool
 	FormulaVersion string
 	ComputedAt     time.Time

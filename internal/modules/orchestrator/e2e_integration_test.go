@@ -29,6 +29,8 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
+	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 	"github.com/Ruhanyat-994/GuardPipe/internal/store"
 	"github.com/Ruhanyat-994/GuardPipe/internal/store/repo"
@@ -87,8 +89,31 @@ type e2eStaticCloneInfo struct{ projectID uuid.UUID }
 func (e2eStaticCloneInfo) GetCloneInfo(context.Context, uuid.UUID) (string, string, string, error) {
 	return "https://example.invalid/fixture-vulnerable", "main", "", nil
 }
+// Get's Repository must be non-nil — resolveEngines (service.go) only
+// includes an engine that requires a repository (depscan does) when the
+// project actually has one attached; a nil Repository here would silently
+// resolve to zero runnable engines regardless of what's registered.
 func (e e2eStaticCloneInfo) Get(_ context.Context, _ domain.Actor, id uuid.UUID) (*project.ProjectDetail, error) {
-	return &project.ProjectDetail{Project: project.Project{ID: id}}, nil
+	return &project.ProjectDetail{
+		Project:    project.Project{ID: id},
+		Repository: &project.Repository{ProjectID: id, Provider: "github", Owner: "acme", Name: "fixture-vulnerable"},
+	}, nil
+}
+
+// GetAttestedTarget: this E2E test only ever requests full_supply_chain
+// with depscan registered (no pentest engine in the registry), so
+// resolveEngines never actually calls this — it exists purely to satisfy
+// orchestrator.ProjectAccess.
+func (e2eStaticCloneInfo) GetAttestedTarget(context.Context, uuid.UUID) (*project.Target, error) {
+	return nil, apperrors.NotFound("project.pentest_target_not_found", "no attested pentest target attached to this project")
+}
+
+// MarkCredentialInvalid: this E2E test's clone always succeeds
+// (e2eFixtureCloner copies a local fixture directory, never hits GitHub),
+// so this is never actually called — exists purely to satisfy
+// orchestrator.CloneInfoProvider.
+func (e2eStaticCloneInfo) MarkCredentialInvalid(context.Context, uuid.UUID, string) error {
+	return nil
 }
 
 func setupE2EPostgres(t *testing.T) *pgxpool.Pool {
@@ -156,8 +181,8 @@ func TestEndToEnd_ScanThroughOrchestrator_FindingsLandInPostgres(t *testing.T) {
 
 	cloneInfo := e2eStaticCloneInfo{projectID: projectID}
 	svc := orchestrator.NewService(
-		repo.NewScanRepo(pool), repo.NewScanJobRepo(pool), repo.NewFindingRepo(pool),
-		cloneInfo, jobQueue, registry, domain.PentestPresetDeepConfig(), nil, nil, 0,
+		repo.NewScanRepo(pool), repo.NewScanJobRepo(pool), repo.NewFindingRepo(pool), repo.NewRiskAssessmentRepo(pool),
+		cloneInfo, jobQueue, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, nil,
 	)
 
 	fixtureDir, err := filepath.Abs(filepath.Join("..", "..", "..", "testdata", "fixtures", "fixture-vulnerable"))
@@ -168,7 +193,10 @@ func TestEndToEnd_ScanThroughOrchestrator_FindingsLandInPostgres(t *testing.T) {
 		Registry: registry, Scans: repo.NewScanRepo(pool), Jobs: repo.NewScanJobRepo(pool),
 		JobResults: repo.NewJobResultRepo(pool), Projects: cloneInfo, Cloner: e2eFixtureCloner{fixtureDir: fixtureDir},
 		WorkspaceRoot: t.TempDir(), DefaultTimeout: 30 * time.Second,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Findings:        repo.NewFindingRepo(pool),
+		RiskAssessments: repo.NewRiskAssessmentRepo(pool),
+		Scorer:          scoring.NewDefaultScorer(),
 	}
 
 	workerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -202,4 +230,9 @@ func TestEndToEnd_ScanThroughOrchestrator_FindingsLandInPostgres(t *testing.T) {
 	}
 	require.True(t, ruleIDs["depscan.hygiene.no-lockfile"], "fixture-vulnerable's package.json has no lockfile")
 	require.True(t, ruleIDs["depscan.secrets.committed-credential"], "fixture-vulnerable's config.py has a planted AWS key")
+
+	require.NotNil(t, final.Risk, "a completed scan must have a real, persisted risk assessment by the time GetScan returns")
+	require.True(t, final.Risk.Verdict.Valid())
+	require.Equal(t, "1.0", final.Risk.FormulaVersion)
+	require.Positive(t, final.Risk.Score, "fixture-vulnerable's planted findings must move the score off zero")
 }
