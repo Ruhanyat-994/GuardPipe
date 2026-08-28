@@ -9,10 +9,23 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
+
+type fakeAISuggestionReader struct {
+	byFindingID map[uuid.UUID]*ai.Suggestion
+	err         error
+}
+
+func (f *fakeAISuggestionReader) GetByFindingID(_ context.Context, findingID uuid.UUID) (*ai.Suggestion, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.byFindingID[findingID], nil
+}
 
 type fakeReportingFindingRepo struct {
 	byID map[uuid.UUID]*domain.Finding
@@ -87,7 +100,7 @@ func setupTriageTest(t *testing.T, finding *domain.Finding) (reporting.Service, 
 	projects := &fakeProjectReader{detail: sampleProjectDetail()}
 	users := &fakeUserReader{byID: map[uuid.UUID]*identity.User{}}
 
-	svc := reporting.NewService(findings, status, scans, projects, users)
+	svc := reporting.NewService(findings, status, scans, projects, users, nil)
 	return svc, status, users
 }
 
@@ -95,7 +108,7 @@ func TestService_GetFinding_ReturnsOwnedFinding(t *testing.T) {
 	finding := newTestFinding(domain.StatusOpen)
 	svc, _, _ := setupTriageTest(t, finding)
 
-	got, err := svc.GetFinding(context.Background(), domain.Actor{}, finding.ID)
+	got, _, err := svc.GetFinding(context.Background(), domain.Actor{}, finding.ID)
 	if err != nil {
 		t.Fatalf("GetFinding() error = %v", err)
 	}
@@ -104,11 +117,72 @@ func TestService_GetFinding_ReturnsOwnedFinding(t *testing.T) {
 	}
 }
 
+func TestService_GetFinding_ReturnsSuggestionWhenOneExists(t *testing.T) {
+	finding := newTestFinding(domain.StatusOpen)
+	scanID := finding.ScanID
+	projectID := uuid.New()
+	scans := &fakeReportingScanRepo{byID: map[uuid.UUID]*domain.Scan{scanID: {ID: scanID, ProjectID: projectID}}}
+	findings := &fakeReportingFindingRepo{byID: map[uuid.UUID]*domain.Finding{finding.ID: finding}}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	suggestions := &fakeAISuggestionReader{byFindingID: map[uuid.UUID]*ai.Suggestion{
+		finding.ID: {FindingID: finding.ID, Explanation: "explained"},
+	}}
+
+	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil, suggestions)
+
+	_, suggestion, err := svc.GetFinding(context.Background(), domain.Actor{}, finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if suggestion == nil || suggestion.Explanation != "explained" {
+		t.Errorf("suggestion = %+v, want the seeded suggestion", suggestion)
+	}
+}
+
+func TestService_GetFinding_NoSuggestionYet_ReturnsNilNotError(t *testing.T) {
+	finding := newTestFinding(domain.StatusOpen)
+	svc, _, _ := setupTriageTest(t, finding) // setupTriageTest wires no AISuggestionReader
+
+	_, suggestion, err := svc.GetFinding(context.Background(), domain.Actor{}, finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if suggestion != nil {
+		t.Errorf("suggestion = %+v, want nil — a nil AISuggestionReader means never-enriched", suggestion)
+	}
+}
+
+// TestService_GetFinding_SuggestionLookupFails_DegradesToNilNotError proves
+// documentation/10-ai-integration.md §9's "degrade, don't fail" shape: a
+// broken AI-suggestion lookup must never hide the finding itself.
+func TestService_GetFinding_SuggestionLookupFails_DegradesToNilNotError(t *testing.T) {
+	finding := newTestFinding(domain.StatusOpen)
+	scanID := finding.ScanID
+	projectID := uuid.New()
+	scans := &fakeReportingScanRepo{byID: map[uuid.UUID]*domain.Scan{scanID: {ID: scanID, ProjectID: projectID}}}
+	findings := &fakeReportingFindingRepo{byID: map[uuid.UUID]*domain.Finding{finding.ID: finding}}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	suggestions := &fakeAISuggestionReader{err: errors.New("db unreachable")}
+
+	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil, suggestions)
+
+	got, suggestion, err := svc.GetFinding(context.Background(), domain.Actor{}, finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v, want nil — a suggestion-lookup failure must not fail the whole call", err)
+	}
+	if got == nil {
+		t.Fatal("finding is nil, want it returned despite the suggestion lookup failing")
+	}
+	if suggestion != nil {
+		t.Errorf("suggestion = %+v, want nil", suggestion)
+	}
+}
+
 func TestService_GetFinding_UnknownFinding_ReturnsNotFound(t *testing.T) {
 	finding := newTestFinding(domain.StatusOpen)
 	svc, _, _ := setupTriageTest(t, finding)
 
-	_, err := svc.GetFinding(context.Background(), domain.Actor{}, uuid.New())
+	_, _, err := svc.GetFinding(context.Background(), domain.Actor{}, uuid.New())
 	requireNotFound(t, err)
 }
 
@@ -124,9 +198,9 @@ func TestService_GetFinding_CrossOrgProject_ReturnsNotFound(t *testing.T) {
 	findings := &fakeReportingFindingRepo{byID: map[uuid.UUID]*domain.Finding{finding.ID: finding}}
 	projects := &fakeProjectReader{err: apperrors.NotFound("project.not_found", "project not found")}
 
-	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil)
+	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil, nil)
 
-	_, err := svc.GetFinding(context.Background(), domain.Actor{}, finding.ID)
+	_, _, err := svc.GetFinding(context.Background(), domain.Actor{}, finding.ID)
 	requireNotFound(t, err)
 }
 
@@ -162,7 +236,7 @@ func TestService_UpdateFindingStatus_NoUserReader_EmptyNameNoError(t *testing.T)
 	findings := &fakeReportingFindingRepo{byID: map[uuid.UUID]*domain.Finding{finding.ID: finding}}
 	projects := &fakeProjectReader{detail: sampleProjectDetail()}
 
-	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil)
+	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil, nil)
 
 	_, changedByName, err := svc.UpdateFindingStatus(context.Background(), domain.Actor{UserID: uuid.New()}, finding.ID, domain.StatusAcknowledged, "")
 	if err != nil {
@@ -227,7 +301,7 @@ func TestService_UpdateFindingStatus_ConcurrentConflict_ReturnsConflict(t *testi
 	projects := &fakeProjectReader{detail: sampleProjectDetail()}
 	status := &fakeFindingStatusRepo{updateErr: reporting.ErrStatusConflict}
 
-	svc := reporting.NewService(findings, status, scans, projects, nil)
+	svc := reporting.NewService(findings, status, scans, projects, nil, nil)
 
 	_, _, err := svc.UpdateFindingStatus(context.Background(), domain.Actor{}, finding.ID, domain.StatusAcknowledged, "")
 	var appErr *apperrors.Error
@@ -247,7 +321,7 @@ func TestService_GetFindingHistory_ReturnsEntries(t *testing.T) {
 		{FromStatus: domain.StatusOpen, ToStatus: domain.StatusAcknowledged},
 	}}
 
-	svc := reporting.NewService(findings, status, scans, projects, nil)
+	svc := reporting.NewService(findings, status, scans, projects, nil, nil)
 
 	entries, err := svc.GetFindingHistory(context.Background(), domain.Actor{}, finding.ID)
 	if err != nil {
@@ -266,7 +340,7 @@ func TestService_GetFindingHistory_UnownedFinding_ReturnsNotFound(t *testing.T) 
 	findings := &fakeReportingFindingRepo{byID: map[uuid.UUID]*domain.Finding{finding.ID: finding}}
 	projects := &fakeProjectReader{err: apperrors.NotFound("project.not_found", "project not found")}
 
-	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil)
+	svc := reporting.NewService(findings, &fakeFindingStatusRepo{}, scans, projects, nil, nil)
 
 	_, err := svc.GetFindingHistory(context.Background(), domain.Actor{}, finding.ID)
 	requireNotFound(t, err)

@@ -38,12 +38,12 @@ func (h *FindingHandler) Get(c *gin.Context) {
 		return
 	}
 
-	finding, err := h.svc.GetFinding(c.Request.Context(), actor, findingID)
+	finding, suggestion, err := h.svc.GetFinding(c.Request.Context(), actor, findingID)
 	if err != nil {
 		c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.FromFindingDetail(*finding))
+	c.JSON(http.StatusOK, dto.FromFindingDetail(*finding, suggestion))
 }
 
 // UpdateStatus handles `PATCH /findings/{id}/status` — the triage action

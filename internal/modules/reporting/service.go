@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
 
@@ -40,6 +41,15 @@ type FindingStatusRepository interface {
 	ListHistory(ctx context.Context, findingID uuid.UUID) ([]StatusHistoryEntry, error)
 }
 
+// AISuggestionReader is the read half of ai.SuggestionRepository this
+// package needs for GetFinding's detail view — defined here (the
+// consumer) rather than reusing ai.SuggestionRepository directly, since
+// that interface is write-only (Upsert; enrichment is the only writer,
+// worker.go's Pool.enrichFindings) and this package only ever reads.
+type AISuggestionReader interface {
+	GetByFindingID(ctx context.Context, findingID uuid.UUID) (*ai.Suggestion, error)
+}
+
 // ScanRepository is the narrow read this package needs purely to resolve a
 // finding's project (for org-scoped authorization) — the same shape
 // orchestrator.ScanRepository exposes, defined separately here rather than
@@ -56,7 +66,10 @@ type ScanRepository interface {
 // separate, not-yet-built pieces of that same section; export already
 // exists via Assembler).
 type Service interface {
-	GetFinding(ctx context.Context, actor domain.Actor, findingID uuid.UUID) (*domain.Finding, error)
+	// GetFinding also returns the finding's AI suggestion, if any exists —
+	// see the concrete implementation's own doc comment for exactly when
+	// that's nil.
+	GetFinding(ctx context.Context, actor domain.Actor, findingID uuid.UUID) (*domain.Finding, *ai.Suggestion, error)
 	// UpdateFindingStatus also returns the resolved display name of the
 	// actor who made the change (via UserReader — same tolerant-of-missing-
 	// user convention Assembler.attachRequestedBy already uses), so the
@@ -72,18 +85,42 @@ type triageService struct {
 	scans    ScanRepository
 	projects ProjectReader
 	users    UserReader
+	// suggestions may be nil (a caller that doesn't need AI data wired in,
+	// e.g. a test) — GetFinding then simply returns a nil Suggestion, the
+	// same "not yet enriched" state a real finding with no ai_suggestions
+	// row also produces.
+	suggestions AISuggestionReader
 }
 
 // NewService wires the triage Service. users may be nil (a caller that
 // doesn't care about the display-name resolution) — UpdateFindingStatus
 // then simply returns an empty changedByName, the same tolerant fallback
 // Assembler.attachRequestedBy already uses for a missing UserReader.
-func NewService(findings FindingRepository, status FindingStatusRepository, scans ScanRepository, projects ProjectReader, users UserReader) Service {
-	return &triageService{findings: findings, status: status, scans: scans, projects: projects, users: users}
+// suggestions may also be nil.
+func NewService(findings FindingRepository, status FindingStatusRepository, scans ScanRepository, projects ProjectReader, users UserReader, suggestions AISuggestionReader) Service {
+	return &triageService{findings: findings, status: status, scans: scans, projects: projects, users: users, suggestions: suggestions}
 }
 
-func (s *triageService) GetFinding(ctx context.Context, actor domain.Actor, findingID uuid.UUID) (*domain.Finding, error) {
-	return s.getOwnedFinding(ctx, actor, findingID)
+// GetFinding also returns the finding's AI suggestion, if any exists yet
+// (nil when the finding hasn't been enriched — low/informational severity,
+// a budget skip, or simply predates AI enrichment existing at all; see
+// modules/ai's Enricher). A suggestion-lookup failure degrades to "no
+// suggestion" rather than failing the whole call — the finding itself is
+// still real and worth returning (documentation/10-ai-integration.md §9's
+// "degrade, don't fail" shape).
+func (s *triageService) GetFinding(ctx context.Context, actor domain.Actor, findingID uuid.UUID) (*domain.Finding, *ai.Suggestion, error) {
+	finding, err := s.getOwnedFinding(ctx, actor, findingID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if s.suggestions == nil {
+		return finding, nil, nil
+	}
+	suggestion, err := s.suggestions.GetByFindingID(ctx, findingID)
+	if err != nil {
+		return finding, nil, nil
+	}
+	return finding, suggestion, nil
 }
 
 func (s *triageService) UpdateFindingStatus(ctx context.Context, actor domain.Actor, findingID uuid.UUID, newStatus domain.Status, reason string) (*domain.Finding, string, error) {

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 )
 
@@ -14,20 +15,44 @@ type ActorRefResponse struct {
 	DisplayName string `json:"display_name,omitempty"`
 }
 
+// AISuggestionResponse is `GET /findings/{id}`'s "ai_suggestion" field —
+// nil until modules/ai's Enricher has actually produced one for this
+// finding (a low/informational finding, a budget skip, a call that
+// genuinely failed, or simply a finding from before AI enrichment
+// existed — all indistinguishable to this response, and all a normal
+// "nothing here yet" rather than an error).
+type AISuggestionResponse struct {
+	Explanation string     `json:"explanation,omitempty"`
+	PatchDiff   string     `json:"patch_diff,omitempty"`
+	// PatchStatus is "unverified" or "not_applicable" — never "verified"
+	// today (ai.Suggestion's own doc comment explains why: verifying needs
+	// a workspace checkout that's already gone by the time enrichment
+	// runs).
+	PatchStatus string    `json:"patch_status,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	GeneratedAt time.Time `json:"generated_at"`
+}
+
+func fromAISuggestion(s *ai.Suggestion) *AISuggestionResponse {
+	if s == nil {
+		return nil
+	}
+	return &AISuggestionResponse{
+		Explanation: s.Explanation, PatchDiff: s.PatchDiff, PatchStatus: s.PatchStatus,
+		Model: s.Model, GeneratedAt: s.GeneratedAt,
+	}
+}
+
 // FindingDetailResponse matches `GET /findings/{id}`. Embeds
 // FindingListItemResponse — the list row is already self-sufficient
 // (evidence/location/metadata all present, per that type's own doc
-// comment) — and adds the two fields only a detail view needs.
+// comment) — and adds the fields only a detail view needs.
 type FindingDetailResponse struct {
 	FindingListItemResponse
-	StatusReason    string            `json:"status_reason,omitempty"`
-	StatusChangedBy *ActorRefResponse `json:"status_changed_by"`
-	StatusChangedAt *time.Time        `json:"status_changed_at"`
-	// AISuggestion is nil until AI enrichment exists (BUILD_GUIDE.md Phase
-	// 13's "wire AI enrichment onto findings" item, not yet built) — present
-	// as null rather than omitted, documentation/07-api-specification.md
-	// §1's standing convention.
-	AISuggestion any `json:"ai_suggestion"`
+	StatusReason    string                 `json:"status_reason,omitempty"`
+	StatusChangedBy *ActorRefResponse      `json:"status_changed_by"`
+	StatusChangedAt *time.Time             `json:"status_changed_at"`
+	AISuggestion    *AISuggestionResponse  `json:"ai_suggestion"`
 	// History is nil until cross-scan correlation exists
 	// (first_seen_scan_id/age_days/occurrence_count — a different, not-yet-
 	// built piece from the status-change audit trail
@@ -36,7 +61,7 @@ type FindingDetailResponse struct {
 	History any `json:"history"`
 }
 
-func FromFindingDetail(f domain.Finding) FindingDetailResponse {
+func FromFindingDetail(f domain.Finding, suggestion *ai.Suggestion) FindingDetailResponse {
 	var changedBy *ActorRefResponse
 	if f.StatusChangedBy != nil {
 		changedBy = &ActorRefResponse{ID: f.StatusChangedBy.String()}
@@ -50,6 +75,7 @@ func FromFindingDetail(f domain.Finding) FindingDetailResponse {
 		StatusReason:            reason,
 		StatusChangedBy:         changedBy,
 		StatusChangedAt:         f.StatusChangedAt,
+		AISuggestion:            fromAISuggestion(suggestion),
 	}
 }
 

@@ -348,7 +348,7 @@ func run() error {
 
 	reportingSvc := reporting.NewService(
 		repo.NewFindingRepo(db.Pool), repo.NewFindingStatusRepo(db.Pool), repo.NewScanRepo(db.Pool),
-		projectSvc, repo.NewUserRepo(db.Pool),
+		projectSvc, repo.NewUserRepo(db.Pool), repo.NewAISuggestionRepo(db.Pool),
 	)
 
 	router := transporthttp.NewRouter(transporthttp.RouterConfig{
