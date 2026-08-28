@@ -224,12 +224,12 @@ func TestLoad_EngineTimeoutDefaultsMatchDocumentedValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	// documentation/04-backend-architecture.md §6.3.
+	// documentation/04-backend-architecture.md §6.3 (rev 1.1).
 	wantMinutes := map[string]int{
 		"docreview":     5,
-		"codescan":      5,
+		"codescan":      10,
 		"depscan":       3,
-		"containerscan": 8,
+		"containerscan": 15,
 		"k8sscan":       2,
 		"cicdscan":      3,
 		"pentest":       15,

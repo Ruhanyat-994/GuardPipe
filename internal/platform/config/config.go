@@ -107,6 +107,11 @@ type Scanning struct {
 	// not a service with an endpoint to authenticate against.
 	TrivyImage    string
 	TrivyDBUpdate bool
+	// TrivyCacheVolume, mounted by name into each Trivy sibling container the
+	// same way WorkspaceVolume is (see docker-compose.yml's volumes.trivy_cache),
+	// persists the vulnerability database across scans instead of
+	// re-downloading it from scratch on every containerscan run.
+	TrivyCacheVolume string
 }
 
 // Pentest — §5.5.
@@ -172,12 +177,22 @@ type Gate struct {
 }
 
 // defaultEngineTimeouts matches documentation/04-backend-architecture.md
-// §6.3 exactly.
+// §6.3 exactly. codescan/containerscan were raised from the doc's original
+// 5/8 min (documentation/04-backend-architecture.md's revision history has
+// the details): both wrap a real external tool (sonar-scanner submission +
+// SonarQube's own async compute-engine processing; a real `docker build`
+// plus two Trivy invocations) against this project's own, now
+// multi-phase-grown, self-scan target, and 5/8 min was measured too tight
+// on real hardware even after fixing codescan's sonar.exclusions gap
+// (adapters/sonarqube/scanner.go) and adding containerscan's Trivy DB
+// cache volume (adapters/trivy/scanner.go) — both real time sinks, but not
+// the only ones; a cold `docker build` alone can still take several
+// minutes.
 var defaultEngineTimeouts = map[domain.EngineID]time.Duration{
 	domain.EngineDocReview:     5 * time.Minute,
-	domain.EngineCodeScan:      5 * time.Minute,
+	domain.EngineCodeScan:      10 * time.Minute,
 	domain.EngineDepScan:       3 * time.Minute,
-	domain.EngineContainerScan: 8 * time.Minute,
+	domain.EngineContainerScan: 15 * time.Minute,
 	domain.EngineK8sScan:       2 * time.Minute,
 	domain.EngineCICDScan:      3 * time.Minute,
 	domain.EnginePentest:       15 * time.Minute,
@@ -226,17 +241,18 @@ func Load() (*Config, error) {
 			AuthRateWindow:     getDuration("GUARDPIPE_AUTH_RATE_WINDOW", time.Minute, p),
 		},
 		Scanning: Scanning{
-			WorkerCount:     getInt("GUARDPIPE_WORKER_COUNT", 4, p),
-			WorkspaceRoot:   getString("GUARDPIPE_WORKSPACE_ROOT", "/var/lib/guardpipe/workspace"),
-			MaxRepoMB:       getInt("GUARDPIPE_MAX_REPO_MB", 500, p),
-			SandboxMax:      getInt("GUARDPIPE_SANDBOX_MAX", 2, p),
-			SandboxImage:    getString("GUARDPIPE_SANDBOX_IMAGE", ""),
-			DockerHost:      getString("GUARDPIPE_DOCKER_HOST", "unix:///var/run/docker.sock"),
-			DockerNetwork:   getString("GUARDPIPE_DOCKER_NETWORK", "guardpipe-net"),
-			WorkspaceVolume: getString("GUARDPIPE_WORKSPACE_VOLUME", "guardpipe-workspace"),
-			EngineTimeouts:  loadEngineTimeouts(p),
-			TrivyImage:      getString("GUARDPIPE_TRIVY_IMAGE", ""),
-			TrivyDBUpdate:   getBool("GUARDPIPE_TRIVY_DB_UPDATE", true, p),
+			WorkerCount:      getInt("GUARDPIPE_WORKER_COUNT", 4, p),
+			WorkspaceRoot:    getString("GUARDPIPE_WORKSPACE_ROOT", "/var/lib/guardpipe/workspace"),
+			MaxRepoMB:        getInt("GUARDPIPE_MAX_REPO_MB", 500, p),
+			SandboxMax:       getInt("GUARDPIPE_SANDBOX_MAX", 2, p),
+			SandboxImage:     getString("GUARDPIPE_SANDBOX_IMAGE", ""),
+			DockerHost:       getString("GUARDPIPE_DOCKER_HOST", "unix:///var/run/docker.sock"),
+			DockerNetwork:    getString("GUARDPIPE_DOCKER_NETWORK", "guardpipe-net"),
+			WorkspaceVolume:  getString("GUARDPIPE_WORKSPACE_VOLUME", "guardpipe-workspace"),
+			EngineTimeouts:   loadEngineTimeouts(p),
+			TrivyImage:       getString("GUARDPIPE_TRIVY_IMAGE", ""),
+			TrivyDBUpdate:    getBool("GUARDPIPE_TRIVY_DB_UPDATE", true, p),
+			TrivyCacheVolume: getString("GUARDPIPE_TRIVY_CACHE_VOLUME", "guardpipe-trivy-cache"),
 		},
 		Pentest: Pentest{
 			Enabled:             getBool("GUARDPIPE_PENTEST_ENABLED", true, p),

@@ -206,6 +206,7 @@ func run() error {
 		DBUpdate:      cfg.Scanning.TrivyDBUpdate,
 		Volume:        cfg.Scanning.WorkspaceVolume,
 		WorkspaceRoot: cfg.Scanning.WorkspaceRoot,
+		CacheVolume:   cfg.Scanning.TrivyCacheVolume,
 	})
 
 	jobQueue := queue.NewJobQueue(redisClient)

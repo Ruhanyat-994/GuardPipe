@@ -173,6 +173,13 @@ volumes:
   # actually works for this Docker-outside-of-Docker sibling-container shape.
   workspace:
     name: guardpipe-workspace
+  # containerscan's Trivy sibling containers (internal/adapters/trivy/scanner.go)
+  # mount this by name to persist the vulnerability database across scans —
+  # without it, GUARDPIPE_TRIVY_DB_UPDATE=true re-downloads several hundred
+  # MB from scratch into a container removed the moment the scan finishes,
+  # a real contributor to containerscan blowing its engine timeout.
+  trivy_cache:
+    name: guardpipe-trivy-cache
   sonarqube_db_data:
   sonarqube_data:
   sonarqube_extensions:
