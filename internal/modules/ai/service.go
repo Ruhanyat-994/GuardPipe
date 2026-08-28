@@ -52,6 +52,12 @@ type RunResult struct {
 	Discarded bool
 	TokensIn  int
 	TokensOut int
+	// Model is the concrete model ID that actually produced Value (resolved
+	// from the prompt's ModelTier at call time — never hardcoded, per
+	// documentation/10-ai-integration.md §3) — callers that persist a
+	// suggestion (ai_suggestions.model, Phase 13) need this; nothing before
+	// Phase 13 did.
+	Model string
 }
 
 // Service is the one entry point callers use — an engine, or later
@@ -177,6 +183,7 @@ func (s *service) finish(prompt Prompt, resp LLMResponse, in RunInput, emit func
 		FromCache: resp.FromCache,
 		TokensIn:  resp.TokensIn,
 		TokensOut: resp.TokensOut,
+		Model:     resp.Model,
 	}, nil
 }
 

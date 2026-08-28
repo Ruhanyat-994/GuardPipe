@@ -190,3 +190,26 @@ func lookupPrompt(id PromptID) (Prompt, bool) {
 	p, ok := registry[id]
 	return p, ok
 }
+
+// PromptMaxTokens returns id's registered output-token ceiling, or 0 if id
+// isn't registered — used by BudgetTracker.Reserve as the pessimistic
+// reservation estimate before a call's real token cost is known (§8: the
+// budget is checked *before* spending, not reconciled against actual usage
+// afterward).
+func PromptMaxTokens(id PromptID) int {
+	if p, ok := registry[id]; ok {
+		return p.MaxTokens
+	}
+	return 0
+}
+
+// PromptVersion returns id's registered version string, or "" if id isn't
+// registered — used wherever a caller needs to record which version of a
+// prompt produced a result (ai_suggestions.prompt_version, Phase 13)
+// without importing the registry directly.
+func PromptVersion(id PromptID) string {
+	if p, ok := registry[id]; ok {
+		return p.Version
+	}
+	return ""
+}

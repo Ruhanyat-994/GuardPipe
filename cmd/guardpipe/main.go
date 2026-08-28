@@ -237,6 +237,14 @@ func run() error {
 		}
 		aiSvc = ai.NewService(geminiClient, ai.NewMemoryCache(), cfg.AI.CacheTTL, cfg.AI.ModelFast, cfg.AI.ModelSmart)
 	}
+	// enricher is nil exactly when aiSvc is (AI disabled) — Pool.Enricher's
+	// own nil-check (worker.go) then means enrichFindings is a no-op, the
+	// same fail-open shape every other optional AI dependency here follows.
+	var enricher *ai.Enricher
+	if aiSvc != nil {
+		budgetTracker := ai.NewRedisBudgetTracker(redisClient, cfg.AI.TokenBudgetPerScan)
+		enricher = ai.NewEnricher(aiSvc, budgetTracker, repo.NewAISuggestionRepo(db.Pool), log)
+	}
 	registry.Register(cicdscan.New(aiSvc))
 	// docreview (Phase 11) has no deterministic fallback the way cicdscan
 	// does — a nil aiSvc fails its jobs outright (engine.go's own doc
@@ -316,6 +324,7 @@ func run() error {
 		Findings:        repo.NewFindingRepo(db.Pool),
 		RiskAssessments: repo.NewRiskAssessmentRepo(db.Pool),
 		Scorer:          scorer,
+		Enricher:        enricher,
 	}
 
 	// GUARDPIPE_ROLE=api never runs the worker pool; GUARDPIPE_ROLE=all

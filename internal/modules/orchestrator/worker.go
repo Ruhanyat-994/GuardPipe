@@ -17,6 +17,7 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
@@ -48,6 +49,16 @@ type CloneInfoProvider interface {
 // receives.
 type DocumentProvider interface {
 	GetDocuments(ctx context.Context, projectID uuid.UUID) ([]project.Document, error)
+}
+
+// Enricher is the subset of *ai.Enricher the worker needs — defined here
+// (the consumer), same convention every other worker dependency
+// (Cloner/CloneInfoProvider/DocumentProvider/TargetProvider, all below)
+// already follows, so a test substitutes a small fake instead of wiring a
+// real ai.Enricher (itself needing a real Service/BudgetTracker/
+// SuggestionRepository).
+type Enricher interface {
+	EnrichScan(ctx context.Context, scanID uuid.UUID, findings []domain.Finding) ai.EnrichScanResult
 }
 
 // TargetProvider is the subset of modules/project.Service the worker needs
@@ -125,6 +136,10 @@ type Pool struct {
 	Findings        FindingRepository
 	RiskAssessments RiskAssessmentRepository
 	Scorer          *scoring.Scorer
+	// Enricher is nil-checked the same way — nil means AI enrichment is
+	// disabled (GUARDPIPE_AI_ENABLED=false, or no Gemini key configured),
+	// not an error condition.
+	Enricher Enricher
 	// Progress is the live store an engine's ScanInput.ReportProgress
 	// writes to (nil is fine — a nil store just means ReportProgress calls
 	// are silently dropped, same as never calling it). Service.GetProgress
@@ -402,7 +417,40 @@ func (p *Pool) persist(ctx context.Context, result JobResult) {
 	}
 	if finalized {
 		p.finalizeScoring(ctx, result.ScanID)
+		p.enrichFindings(ctx, result.ScanID)
 	}
+}
+
+// enrichFindings runs AI enrichment for scanID's findings
+// (documentation/10-ai-integration.md §8) — best-effort and independent of
+// scoring: a nil Enricher (AI disabled) or any failure here never affects
+// the scan's own success, matching finalizeScoring's own fail-open shape.
+// Deliberately re-fetches scan/findings rather than sharing
+// finalizeScoring's own load of them — a small duplicate query on an
+// event that fires once per scan, in exchange for the two methods staying
+// independently readable.
+func (p *Pool) enrichFindings(ctx context.Context, scanID uuid.UUID) {
+	if p.Enricher == nil || p.Findings == nil {
+		return
+	}
+
+	scan, err := p.Scans.GetByID(ctx, scanID)
+	if err != nil {
+		p.Log.Error("orchestrator: load scan for AI enrichment failed", "scan_id", scanID, "error", err)
+		return
+	}
+	if scan.Status != domain.ScanStatusCompleted {
+		return // a cancelled scan isn't enriched, same rule as scoring
+	}
+
+	findings, err := p.Findings.ListAllByScan(ctx, scanID)
+	if err != nil {
+		p.Log.Error("orchestrator: load findings for AI enrichment failed", "scan_id", scanID, "error", err)
+		return
+	}
+
+	result := p.Enricher.EnrichScan(ctx, scanID, findings)
+	p.Log.Info("orchestrator: AI enrichment finished", "scan_id", scanID, "enriched", result.Enriched, "skipped_for_budget", result.SkippedForBudget)
 }
 
 // finalizeScoring computes and persists the scan's RiskAssessment — called

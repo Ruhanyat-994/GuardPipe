@@ -16,6 +16,7 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
@@ -726,4 +727,79 @@ func TestPool_ProcessJob_ScoringNotWired_NeverPanics(t *testing.T) {
 	scan, err := scans.GetByID(context.Background(), scanID)
 	require.NoError(t, err)
 	require.Equal(t, domain.ScanStatusCompleted, scan.Status)
+}
+
+// fakeEnricher is a hand-written orchestrator.Enricher fake — these tests
+// are about the worker's wiring (is EnrichScan called at all, with the
+// right scanID/findings, only once per scan), not the enrichment decision
+// logic itself, which internal/modules/ai's own tests already cover.
+type fakeEnricher struct {
+	mu       sync.Mutex
+	calls    int
+	lastScan uuid.UUID
+	lastN    int
+}
+
+func (f *fakeEnricher) EnrichScan(_ context.Context, scanID uuid.UUID, findings []domain.Finding) ai.EnrichScanResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.lastScan = scanID
+	f.lastN = len(findings)
+	return ai.EnrichScanResult{}
+}
+
+func TestPool_ProcessJob_LastJobFinalizes_CallsEnrichScanOnce(t *testing.T) {
+	engine := &scriptedEngine{
+		id: domain.EngineCodeScan, applicable: true,
+		findings: []domain.Finding{{ID: id.New(), Engine: domain.EngineCodeScan, RuleID: "codescan.injection.example", Severity: domain.SeverityHigh, Status: domain.StatusOpen}},
+	}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	jobResults := &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings}
+	enricher := &fakeEnricher{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs, JobResults: jobResults,
+		Projects:      &fakeCloneInfo{},
+		Cloner:        &fakeCloner{},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log:      discardLogger(),
+		Findings: findings,
+		Enricher: enricher,
+	}
+	scanID, jobID := seedScanAndJob(t, scans, jobs, domain.EngineCodeScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	enricher.mu.Lock()
+	defer enricher.mu.Unlock()
+	if enricher.calls != 1 {
+		t.Fatalf("EnrichScan called %d times, want exactly 1", enricher.calls)
+	}
+	if enricher.lastScan != scanID {
+		t.Errorf("EnrichScan scanID = %v, want %v", enricher.lastScan, scanID)
+	}
+	if enricher.lastN != 1 {
+		t.Errorf("EnrichScan got %d findings, want 1", enricher.lastN)
+	}
+}
+
+func TestPool_ProcessJob_EnricherNotWired_NeverPanics(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineDepScan, applicable: true}
+	pool, scans, jobs, _, q := newTestPool(t, engine, &fakeCloner{})
+	_, jobID := seedScanAndJob(t, scans, jobs, domain.EngineDepScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	require.NotPanics(t, func() { pool.Start(ctx) })
 }
