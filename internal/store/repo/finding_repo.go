@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
+	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
 
 // FindingRepo implements orchestrator.FindingRepository against the
@@ -26,7 +28,8 @@ func NewFindingRepo(db Querier) *FindingRepo {
 
 const findingSelectColumns = `
 	SELECT id, scan_id, engine, rule_id, fingerprint, title, description, severity, confidence,
-		cwe, cve, owasp, cvss_score, cvss_vector, location, remediation, status, metadata, source
+		cwe, cve, owasp, cvss_score, cvss_vector, location, remediation, status, metadata, source,
+		status_reason, status_changed_by, status_changed_at
 	FROM findings`
 
 func (r *FindingRepo) ListByScan(ctx context.Context, scanID uuid.UUID, page orchestrator.Page) ([]domain.Finding, int, error) {
@@ -70,6 +73,29 @@ func (r *FindingRepo) ListByScan(ctx context.Context, scanID uuid.UUID, page orc
 		return nil, 0, err
 	}
 	return out, total, nil
+}
+
+// GetByID is a single finding's detail read — no scan_id scoping, since a
+// finding ID is already globally unique; org-scoped authorization happens
+// one layer up (the caller resolves ScanID -> project -> org before
+// trusting this). Evidence is attached, matching ListByScan's own
+// contract that a finding's evidence is always populated wherever a
+// finding is returned for direct display (as opposed to ListAllByScan,
+// which scoring never looks at evidence for).
+func (r *FindingRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Finding, error) {
+	q := findingSelectColumns + ` WHERE id = $1`
+	f, err := findingRowScan(r.db.QueryRow(ctx, q, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.NotFound("finding.not_found", "finding not found")
+		}
+		return nil, fmt.Errorf("repo: get finding: %w", err)
+	}
+	findings := []domain.Finding{f}
+	if err := attachEvidence(ctx, r.db, findings); err != nil {
+		return nil, err
+	}
+	return &findings[0], nil
 }
 
 // ListAllByScan is the unpaginated form scoring.Compute needs — the formula
@@ -191,6 +217,7 @@ func findingRowScan(row pgx.Row) (domain.Finding, error) {
 		&f.ID, &f.ScanID, &engine, &f.RuleID, &f.Fingerprint, &f.Title, &f.Description,
 		&severity, &confidence, &f.CWE, &f.CVE, &f.OWASP, &f.CVSSScore, &f.CVSSVector,
 		&locationJSON, &f.Remediation, &status, &metadataJSON, &source,
+		&f.StatusReason, &f.StatusChangedBy, &f.StatusChangedAt,
 	)
 	if err != nil {
 		return domain.Finding{}, err

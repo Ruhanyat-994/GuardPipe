@@ -1,6 +1,10 @@
 package domain
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // Finding is the one type every engine, however different its input,
 // produces. It is the heart of the system — the normalisation that makes a
@@ -33,8 +37,15 @@ type Finding struct {
 	Evidence    []Evidence
 	Remediation string // deterministic guidance — must stand alone without AI
 
-	Status   Status
-	Metadata map[string]any
+	Status Status
+	// StatusReason/StatusChangedBy/StatusChangedAt are DR-003's mutable
+	// field group (documentation/06-database-design.md §4.11) — all three
+	// nil on a freshly-inserted finding (still `open`), populated once
+	// modules/reporting's triage state machine actually moves it.
+	StatusReason    *string
+	StatusChangedBy *uuid.UUID
+	StatusChangedAt *time.Time
+	Metadata        map[string]any
 	// Source distinguishes a deterministic rule match (the default — see
 	// FindingSource's own doc comment) from an AI-authored semantic finding.
 	Source FindingSource

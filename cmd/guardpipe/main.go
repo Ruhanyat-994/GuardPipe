@@ -42,6 +42,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/config"
@@ -336,6 +337,11 @@ func run() error {
 		})
 	}
 
+	reportingSvc := reporting.NewService(
+		repo.NewFindingRepo(db.Pool), repo.NewFindingStatusRepo(db.Pool), repo.NewScanRepo(db.Pool),
+		projectSvc, repo.NewUserRepo(db.Pool),
+	)
+
 	router := transporthttp.NewRouter(transporthttp.RouterConfig{
 		Logger:          log,
 		CORSOrigins:     cfg.Security.CORSOrigins,
@@ -344,6 +350,7 @@ func run() error {
 		AdvisorySvc:     advisorySvc,
 		OrchestratorSvc: orchestratorSvc,
 		Users:           repo.NewUserRepo(db.Pool),
+		ReportingSvc:    reportingSvc,
 		AISvc:           aiSvc,
 		HealthDB:        db,
 		Version:         version,
