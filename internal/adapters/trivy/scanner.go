@@ -60,7 +60,26 @@ type ScannerConfig struct {
 	// plain bind.
 	Volume        string
 	WorkspaceRoot string
+
+	// CacheVolume, mounted at trivyCacheDir in both ScanConfig and ScanImage,
+	// persists Trivy's vulnerability database across runs (a named volume,
+	// same shape as Volume above — see docker-compose.yml's volumes.trivy_cache).
+	// Without this, every ScanImage call with DBUpdate=true re-downloads the
+	// full database (several hundred MB) into a container removed the moment
+	// the scan finishes, since nothing ever mounted a place for it to
+	// survive to the next run — a real contributor to containerscan blowing
+	// GUARDPIPE_ENGINE_TIMEOUT_CONTAINERSCAN, on top of the actual image
+	// build/scan work. Empty is still valid (falls back to the image's own
+	// ephemeral cache dir) so existing callers/tests that don't set it keep
+	// working.
+	CacheVolume string
 }
+
+// trivyCacheDir is where both trivy commands are told to keep their
+// database — an explicit --cache-dir rather than relying on the image's
+// default (root's home, which varies by image tag/user), so CacheVolume
+// always mounts to the same place trivy actually reads/writes.
+const trivyCacheDir = "/trivy-cache"
 
 // Scanner launches short-lived Trivy CLI containers — one for `trivy
 // config` (Dockerfile/IaC misconfiguration, no Docker daemon access needed
@@ -102,28 +121,30 @@ func (s *Scanner) ScanConfig(ctx context.Context, workspaceDir string) (Report, 
 
 	config := &container.Config{
 		Image: s.cfg.Image,
-		Cmd: []string{
+		Cmd: append([]string{
 			"config", "/workspace", "--format", "json",
 			// Restricted to Dockerfile checks only — trivy config's default
 			// scope also covers Kubernetes/Terraform/CloudFormation, which is
 			// k8sscan's territory (Phase 9), not containerscan's.
 			"--misconfig-scanners", "dockerfile",
-		},
+		}, s.cacheDirArgs()...),
 		Labels: map[string]string{scannerLabelKey: scannerLabelValue},
 	}
-	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{
-				Type:     mount.TypeVolume,
-				Source:   s.cfg.Volume,
-				Target:   "/workspace",
-				ReadOnly: true,
-				VolumeOptions: &mount.VolumeOptions{
-					Subpath: subpath,
-				},
+	mounts := []mount.Mount{
+		{
+			Type:     mount.TypeVolume,
+			Source:   s.cfg.Volume,
+			Target:   "/workspace",
+			ReadOnly: true,
+			VolumeOptions: &mount.VolumeOptions{
+				Subpath: subpath,
 			},
 		},
 	}
+	if m := s.cacheMount(); m != nil {
+		mounts = append(mounts, *m)
+	}
+	hostConfig := &container.HostConfig{Mounts: mounts}
 
 	return s.run(ctx, config, hostConfig, "guardpipe-containerscan-config-")
 }
@@ -141,6 +162,7 @@ func (s *Scanner) ScanImage(ctx context.Context, ref string) (Report, error) {
 	if !s.cfg.DBUpdate {
 		cmd = append(cmd, "--skip-db-update", "--offline-scan")
 	}
+	cmd = append(cmd, s.cacheDirArgs()...)
 
 	config := &container.Config{
 		Image:  s.cfg.Image,
@@ -150,8 +172,29 @@ func (s *Scanner) ScanImage(ctx context.Context, ref string) (Report, error) {
 	hostConfig := &container.HostConfig{
 		Binds: []string{dockerSock + ":" + dockerSock},
 	}
+	if m := s.cacheMount(); m != nil {
+		hostConfig.Mounts = []mount.Mount{*m}
+	}
 
 	return s.run(ctx, config, hostConfig, "guardpipe-containerscan-image-")
+}
+
+// cacheDirArgs points trivy at trivyCacheDir explicitly, only when a cache
+// volume is actually configured — an empty CacheVolume means "no mount was
+// added," so telling trivy to use that path anyway would just fail to
+// persist anything instead of falling back cleanly.
+func (s *Scanner) cacheDirArgs() []string {
+	if s.cfg.CacheVolume == "" {
+		return nil
+	}
+	return []string{"--cache-dir", trivyCacheDir}
+}
+
+func (s *Scanner) cacheMount() *mount.Mount {
+	if s.cfg.CacheVolume == "" {
+		return nil
+	}
+	return &mount.Mount{Type: mount.TypeVolume, Source: s.cfg.CacheVolume, Target: trivyCacheDir}
 }
 
 func (s *Scanner) run(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, namePrefix string) (Report, error) {

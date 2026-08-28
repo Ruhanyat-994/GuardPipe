@@ -135,6 +135,21 @@ func (s *Scanner) Analyze(ctx context.Context, workspaceDir, projectKey string) 
 			// meaningful loss (GuardPipe doesn't use SonarQube's SCM-derived
 			// data anyway).
 			"-Dsonar.scm.disabled=true",
+			// Without this, sonar-scanner walks and indexes -Dsonar.sources's
+			// entire tree, including dependency/build output directories that
+			// were never meant to be analysed — engines/codescan's own
+			// Applicable() and engines/containerscan's findDockerfile() both
+			// already skip exactly this set (their own skipDirs) when deciding
+			// whether to run at all, but that pre-check never told the scanner
+			// container itself to skip them too. Confirmed against this
+			// project's own checkout: frontend/node_modules alone is
+			// 236MB/17k+ files, several times the size of every real source
+			// file combined — indexing it (plus re-parsing thousands of
+			// third-party .js/.ts files SonarQube's own analyzers pick up as
+			// sources) is what pushed real analyses past
+			// GUARDPIPE_ENGINE_TIMEOUT_CODESCAN, not a genuinely slow analysis
+			// of GuardPipe's own code.
+			"-Dsonar.exclusions=**/node_modules/**,**/.git/**,**/vendor/**,**/dist/**,**/build/**,**/.venv/**,**/__pycache__/**",
 		},
 		Labels: map[string]string{scannerLabelKey: scannerLabelValue},
 	}
