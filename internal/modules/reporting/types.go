@@ -6,10 +6,13 @@
 // renders from that same struct, so the three formats can never disagree
 // about what a report says.
 //
-// modules/scoring doesn't exist yet, so ReportData carries no risk score —
-// a report is honest about what's actually computed today (finding counts,
-// engine coverage, an AI-authored narrative) rather than fabricating a
-// number nothing has calculated.
+// ReportData itself still carries no risk-score field — modules/scoring
+// exists now (feeding orchestrator.ScanDetail.Risk, which
+// Assembler.attachExecutiveSummary reads for the AI prompt vars), but no
+// renderer here (JSON/CSV/PDF) surfaces it in the report body yet. A report
+// is honest about what's actually rendered today (finding counts, engine
+// coverage, an AI-authored narrative) rather than fabricating a number no
+// renderer displays.
 package reporting
 
 import (

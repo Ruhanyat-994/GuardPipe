@@ -61,9 +61,14 @@ func (f *fakeProjectReader) Get(_ context.Context, _ domain.Actor, _ uuid.UUID) 
 type fakeAI struct {
 	result *ai.RunResult
 	err    error
+	// gotInput records the last RunInput passed in — lets a test assert on
+	// exactly what Assembler sent as prompt vars (e.g. the risk_score/verdict
+	// strings attachExecutiveSummary builds from detail.Risk).
+	gotInput ai.RunInput
 }
 
-func (f *fakeAI) Run(_ context.Context, _ ai.RunInput, _ func(domain.Finding)) (*ai.RunResult, error) {
+func (f *fakeAI) Run(_ context.Context, in ai.RunInput, _ func(domain.Finding)) (*ai.RunResult, error) {
+	f.gotInput = in
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -282,6 +287,53 @@ func TestAssembler_Build_AttachesAIExecutiveSummaryWhenAvailable(t *testing.T) {
 	}
 	if len(data.TopPriorities) != 3 {
 		t.Errorf("TopPriorities = %v, want 3 items", data.TopPriorities)
+	}
+}
+
+// TestAssembler_Build_ExecutiveSummaryPrompt_UsesRealScoreWhenPresent
+// guards against the AI prompt silently going back to a hardcoded
+// "not yet computed" placeholder now that orchestrator.ScanDetail.Risk is
+// real (BUILD_GUIDE.md Phase 13's scoring wiring).
+func TestAssembler_Build_ExecutiveSummaryPrompt_UsesRealScoreWhenPresent(t *testing.T) {
+	detail := sampleScanDetail()
+	detail.Risk = &orchestrator.RiskAssessmentRecord{Score: 68, Verdict: domain.VerdictBlock, FormulaVersion: "1.0"}
+	scans := &fakeScanReader{detail: detail}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	stub := &fakeAI{result: &ai.RunResult{Value: ai.ScanSummaryResponse{Summary: "s"}}}
+
+	a := reporting.NewAssembler(scans, projects, nil, stub, nil)
+	_, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v", err)
+	}
+	if got := stub.gotInput.Vars["risk_score"]; got != "68" {
+		t.Errorf(`Vars["risk_score"] = %q, want "68"`, got)
+	}
+	if got := stub.gotInput.Vars["verdict"]; got != "block" {
+		t.Errorf(`Vars["verdict"] = %q, want "block"`, got)
+	}
+}
+
+// TestAssembler_Build_ExecutiveSummaryPrompt_NoScoreYet is the near-miss:
+// a scan whose last job hasn't finalized yet (detail.Risk is nil) must tell
+// the AI prompt exactly that, not send a fabricated or stale number.
+func TestAssembler_Build_ExecutiveSummaryPrompt_NoScoreYet(t *testing.T) {
+	detail := sampleScanDetail()
+	detail.Risk = nil
+	scans := &fakeScanReader{detail: detail}
+	projects := &fakeProjectReader{detail: sampleProjectDetail()}
+	stub := &fakeAI{result: &ai.RunResult{Value: ai.ScanSummaryResponse{Summary: "s"}}}
+
+	a := reporting.NewAssembler(scans, projects, nil, stub, nil)
+	_, err := a.Build(context.Background(), domain.Actor{}, uuid.New())
+	if err != nil {
+		t.Fatalf("Build() unexpected error = %v", err)
+	}
+	if got := stub.gotInput.Vars["risk_score"]; got != "not yet computed for this scan" {
+		t.Errorf(`Vars["risk_score"] = %q, want the no-score-yet message`, got)
+	}
+	if got := stub.gotInput.Vars["verdict"]; got != "not yet computed" {
+		t.Errorf(`Vars["verdict"] = %q, want "not yet computed"`, got)
 	}
 }
 
