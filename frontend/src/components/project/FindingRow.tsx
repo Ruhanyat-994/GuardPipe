@@ -1,10 +1,20 @@
-import { useState } from 'react'
-import { ChevronDown, ExternalLink, Sparkles } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ExternalLink } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { buildRepoBlobUrl } from '../../lib/repoLink'
-import type { FindingListItem } from '../../lib/scansApi'
+import {
+  getFindingDetail,
+  type AISuggestion,
+  type FindingListItem,
+  type FindingStatus,
+} from '../../lib/scansApi'
 import type { Repository } from '../../lib/projectsApi'
 import { Tabs } from '../ui/Tabs'
+import { StatusPill } from '../ui/StatusPill'
+import { CvssChip } from '../ui/CvssChip'
+import { CweChip, CveChip } from '../ui/CweChip'
+import { AiPanel, type AiPanelState } from '../ui/AiPanel'
+import { TriageActions, type TriageUpdate } from './TriageActions'
 
 const SEVERITY_COLOR: Record<string, string> = {
   critical: 'var(--sev-critical)',
@@ -118,8 +128,9 @@ function buildFindingBlobUrl(
  * built), any supporting evidence, and a Description/Remediation tab pair.
  * Remediation is the rule's own deterministic guidance
  * (documentation/03-architecture-overview.md §7.1: "must stand alone
- * without AI") — the AI tab is a placeholder for the AI-authored
- * suggestion Phase 10/11 adds on top of it, not a replacement.
+ * without AI") — the AI tab shows modules/ai's Enricher output on top of
+ * it, lazy-fetched on first expand (GET /findings/{id}), never a
+ * replacement for it.
  */
 export function FindingRow({
   finding,
@@ -131,7 +142,31 @@ export function FindingRow({
   gitRef: string | null
 }) {
   const [expanded, setExpanded] = useState(false)
-  const [tab, setTab] = useState<'description' | 'remediation'>('description')
+  const [tab, setTab] = useState<'description' | 'remediation' | 'ai'>('description')
+
+  // Local triage override — updated by TriageActions on a successful
+  // PATCH, so the row reflects the new status immediately without a full
+  // list re-fetch.
+  const [status, setStatus] = useState<FindingStatus>(finding.status as FindingStatus)
+
+  // AI suggestion — fetched lazily via GET /findings/{id} the first time
+  // this row expands, not on every render (the list endpoint doesn't
+  // carry ai_suggestion, and fetching it for every collapsed row up front
+  // would mean one request per finding on a page that can hold up to 100).
+  const [aiState, setAiState] = useState<AiPanelState | 'idle'>('idle')
+  const [aiSuggestion, setAiSuggestion] = useState<AISuggestion | null>(null)
+  const aiFetchStarted = useRef(false)
+
+  useEffect(() => {
+    if (!expanded || aiFetchStarted.current) return
+    aiFetchStarted.current = true
+    getFindingDetail(finding.id)
+      .then((detail) => {
+        setAiSuggestion(detail.ai_suggestion)
+        setAiState(detail.ai_suggestion ? 'content' : 'unavailable')
+      })
+      .catch(() => setAiState('unavailable'))
+  }, [expanded, finding.id])
 
   const summary = locationSummary(finding)
   const resourcePath = k8sResourcePath(finding.location)
@@ -139,6 +174,10 @@ export function FindingRow({
   const endpointUrl = networkEndpointUrl(finding.location)
   const impact = finding.metadata?.impact
   const attackPath = finding.metadata?.attack_path
+
+  function handleTriageChanged(update: TriageUpdate) {
+    setStatus(update.status)
+  }
 
   return (
     <li className="py-3">
@@ -155,6 +194,7 @@ export function FindingRow({
           {finding.severity}
         </span>
         <span className="flex-1 text-body-sm text-text-primary">{finding.title}</span>
+        <StatusPill status={status} className="hidden sm:inline-flex" />
         <span className="hidden text-caption text-text-tertiary sm:inline">{finding.rule_id}</span>
         <ChevronDown
           className={cn(
@@ -275,29 +315,37 @@ export function FindingRow({
             </div>
           )}
 
+          {(finding.cvss_score != null || finding.cwe.length > 0 || finding.cve.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <CvssChip score={finding.cvss_score} vector={finding.cvss_vector} />
+              <CweChip ids={finding.cwe} />
+              <CveChip ids={finding.cve} />
+            </div>
+          )}
+
           <div>
             <Tabs
               items={[
                 { id: 'description', label: 'Details' },
                 { id: 'remediation', label: 'Remediation' },
+                { id: 'ai', label: 'AI explanation' },
               ]}
               active={tab}
-              onChange={(id) => setTab(id as 'description' | 'remediation')}
+              onChange={(id) => setTab(id as 'description' | 'remediation' | 'ai')}
             />
             <div className="pt-3 text-body-sm text-text-secondary">
               {tab === 'description' && <p>{finding.description}</p>}
-              {tab === 'remediation' && (
-                <div className="flex flex-col gap-2">
-                  <p>{finding.remediation}</p>
-                  <p className="flex items-center gap-1.5 text-caption text-text-tertiary">
-                    <Sparkles className="h-3 w-3" aria-hidden="true" />
-                    Deterministic guidance from the rule today — AI-authored, context-aware
-                    suggestions land in a later phase.
-                  </p>
-                </div>
+              {tab === 'remediation' && <p>{finding.remediation}</p>}
+              {tab === 'ai' && (
+                <AiPanel
+                  state={aiState === 'idle' ? 'loading' : aiState}
+                  suggestion={aiSuggestion}
+                />
               )}
             </div>
           </div>
+
+          <TriageActions findingId={finding.id} status={status} onChanged={handleTriageChanged} />
         </div>
       )}
     </li>
