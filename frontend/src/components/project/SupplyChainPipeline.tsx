@@ -1,4 +1,16 @@
-import { useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import {
+  applyNodeChanges,
+  Background,
+  BackgroundVariant,
+  ConnectionMode,
+  Controls,
+  MarkerType,
+  ReactFlow,
+  type Edge,
+  type NodeChange,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
 import {
   CheckCircle2,
   Circle,
@@ -11,27 +23,36 @@ import {
   XCircle,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { cn } from '../../lib/cn'
 import { engineRequirementReason, ENGINE_META, isEngineRunnable } from '../../lib/engines'
 import type { Project } from '../../lib/projectsApi'
 import type { Engine } from '../../lib/rulesApi'
 import type { Job, JobStatus, Progress, Scan } from '../../lib/scansApi'
 import { EngineRunDetail } from './EngineRunDetail'
+import { FloatingEdge } from './FloatingEdge'
+import { GroupLabelNode, PipelineNode } from './PipelineNode'
 import { ScanProgressBar } from './ScanProgressBar'
-import { GeminiMark } from '../icons/GeminiMark'
-import { GitHubMark } from '../icons/GitHubMark'
-import { KubernetesMark } from '../icons/KubernetesMark'
-import { OsvMark } from '../icons/OsvMark'
-import { SonarQubeMark } from '../icons/SonarQubeMark'
+import {
+  STATUS_COLOR,
+  STATUS_LABEL,
+  type GroupLabelFlowNode,
+  type NodeStatus,
+  type PipelineFlowNode,
+  type PipelineNodeData,
+} from '../../lib/pipelineFlowTypes'
 
 /**
  * The live scan execution graph (documentation/09-ui-ux-design-system.md
  * §4.8) — the orchestrator's own execution DAG (workspace prep fans out to
  * six parallel engines; pentest branches independently straight off scan
  * start since it needs no workspace; all seven converge into ai enrichment
- * -> scoring), rendered as connected nodes rather than the flat "seven
- * cards" it replaces. Driven entirely by `GET /scans/{id}/progress`,
- * polled every 2s (FR-UI-002) — no new backend data needed.
+ * -> scoring), rendered as a draggable, pannable, zoomable canvas
+ * (@xyflow/react — already the project's chosen graph library for this,
+ * nothing else in `package.json` overlaps it) instead of a fixed flexbox
+ * row. Every node keeps the exact same status/click wiring it always had —
+ * only *where it sits* is now something the user controls; which nodes
+ * connect to which never changes, only where the edge is drawn (task's own
+ * framing). Driven entirely by `GET /scans/{id}/progress`, polled every 2s
+ * (FR-UI-002) — no new backend data needed.
  *
  * Every node in the fixed shape renders even when its engine hasn't run —
  * Phase 6 only registers depscan, so every other engine node legitimately
@@ -43,24 +64,6 @@ import { SonarQubeMark } from '../icons/SonarQubeMark'
  * branch, queued time, status) — no fabricated "started by"/commit/CI-run
  * chrome the backend doesn't produce.
  */
-
-type NodeStatus = 'not_run' | 'running' | 'succeeded' | 'failed' | 'skipped'
-
-const STATUS_COLOR: Record<NodeStatus, string> = {
-  not_run: 'var(--text-tertiary)',
-  running: 'var(--accent)',
-  succeeded: 'var(--success)',
-  failed: 'var(--danger)',
-  skipped: 'var(--text-tertiary)',
-}
-
-const STATUS_LABEL: Record<NodeStatus, string> = {
-  not_run: 'Not run',
-  running: 'In progress',
-  succeeded: 'Succeeded',
-  failed: 'Failed',
-  skipped: 'Skipped',
-}
 
 const STATUS_ICON: Record<NodeStatus, LucideIcon> = {
   not_run: Circle,
@@ -130,10 +133,10 @@ function StatusBadge({ status, size = 'md' }: { status: NodeStatus; size?: 'sm' 
   const Icon = STATUS_ICON[status]
   return (
     <span
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-full font-semibold capitalize',
-        size === 'md' ? 'px-3 py-1 text-body-sm' : 'text-caption',
-      )}
+      className={
+        'inline-flex items-center gap-1.5 rounded-full font-semibold capitalize ' +
+        (size === 'md' ? 'px-3 py-1 text-body-sm' : 'text-caption')
+      }
       style={{
         color,
         backgroundColor:
@@ -141,103 +144,11 @@ function StatusBadge({ status, size = 'md' }: { status: NodeStatus; size?: 'sm' 
       }}
     >
       <Icon
-        className={cn('h-3.5 w-3.5', status === 'running' && 'animate-spin')}
+        className={'h-3.5 w-3.5' + (status === 'running' ? ' animate-spin' : '')}
         aria-hidden="true"
       />
       {STATUS_LABEL[status]}
     </span>
-  )
-}
-
-function Node({
-  label,
-  icon: Icon,
-  status,
-  osvMark,
-  sonarQubeMark,
-  kubernetesMark,
-  githubMark,
-  geminiMark,
-  tooltip,
-  onClick,
-  selected,
-}: {
-  label: string
-  icon: LucideIcon
-  status: NodeStatus
-  osvMark?: boolean
-  sonarQubeMark?: boolean
-  kubernetesMark?: boolean
-  githubMark?: boolean
-  geminiMark?: boolean
-  tooltip?: string | null
-  onClick?: () => void
-  selected?: boolean
-}) {
-  const color = STATUS_COLOR[status]
-  const StatusIcon = STATUS_ICON[status]
-  const Tag = onClick ? 'button' : 'div'
-  return (
-    <Tag
-      type={onClick ? 'button' : undefined}
-      onClick={onClick}
-      aria-pressed={onClick ? selected : undefined}
-      className={cn(
-        'relative z-[1] flex w-[116px] shrink-0 flex-col items-center gap-2 rounded-xl border bg-bg-surface px-3 py-3.5 text-center shadow-sm transition-colors',
-        onClick && 'cursor-pointer hover:border-accent/50 hover:shadow-md',
-      )}
-      style={{
-        borderColor: selected
-          ? 'var(--accent)'
-          : status === 'not_run'
-            ? 'var(--border-default)'
-            : `color-mix(in srgb, ${color} 45%, transparent)`,
-        boxShadow: selected
-          ? '0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent)'
-          : undefined,
-      }}
-      title={tooltip ?? undefined}
-    >
-      <div
-        className={cn('flex h-10 w-10 items-center justify-center rounded-full')}
-        style={{ backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`, color }}
-      >
-        <Icon className="h-5 w-5" aria-hidden="true" />
-      </div>
-      <div className="flex items-center gap-1">
-        <span className="text-body-sm font-semibold text-text-primary">{label}</span>
-        {osvMark && <OsvMark />}
-        {sonarQubeMark && <SonarQubeMark />}
-        {kubernetesMark && <KubernetesMark />}
-        {githubMark && <GitHubMark className="h-3 w-3" />}
-        {geminiMark && <GeminiMark />}
-      </div>
-      <span
-        className="flex items-center gap-1 text-caption font-medium capitalize"
-        style={{ color }}
-      >
-        <StatusIcon
-          className={cn('h-3 w-3', status === 'running' && 'animate-spin')}
-          aria-hidden="true"
-        />
-        {STATUS_LABEL[status]}
-      </span>
-    </Tag>
-  )
-}
-
-/** A short horizontal connector between two stages in the left-to-right
- * flow, with a joint dot at its midpoint — GitHub Actions' own connector
- * style (documentation/09-ui-ux-design-system.md §4.8's reference), and
- * the reason the whole graph now reads as wide-and-shallow instead of the
- * tall narrow column the vertical version produced. */
-function HConnector() {
-  return (
-    <div className="flex w-10 shrink-0 items-center" aria-hidden="true">
-      <div className="h-px flex-1 bg-border-default" />
-      <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-border-strong" />
-      <div className="h-px flex-1 bg-border-default" />
-    </div>
   )
 }
 
@@ -269,6 +180,103 @@ const LEGEND: { status: NodeStatus; label: string }[] = [
   { status: 'failed', label: 'Failed' },
   { status: 'skipped', label: 'Skipped' },
 ]
+
+/* ---- Canvas layout (initial positions only — the user is free to drag
+   every node anywhere afterward; nothing here is re-applied once mounted).
+   Roughly mirrors the original flexbox shape: scan start -> workspace prep
+   -> a 2-column scanner grid -> ai enrichment -> scoring, left to right,
+   with pentest branching independently below scan start. */
+
+const NODE_W = 116
+const NODE_H = 132
+const GAP_X = 90
+const GAP_Y = 24
+const GROUP_PAD = 20
+const GROUP_GAP = 16
+
+const GROUP_POS = { x: NODE_W * 2 + GAP_X * 2, y: 0 }
+const GROUP_SIZE = {
+  width: GROUP_PAD * 2 + NODE_W * 2 + GROUP_GAP,
+  height: GROUP_PAD * 2 + NODE_H * 3 + GAP_Y * 2,
+}
+const STAGE_CENTER_Y = GROUP_SIZE.height / 2 - NODE_H / 2
+
+const STAGE_POSITIONS: Record<
+  'scanStart' | 'workspacePrep' | 'aiEnrichment' | 'scoring',
+  {
+    x: number
+    y: number
+  }
+> = {
+  scanStart: { x: 0, y: STAGE_CENTER_Y },
+  workspacePrep: { x: NODE_W + GAP_X, y: STAGE_CENTER_Y },
+  aiEnrichment: { x: GROUP_POS.x + GROUP_SIZE.width + GAP_X, y: STAGE_CENTER_Y },
+  scoring: {
+    x: GROUP_POS.x + GROUP_SIZE.width + GAP_X * 2 + NODE_W,
+    y: STAGE_CENTER_Y,
+  },
+}
+
+const PENTEST_POS = { x: 0, y: STAGE_CENTER_Y + NODE_H + 60 }
+
+const ENGINE_POSITIONS: Record<string, { x: number; y: number }> = {}
+PARALLEL_ENGINES.forEach((engine, i) => {
+  const col = i % 2
+  const row = Math.floor(i / 2)
+  ENGINE_POSITIONS[engine] = {
+    x: GROUP_POS.x + GROUP_PAD + col * (NODE_W + GROUP_GAP),
+    y: GROUP_POS.y + GROUP_PAD + row * (NODE_H + GAP_Y),
+  }
+})
+
+type FlowNode = PipelineFlowNode | GroupLabelFlowNode
+
+function buildInitialNodes(data: Record<string, PipelineNodeData>): FlowNode[] {
+  const group: GroupLabelFlowNode = {
+    id: 'scanner-group',
+    type: 'groupLabel',
+    position: GROUP_POS,
+    data: { label: 'Scanners', width: GROUP_SIZE.width, height: GROUP_SIZE.height },
+    draggable: false,
+    selectable: false,
+    zIndex: 0,
+  }
+
+  const stageNode = (id: string, position: { x: number; y: number }): PipelineFlowNode => ({
+    id,
+    type: 'pipelineNode',
+    position,
+    data: data[id],
+    zIndex: 1,
+  })
+
+  const nodes: FlowNode[] = [
+    group,
+    stageNode('scan-start', STAGE_POSITIONS.scanStart),
+    stageNode('workspace-prep', STAGE_POSITIONS.workspacePrep),
+    ...PARALLEL_ENGINES.map((engine) => stageNode(engine, ENGINE_POSITIONS[engine])),
+    stageNode('ai-enrichment', STAGE_POSITIONS.aiEnrichment),
+    stageNode('scoring', STAGE_POSITIONS.scoring),
+    stageNode('pentest', PENTEST_POS),
+  ]
+  return nodes
+}
+
+const nodeTypes = { pipelineNode: PipelineNode, groupLabel: GroupLabelNode }
+const edgeTypes = { floating: FloatingEdge }
+
+const arrow = { type: MarkerType.ArrowClosed, color: 'var(--border-strong)', width: 14, height: 14 }
+
+const EDGES: Edge[] = [
+  { id: 'e-start-workspace', source: 'scan-start', target: 'workspace-prep' },
+  ...PARALLEL_ENGINES.flatMap((engine) => [
+    { id: `e-workspace-${engine}`, source: 'workspace-prep', target: engine },
+    { id: `e-${engine}-ai`, source: engine, target: 'ai-enrichment' },
+  ]),
+  { id: 'e-start-pentest', source: 'scan-start', target: 'pentest', data: { dashed: true } },
+  { id: 'e-pentest-ai', source: 'pentest', target: 'ai-enrichment', data: { dashed: true } },
+  { id: 'e-ai-scoring', source: 'ai-enrichment', target: 'scoring' },
+].map((e) => ({ ...e, type: 'floating', markerEnd: arrow }))
 
 export function SupplyChainPipeline({
   progress,
@@ -304,9 +312,109 @@ export function SupplyChainPipeline({
   // which earns a click. Same `isEngineEnabled` gate ScanLauncher already
   // uses for "can this engine even run today."
   const [selectedEngine, setSelectedEngine] = useState<Engine | null>(null)
-  function toggleEngine(engine: Engine) {
+  const toggleEngine = useCallback((engine: Engine) => {
     setSelectedEngine((current) => (current === engine ? null : engine))
-  }
+  }, [])
+
+  // Recomputed on every status tick, but never touches node *position* —
+  // dragging a node is state this component owns independently (`nodes`
+  // below), so a 2s progress poll can't ever snap a moved card back.
+  const computedData = useMemo(() => {
+    const data: Record<string, PipelineNodeData> = {}
+    data['scan-start'] = {
+      label: 'Scan start',
+      icon: ShieldAlert,
+      status: scanStarted ? 'succeeded' : 'not_run',
+      statusIcon: STATUS_ICON[scanStarted ? 'succeeded' : 'not_run'],
+    }
+    data['workspace-prep'] = {
+      label: 'Workspace prep',
+      icon: Package,
+      status: workspaceStatus,
+      statusIcon: STATUS_ICON[workspaceStatus],
+    }
+    for (const engine of PARALLEL_ENGINES) {
+      const meta = ENGINE_META[engine]
+      const state = resolveEngineState(engine, progress, jobs)
+      const runnable = project ? isEngineRunnable(engine, project) : true
+      const clickable = scanStarted && runnable
+      const requirementReason = project ? engineRequirementReason(engine, project) : null
+      data[engine] = {
+        label: meta.label,
+        icon: meta.icon,
+        status: state.status,
+        statusIcon: STATUS_ICON[state.status],
+        osvMark: meta.hasOsvMark,
+        sonarQubeMark: meta.hasSonarQubeMark,
+        kubernetesMark: meta.hasKubernetesMark,
+        githubMark: meta.hasGitHubMark,
+        geminiMark: meta.hasGeminiMark,
+        tooltip: state.reason ?? requirementReason,
+        onClick: clickable ? () => toggleEngine(engine) : undefined,
+        selected: selectedEngine === engine,
+      }
+    }
+    data['ai-enrichment'] = {
+      label: 'AI enrichment',
+      icon: FileText,
+      status: 'not_run',
+      statusIcon: STATUS_ICON.not_run,
+      tooltip: 'Lands in Phase 10/11',
+    }
+    data['scoring'] = {
+      label: 'Scoring',
+      icon: ShieldAlert,
+      status: 'not_run',
+      statusIcon: STATUS_ICON.not_run,
+      tooltip: 'Lands in Phase 13',
+    }
+    data['pentest'] = {
+      label: 'Pentest',
+      icon: ShieldAlert,
+      status: pentestState.status,
+      statusIcon: STATUS_ICON[pentestState.status],
+      tooltip:
+        pentestState.reason ?? (project ? engineRequirementReason('pentest', project) : null),
+      onClick:
+        scanStarted && (project ? isEngineRunnable('pentest', project) : true)
+          ? () => toggleEngine('pentest')
+          : undefined,
+      selected: selectedEngine === 'pentest',
+    }
+    return data
+  }, [
+    scanStarted,
+    workspaceStatus,
+    progress,
+    jobs,
+    project,
+    selectedEngine,
+    pentestState.status,
+    pentestState.reason,
+    toggleEngine,
+  ])
+
+  // `rawNodes` owns position (and drag/selection state) exclusively — the
+  // only thing that ever changes it is `onNodesChange`, i.e. the user
+  // dragging a card. Status/click `data` is merged in below as a pure
+  // derivation on every render instead of being synced via an effect, so a
+  // 2s progress poll can update a card's status without ever touching
+  // where the user put it.
+  const [rawNodes, setRawNodes] = useState<FlowNode[]>(() => buildInitialNodes(computedData))
+
+  const onNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
+    setRawNodes((nds) => applyNodeChanges(changes, nds) as FlowNode[])
+  }, [])
+
+  const nodes = useMemo(
+    () =>
+      rawNodes.map((n) => {
+        if (n.type !== 'pipelineNode') return n
+        const data = computedData[n.id]
+        return data ? { ...n, data } : n
+      }),
+    [rawNodes, computedData],
+  )
 
   return (
     <div className="overflow-hidden rounded-lg border border-border-default bg-bg-surface">
@@ -329,103 +437,39 @@ export function SupplyChainPipeline({
         </div>
       )}
 
-      {/* graph — left-to-right, GitHub Actions' own flow direction
-          (documentation/09-ui-ux-design-system.md §4.8): one stage after
-          another rather than a tall stacked column. The six parallel
-          engines live inside one bordered group (same idea as GH Actions
-          stacking parallel jobs inside one box with a single line in and
-          a single line out) instead of each getting its own connector,
-          which is what let the previous vertical version balloon in
-          height for no benefit. */}
-      <div className="overflow-x-auto p-6">
-        <div className="flex min-w-max flex-col gap-4">
-          <div className="flex items-center">
-            <Node
-              label="Scan start"
-              icon={ShieldAlert}
-              status={scanStarted ? 'succeeded' : 'not_run'}
-            />
-
-            <HConnector />
-
-            <Node label="Workspace prep" icon={Package} status={workspaceStatus} />
-
-            <HConnector />
-
-            <div className="rounded-xl border border-border-default bg-bg-subtle/60 p-3">
-              <div className="grid grid-cols-2 gap-3">
-                {PARALLEL_ENGINES.map((engine) => {
-                  const meta = ENGINE_META[engine]
-                  const state = resolveEngineState(engine, progress, jobs)
-                  const runnable = project ? isEngineRunnable(engine, project) : true
-                  const clickable = scanStarted && runnable
-                  const requirementReason = project
-                    ? engineRequirementReason(engine, project)
-                    : null
-                  return (
-                    <Node
-                      key={engine}
-                      label={meta.label}
-                      icon={meta.icon}
-                      status={state.status}
-                      osvMark={meta.hasOsvMark}
-                      sonarQubeMark={meta.hasSonarQubeMark}
-                      kubernetesMark={meta.hasKubernetesMark}
-                      githubMark={meta.hasGitHubMark}
-                      geminiMark={meta.hasGeminiMark}
-                      tooltip={state.reason ?? requirementReason}
-                      onClick={clickable ? () => toggleEngine(engine) : undefined}
-                      selected={selectedEngine === engine}
-                    />
-                  )
-                })}
-              </div>
-            </div>
-
-            <HConnector />
-
-            <Node
-              label="AI enrichment"
-              icon={FileText}
-              status="not_run"
-              tooltip="Lands in Phase 10/11"
-            />
-
-            <HConnector />
-
-            <Node label="Scoring" icon={ShieldAlert} status="not_run" tooltip="Lands in Phase 13" />
-          </div>
-
-          {/* Pentest branches independently off scan start — it needs no
-              workspace, so it isn't part of the main left-to-right chain
-              above; shown as its own row rather than forced to share a
-              connector with a chain it doesn't depend on. */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 text-caption text-text-tertiary">
-              <div className="h-px w-6 border-t border-dashed border-border-strong" />
-              <span>Runs independently — needs no workspace</span>
-            </div>
-            <Node
-              label="Pentest"
-              icon={ShieldAlert}
-              status={pentestState.status}
-              tooltip={
-                pentestState.reason ??
-                (project ? engineRequirementReason('pentest', project) : null)
-              }
-              onClick={
-                scanStarted && (project ? isEngineRunnable('pentest', project) : true)
-                  ? () => toggleEngine('pentest')
-                  : undefined
-              }
-              selected={selectedEngine === 'pentest'}
-            />
-          </div>
-        </div>
+      {/* graph — a draggable, pannable, zoomable canvas (task: "turn the
+          static workflow into a smooth, interactive, draggable canvas").
+          Edges are computed from live node geometry (FloatingEdge), so
+          dragging any card — including the six scanner nodes out of their
+          initial grouping — never leaves a disconnected-looking line. */}
+      <div className="sc-canvas border-b border-border-default" style={{ height: 560 }}>
+        <ReactFlow
+          nodes={nodes}
+          edges={EDGES}
+          onNodesChange={onNodesChange}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          connectionMode={ConnectionMode.Loose}
+          nodesConnectable={false}
+          deleteKeyCode={null}
+          minZoom={0.35}
+          maxZoom={1.5}
+          fitView
+          fitViewOptions={{ padding: 0.25 }}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={18}
+            size={1}
+            color="var(--border-default)"
+          />
+          <Controls showInteractive={false} position="bottom-left" />
+        </ReactFlow>
       </div>
 
       {selectedEngine && (
-        <div className="px-6 pb-6">
+        <div className="px-6 py-6">
           <EngineRunDetail
             engine={selectedEngine}
             job={jobs.find((j) => j.engine === selectedEngine)}
@@ -454,6 +498,13 @@ export function SupplyChainPipeline({
                 </span>
               )
             })}
+            <span className="flex items-center gap-1.5 text-caption text-text-secondary">
+              <span
+                className="inline-block h-px w-4 border-t border-dashed border-border-strong"
+                aria-hidden="true"
+              />
+              Runs independently
+            </span>
           </div>
         </div>
 

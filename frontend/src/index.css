@@ -77,3 +77,52 @@ body {
 .animate-reveal {
   animation: reveal-up var(--duration-slow) var(--ease-standard);
 }
+
+/* SupplyChainPipeline's draggable workflow canvas (@xyflow/react) — brings
+   the vendor default (light, boxy) chrome in line with the app's own
+   design tokens instead of overriding the library's component internals in
+   JS. Scoped under .sc-canvas so it never leaks onto some other future use
+   of the library. */
+.sc-canvas .react-flow {
+  background-color: var(--bg-base);
+}
+
+.sc-canvas .react-flow__node {
+  cursor: grab;
+}
+
+.sc-canvas .react-flow__node.dragging {
+  cursor: grabbing;
+  z-index: 1000 !important;
+}
+
+.sc-canvas .react-flow__node:focus,
+.sc-canvas .react-flow__node:focus-visible {
+  outline: none;
+}
+
+.sc-canvas .react-flow__edge-path {
+  stroke: var(--border-strong);
+  stroke-width: 1.5px;
+}
+
+.sc-canvas .react-flow__controls {
+  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.sc-canvas .react-flow__controls-button {
+  background-color: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  fill: var(--text-secondary);
+  stroke: var(--text-secondary);
+}
+
+.sc-canvas .react-flow__controls-button:hover {
+  background-color: var(--bg-subtle);
+}
+
+.sc-canvas .react-flow__attribution {
+  display: none;
+}
