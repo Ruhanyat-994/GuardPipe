@@ -56,6 +56,32 @@ export interface PentestConfigInput {
   subdomain_enum?: boolean
 }
 
+// Verdict/Contribution/RiskAssessment mirror dto.RiskAssessmentResponse
+// (documentation/07-api-specification.md §5's "risk" field) — null until
+// the scan's last job finalizes and a real score has been computed
+// (internal/modules/orchestrator/worker.go's Pool.finalizeScoring).
+export type Verdict = 'pass' | 'warn' | 'block'
+
+export interface Contribution {
+  reason: string
+  engine?: Engine
+  detail: string
+  impact: number
+}
+
+export interface RiskAssessment {
+  score: number
+  verdict: Verdict
+  previous_score: number | null
+  // Score - previous_score: negative is improving, positive is regressing.
+  // null whenever previous_score is null (no prior completed scan).
+  delta: number | null
+  is_partial: boolean
+  engine_scores: Partial<Record<Engine, number>>
+  breakdown: Contribution[]
+  formula_version: string
+}
+
 export interface Scan {
   id: string
   project_id: string
@@ -68,7 +94,7 @@ export interface Scan {
   started_at: string | null
   finished_at: string | null
   finding_counts: Record<string, number>
-  risk: unknown
+  risk: RiskAssessment | null
   jobs: Job[]
   // This scan's 1-based position among its own project's scans (oldest =
   // 1) — rendered as "Scan #N" in place of the raw UUID prefix.
@@ -161,6 +187,7 @@ export interface FindingListItem {
   cve: string[]
   owasp: string[]
   cvss_score: number | null
+  cvss_vector: string | null
   location: Location
   evidence: Evidence[]
   // "rule" or "ai" — cicdscan (Phase 10) is the first engine whose findings
@@ -188,6 +215,60 @@ export interface Pagination {
 export interface FindingList {
   data: FindingListItem[]
   pagination: Pagination
+}
+
+// FindingStatus is the triage state machine's five states
+// (documentation/05-module-specifications.md §15's mermaid diagram).
+export type FindingStatus = 'open' | 'acknowledged' | 'suppressed' | 'false_positive' | 'fixed'
+
+export interface ActorRef {
+  id: string
+  display_name?: string
+}
+
+// AISuggestion mirrors dto.AISuggestionResponse — present once
+// modules/ai's Enricher has produced one for this finding (nil for a
+// low/informational finding, a budget skip, or one from before AI
+// enrichment existed).
+export interface AISuggestion {
+  explanation?: string
+  patch_diff?: string
+  // "unverified" or "not_applicable" — never "verified" today (verifying
+  // needs a workspace checkout that's already gone by the time enrichment
+  // runs).
+  patch_status?: 'unverified' | 'not_applicable'
+  model?: string
+  generated_at: string
+}
+
+// FindingDetail mirrors dto.FindingDetailResponse — GET /findings/{id}.
+export interface FindingDetail extends FindingListItem {
+  status_reason?: string
+  status_changed_by: ActorRef | null
+  status_changed_at: string | null
+  ai_suggestion: AISuggestion | null
+}
+
+export function getFindingDetail(findingId: string): Promise<FindingDetail> {
+  return apiClient.get<FindingDetail>(`/findings/${findingId}`)
+}
+
+// updateFindingStatus mirrors PATCH /findings/{id}/status
+// (documentation/05-module-specifications.md §15's state machine —
+// suppressing requires >=20 characters of justification, enforced
+// server-side; reason is ignored for every other target status).
+export function updateFindingStatus(
+  findingId: string,
+  status: FindingStatus,
+  reason?: string,
+): Promise<{
+  id: string
+  status: FindingStatus
+  status_reason?: string
+  status_changed_by: ActorRef | null
+  status_changed_at: string | null
+}> {
+  return apiClient.patch(`/findings/${findingId}/status`, { status, reason })
 }
 
 // ScanSummary is one row of the scan-history table — deliberately lighter
