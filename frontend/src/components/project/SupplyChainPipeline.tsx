@@ -286,7 +286,7 @@ export function SupplyChainPipeline({
 }: {
   progress: Progress | null
   jobs: Job[]
-  scan?: Pick<Scan, 'id' | 'type' | 'branch' | 'queued_at'>
+  scan?: Pick<Scan, 'id' | 'type' | 'branch' | 'queued_at' | 'status' | 'risk'>
   // Optional — a caller without the project handy yet (e.g. mid-fetch) just
   // gets no repo/target-based disabling this render; every node still shows
   // its real job status either way.
@@ -354,19 +354,40 @@ export function SupplyChainPipeline({
         selected: selectedEngine === engine,
       }
     }
+    // AI enrichment and scoring aren't scan_jobs rows (they're a post-
+    // processing step Pool.persist runs once every job for the scan is
+    // terminal — worker.go's finalizeScoring/enrichFindings), so there's
+    // no per-engine job status to read the way every node above does.
+    // Scoring has a precise signal anyway: scan.risk is non-null iff it
+    // actually ran and produced a real score (dto.RiskAssessmentResponse,
+    // documentation/07-api-specification.md §5). AI enrichment has no
+    // comparably precise per-scan signal exposed by the API yet (it's
+    // best-effort per finding — some findings can fail while others
+    // succeed, e.g. a Gemini quota limit hit partway through), so this
+    // shows "ran" once the scan itself completed rather than overclaiming
+    // a specific success/failure count it can't see.
+    const scanCompleted = scan?.status === 'completed'
+    const aiEnrichmentStatus: NodeStatus = scanCompleted ? 'succeeded' : 'not_run'
+    const scoringStatus: NodeStatus = scan?.risk ? 'succeeded' : 'not_run'
     data['ai-enrichment'] = {
       label: 'AI enrichment',
       icon: FileText,
-      status: 'not_run',
-      statusIcon: STATUS_ICON.not_run,
-      tooltip: 'Lands in Phase 10/11',
+      status: aiEnrichmentStatus,
+      statusIcon: STATUS_ICON[aiEnrichmentStatus],
+      tooltip:
+        aiEnrichmentStatus === 'succeeded'
+          ? 'Explains and drafts patches for the worst findings, within a per-scan budget — some findings may be skipped if the budget or provider quota runs out'
+          : 'Runs automatically once the scan completes',
     }
     data['scoring'] = {
       label: 'Scoring',
       icon: ShieldAlert,
-      status: 'not_run',
-      statusIcon: STATUS_ICON.not_run,
-      tooltip: 'Lands in Phase 13',
+      status: scoringStatus,
+      statusIcon: STATUS_ICON[scoringStatus],
+      tooltip:
+        scoringStatus === 'succeeded' && scan?.risk
+          ? `Score ${scan.risk.score} — ${scan.risk.verdict}`
+          : 'Runs automatically once the scan completes',
     }
     data['pentest'] = {
       label: 'Pentest',
@@ -392,6 +413,7 @@ export function SupplyChainPipeline({
     pentestState.status,
     pentestState.reason,
     toggleEngine,
+    scan,
   ])
 
   // `rawNodes` owns position (and drag/selection state) exclusively — the
