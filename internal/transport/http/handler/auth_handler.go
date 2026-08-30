@@ -5,11 +5,13 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
@@ -17,6 +19,13 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/dto"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/middleware"
 )
+
+// OperatorLookup is the narrow slice of admin.Service AuthHandler needs —
+// just enough to stamp is_platform_operator onto a UserResponse
+// (BUILD_GUIDE.md Phase 14), not admin's whole surface.
+type OperatorLookup interface {
+	IsOperator(ctx context.Context, userID uuid.UUID) (bool, error)
+}
 
 // refreshCookieName is `gp_refresh` per documentation/07-api-specification.md
 // §2.
@@ -30,6 +39,7 @@ const refreshCookiePath = "/api/v1/auth"
 // §2.
 type AuthHandler struct {
 	svc             identity.Service
+	operators       OperatorLookup
 	validator       *validate.Validator
 	secureCookies   bool
 	refreshTokenTTL time.Duration
@@ -41,9 +51,21 @@ type AuthHandler struct {
 // `npm run dev` testing entirely if hardcoded true
 // (documentation/07-api-specification.md's cookie is written assuming an
 // HTTPS deployment; this parameter is the documented deviation for local
-// dev, see PROGRESS-LOG.md).
-func NewAuthHandler(svc identity.Service, validator *validate.Validator, secureCookies bool, refreshTokenTTL time.Duration) *AuthHandler {
-	return &AuthHandler{svc: svc, validator: validator, secureCookies: secureCookies, refreshTokenTTL: refreshTokenTTL}
+// dev, see PROGRESS-LOG.md). operators is never nil in production
+// (cmd/guardpipe/main.go always wires modules/admin).
+func NewAuthHandler(svc identity.Service, operators OperatorLookup, validator *validate.Validator, secureCookies bool, refreshTokenTTL time.Duration) *AuthHandler {
+	return &AuthHandler{svc: svc, operators: operators, validator: validator, secureCookies: secureCookies, refreshTokenTTL: refreshTokenTTL}
+}
+
+// isOperator is a small helper so Login/Me don't each repeat the same
+// nil-check/error-swallow — a lookup failure degrades to "not an operator"
+// rather than failing the whole login/me call over a cosmetic UX flag.
+func (h *AuthHandler) isOperator(ctx context.Context, userID uuid.UUID) bool {
+	if h.operators == nil {
+		return false
+	}
+	ok, err := h.operators.IsOperator(ctx, userID)
+	return err == nil && ok
 }
 
 func (h *AuthHandler) Register(c *gin.Context) {
@@ -64,7 +86,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	c.Header("Location", "/api/v1/auth/me")
-	c.JSON(http.StatusCreated, dto.FromUser(user))
+	// A freshly registered user can never already be a platform operator —
+	// operators.Grant requires an existing user (cmd/guardpipe/admin.go's
+	// own doc comment) — so this is always false, no lookup needed.
+	c.JSON(http.StatusCreated, dto.FromUser(user, false))
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -85,7 +110,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		AccessToken: pair.AccessToken,
 		TokenType:   "Bearer",
 		ExpiresIn:   pair.ExpiresIn,
-		User:        dto.FromUser(pair.User),
+		User:        dto.FromUser(pair.User, h.isOperator(c.Request.Context(), pair.User.ID)),
 	})
 }
 
@@ -135,7 +160,7 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.FromUser(user))
+	c.JSON(http.StatusOK, dto.FromUser(user, h.isOperator(c.Request.Context(), user.ID)))
 }
 
 func (h *AuthHandler) setRefreshCookie(c *gin.Context, token string) {

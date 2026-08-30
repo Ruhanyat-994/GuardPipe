@@ -83,6 +83,8 @@ func canonicalInputs(vars map[string]string, untrusted []UntrustedBlock) ([]byte
 type MemoryCache struct {
 	mu      sync.Mutex
 	entries map[string]memoryCacheEntry
+	hits    int
+	misses  int
 }
 
 type memoryCacheEntry struct {
@@ -101,16 +103,29 @@ func (c *MemoryCache) Get(_ context.Context, key string) (LLMResponse, bool, err
 
 	entry, ok := c.entries[key]
 	if !ok {
+		c.misses++
 		return LLMResponse{}, false, nil
 	}
 	if time.Now().After(entry.expires) {
 		delete(c.entries, key)
+		c.misses++
 		return LLMResponse{}, false, nil
 	}
 
+	c.hits++
 	resp := entry.resp
 	resp.FromCache = true
 	return resp, true, nil
+}
+
+// Stats reports cumulative hit/miss counts since process start — used by
+// `GET /admin/system-health` (BUILD_GUIDE.md Phase 14) via a small wrapper
+// in cmd/guardpipe (this package doesn't import modules/admin itself; see
+// that wrapper's own doc comment).
+func (c *MemoryCache) Stats() (hits, misses int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hits, c.misses
 }
 
 func (c *MemoryCache) Set(_ context.Context, key string, resp LLMResponse, ttl time.Duration) error {

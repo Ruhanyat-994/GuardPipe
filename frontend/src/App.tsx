@@ -21,8 +21,15 @@ import { BlogIndexPage } from './pages/BlogIndexPage'
 import { BlogPostPage } from './pages/BlogPostPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { RulesPage } from './pages/RulesPage'
+import { AdminOrganizationsPage } from './pages/AdminOrganizationsPage'
+import { AdminOrganizationDetailPage } from './pages/AdminOrganizationDetailPage'
+import { AdminPentestFlagsPage } from './pages/AdminPentestFlagsPage'
+import { AdminAuditLogPage } from './pages/AdminAuditLogPage'
+import { AdminSystemHealthPage } from './pages/AdminSystemHealthPage'
 import { RequireAuth } from './components/RequireAuth'
+import { RequireOperator } from './components/RequireOperator'
 import { AppShell } from './components/AppShell'
+import { AdminShell } from './components/AdminShell'
 import { useAuthStore } from './stores/authStore'
 
 /**
@@ -42,6 +49,22 @@ function ProtectedShell() {
       <AppShell>
         <Outlet />
       </AppShell>
+    </RequireAuth>
+  )
+}
+
+/** The platform-operator control plane's own layout route (BUILD_GUIDE.md
+ * Phase 14) — RequireAuth, then RequireOperator, then AdminShell (never
+ * AppShell) — see AdminShell's own doc comment for why this is a separate
+ * shell rather than a section of the tenant-facing one. */
+function ProtectedAdminShell() {
+  return (
+    <RequireAuth>
+      <RequireOperator>
+        <AdminShell>
+          <Outlet />
+        </AdminShell>
+      </RequireOperator>
     </RequireAuth>
   )
 }
@@ -108,6 +131,18 @@ function App() {
         />
         <Route path="/rules" element={<RulesPage />} />
         <Route path="/settings" element={<PlaceholderPage title="Settings" phase="Phase 9" />} />
+      </Route>
+
+      {/* Platform admin panel (BUILD_GUIDE.md Phase 14) — a separate route
+          tree with its own layout route/shell, gated by RequireOperator on
+          top of RequireAuth. Not nested under ProtectedShell's <Route> above
+          on purpose: it must never render inside AppShell. */}
+      <Route element={<ProtectedAdminShell />}>
+        <Route path="/admin/organizations" element={<AdminOrganizationsPage />} />
+        <Route path="/admin/organizations/:id" element={<AdminOrganizationDetailPage />} />
+        <Route path="/admin/pentest-flags" element={<AdminPentestFlagsPage />} />
+        <Route path="/admin/audit-log" element={<AdminAuditLogPage />} />
+        <Route path="/admin/system-health" element={<AdminSystemHealthPage />} />
       </Route>
 
       <Route path="*" element={<PlaceholderPage title="404 — not found" phase="—" />} />

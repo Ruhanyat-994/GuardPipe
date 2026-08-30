@@ -50,3 +50,13 @@ func (p *KeyPool) Advance() {
 	defer p.mu.Unlock()
 	p.current = (p.current + 1) % len(p.keys)
 }
+
+// CurrentIndex reports which key is in rotation without ever exposing the
+// key value itself — used for `GET /admin/system-health`
+// (BUILD_GUIDE.md Phase 14). The raw key from Current() is a secret and
+// must never be surfaced there.
+func (p *KeyPool) CurrentIndex() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.current
+}

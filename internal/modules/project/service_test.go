@@ -391,6 +391,10 @@ func (f *fakeAuditService) Log(_ context.Context, e audit.Entry) {
 	f.entries = append(f.entries, e)
 }
 
+func (f *fakeAuditService) List(_ context.Context, _ audit.ListFilter, _ audit.Page) ([]audit.Entry, int, error) {
+	return nil, 0, nil
+}
+
 func (f *fakeAuditService) actions() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

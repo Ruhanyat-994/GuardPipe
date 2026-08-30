@@ -68,6 +68,15 @@ func (q *JobQueue) ListProcessing(ctx context.Context) ([]string, error) {
 	return q.client.LRange(ctx, processingKey, 0, -1).Result()
 }
 
+// JobsInFlight returns how many jobs are currently claimed by a worker —
+// satisfies admin.QueueHealthReader for `GET /admin/system-health`
+// (BUILD_GUIDE.md Phase 14). LLEN rather than ListProcessing's LRANGE: this
+// only needs a count, not the job IDs themselves.
+func (q *JobQueue) JobsInFlight(ctx context.Context) (int, error) {
+	n, err := q.client.LLen(ctx, processingKey).Result()
+	return int(n), err
+}
+
 // Requeue moves a job back from processing to pending — the reaper's
 // action on a job whose claimed_at (in scan_jobs, the system of record)
 // is older than its engine's timeout.

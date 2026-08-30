@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Check, ChevronRight, LogOut, Monitor, Moon, Settings, Sun, User } from 'lucide-react'
+import { Check, ChevronRight, LogOut, Monitor, Moon, Settings, ShieldCheck, Sun, User } from 'lucide-react'
 import { Popover } from './ui/Popover'
 import { cn } from '../lib/cn'
 import { useAuthStore } from '../stores/authStore'
@@ -135,6 +135,27 @@ export function UserMenu() {
               </div>
             )}
           </div>
+
+          {/* Platform Admin (BUILD_GUIDE.md Phase 14) — rendered only for an
+              actual platform operator; a non-operator (including an org's
+              own role: 'admin') never sees this entry exists at all, not
+              just a 403 clicking it. */}
+          {user?.isPlatformOperator && (
+            <div className="border-t border-border-default py-1">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  close()
+                  navigate('/admin/organizations')
+                }}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-body-sm text-text-primary hover:bg-bg-subtle"
+              >
+                <ShieldCheck className="h-4 w-4 text-warning" aria-hidden="true" />
+                Platform Admin
+              </button>
+            </div>
+          )}
 
           <div className="border-t border-border-default py-1">
             <button

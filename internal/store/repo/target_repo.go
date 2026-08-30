@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
@@ -22,7 +23,10 @@ func NewTargetRepo(db Querier) *TargetRepo {
 	return &TargetRepo{db: db}
 }
 
-var _ project.TargetRepository = (*TargetRepo)(nil)
+var (
+	_ project.TargetRepository = (*TargetRepo)(nil)
+	_ admin.TargetReader       = (*TargetRepo)(nil)
+)
 
 func (r *TargetRepo) Create(ctx context.Context, t *project.Target) error {
 	const q = `
@@ -79,6 +83,30 @@ func (r *TargetRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status proj
 		return apperrors.NotFound("target.not_found", "pentest target not found")
 	}
 	return nil
+}
+
+// GetTargetInfo satisfies admin.TargetReader — a read-only join across
+// project's `pentest_targets` and `projects` tables (a display read, not a
+// business operation; see admin.TargetInfo's own doc comment for why this
+// is fine here rather than routed through project.Service).
+func (r *TargetRepo) GetTargetInfo(ctx context.Context, targetID uuid.UUID) (*admin.TargetInfo, error) {
+	const q = `
+		SELECT t.id, t.normalized_host, p.id, p.name, p.org_id, o.name
+		FROM pentest_targets t
+		JOIN projects p ON p.id = t.project_id
+		JOIN organizations o ON o.id = p.org_id
+		WHERE t.id = $1`
+	var info admin.TargetInfo
+	err := r.db.QueryRow(ctx, q, targetID).Scan(
+		&info.TargetID, &info.Host, &info.ProjectID, &info.ProjectName, &info.OrgID, &info.OrgName,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.NotFound("target.not_found", "pentest target not found")
+		}
+		return nil, fmt.Errorf("repo: get target info: %w", err)
+	}
+	return &info, nil
 }
 
 // rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows (Query),

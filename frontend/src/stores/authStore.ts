@@ -18,6 +18,12 @@ export interface AuthUser {
   email: string
   displayName: string
   role: 'admin' | 'member' | 'viewer'
+  /** Platform-operator status (BUILD_GUIDE.md Phase 14) — never the same
+   * thing as `role: 'admin'`, which is per-organisation. This is what the
+   * AdminShell route guard reads to decide whether to render the `/admin`
+   * nav entry and route tree at all; the real enforcement is still
+   * server-side (RequirePlatformOperator middleware). */
+  isPlatformOperator: boolean
 }
 
 interface UserResponse {
@@ -25,6 +31,7 @@ interface UserResponse {
   email: string
   display_name: string
   role: AuthUser['role']
+  is_platform_operator: boolean
 }
 
 interface LoginResponse {
@@ -41,7 +48,13 @@ interface RefreshResponse {
 }
 
 function fromUserResponse(u: UserResponse): AuthUser {
-  return { id: u.id, email: u.email, displayName: u.display_name, role: u.role }
+  return {
+    id: u.id,
+    email: u.email,
+    displayName: u.display_name,
+    role: u.role,
+    isPlatformOperator: u.is_platform_operator,
+  }
 }
 
 interface AuthState {

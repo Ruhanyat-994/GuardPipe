@@ -26,6 +26,10 @@ func (f *fakeRepo) Insert(_ context.Context, e audit.Entry) error {
 	return nil
 }
 
+func (f *fakeRepo) List(_ context.Context, _ audit.ListFilter, _ audit.Page) ([]audit.Entry, int, error) {
+	return f.inserted, len(f.inserted), f.err
+}
+
 func TestLog_InsertsEntry(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := audit.NewService(repo, nil)

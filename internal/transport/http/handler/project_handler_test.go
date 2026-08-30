@@ -76,6 +76,9 @@ func (f *fakeProjectService) AttestTarget(context.Context, domain.Actor, uuid.UU
 func (f *fakeProjectService) RevokeTarget(context.Context, domain.Actor, uuid.UUID) error {
 	return f.err
 }
+func (f *fakeProjectService) AdminRevokeTarget(context.Context, uuid.UUID) error {
+	return f.err
+}
 func (f *fakeProjectService) GetCloneInfo(context.Context, uuid.UUID) (string, string, string, error) {
 	return "", "", "", f.err
 }

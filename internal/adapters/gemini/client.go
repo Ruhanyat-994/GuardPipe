@@ -57,6 +57,15 @@ func NewClient(baseURL string, httpClient *http.Client, keys []string) (*Client,
 
 func (c *Client) Name() string { return "gemini" }
 
+// PoolStatus reports the rotation pool's size and current index — never
+// the key values themselves (KeyPool.Current() returns a real secret and
+// is deliberately not exposed here). Used by `GET /admin/system-health`
+// (BUILD_GUIDE.md Phase 14) via a small wrapper in cmd/guardpipe (this
+// package doesn't import modules/admin itself).
+func (c *Client) PoolStatus() (size, currentIndex int) {
+	return c.keys.Len(), c.keys.CurrentIndex()
+}
+
 // Complete sends one request, rotating through the key pool on a
 // quota/rate-limit response (BUILD_GUIDE.md Phase 4): on 429/RESOURCE_EXHAUSTED
 // it advances to the next key and retries the same request once, continuing

@@ -41,6 +41,14 @@ type Service interface {
 	Logout(ctx context.Context, refreshToken string) error
 	Verify(ctx context.Context, accessToken string) (*Claims, error)
 	Me(ctx context.Context, actor domain.Actor) (*User, error)
+	// CheckSuspension is BUILD_GUIDE.md Phase 14's per-request suspension
+	// gate (middleware.SuspensionCheck) — checked on every authenticated
+	// request, not just at Login, so an operator suspending an account or
+	// organisation takes effect immediately rather than waiting out the
+	// access token's TTL. Returns a *platform/errors.Error (Forbidden,
+	// "auth.account_suspended") when either the user or their organisation
+	// is currently suspended, nil otherwise.
+	CheckSuspension(ctx context.Context, actor domain.Actor) error
 }
 
 // UserRepository is defined by this package (the consumer), per
@@ -61,6 +69,12 @@ type UserRepository interface {
 // single-shared-organisation model (GetSole/EnsureDefault) was replaced.
 type OrganizationRepository interface {
 	Create(ctx context.Context, name string) (uuid.UUID, error)
+	// GetSuspensionState reads organizations.suspended_at/suspended_reason
+	// (migration 00017) — written only by modules/admin, through this
+	// module's own OrganizationRepository.SetSuspended (identity.Service
+	// exposes no way to suspend an organisation itself; that decision lives
+	// in modules/admin). reason is "" when suspendedAt is nil.
+	GetSuspensionState(ctx context.Context, orgID uuid.UUID) (suspendedAt *time.Time, reason string, err error)
 }
 
 // RefreshTokenRepository is defined by this package; implementation in
@@ -181,6 +195,19 @@ func (s *service) Login(ctx context.Context, email, password string) (*TokenPair
 		// user-visible information (no enumeration of account state).
 		return nil, errInvalidCredentials()
 	}
+	// Unlike a lockout, a platform-operator suspension IS meant to be
+	// visible to the account holder (BUILD_GUIDE.md Phase 14) — it isn't a
+	// security-through-obscurity mechanism, it's an operational action with
+	// a stated reason. Checked here before spending an Argon2id verify on a
+	// password that, even if correct, won't result in a usable session.
+	if user.SuspendedAt != nil {
+		return nil, suspendedError(user.SuspendedReason)
+	}
+	if orgSuspendedAt, orgReason, err := s.orgs.GetSuspensionState(ctx, user.OrgID); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("get organization suspension state: %w", err))
+	} else if orgSuspendedAt != nil {
+		return nil, suspendedError(&orgReason)
+	}
 
 	ok, err := crypto.VerifyPassword(password, user.PasswordHash)
 	if err != nil {
@@ -297,6 +324,28 @@ func (s *service) Verify(ctx context.Context, accessToken string) (*Claims, erro
 	return claims, nil
 }
 
+func (s *service) CheckSuspension(ctx context.Context, actor domain.Actor) error {
+	user, err := s.users.GetByID(ctx, actor.UserID)
+	if err != nil {
+		if isNotFound(err) {
+			return apperrors.Unauthorized("auth.token_invalid", "account no longer exists")
+		}
+		return apperrors.Internal(fmt.Errorf("get user for suspension check: %w", err))
+	}
+	if user.SuspendedAt != nil {
+		return suspendedError(user.SuspendedReason)
+	}
+
+	suspendedAt, reason, err := s.orgs.GetSuspensionState(ctx, actor.OrgID)
+	if err != nil {
+		return apperrors.Internal(fmt.Errorf("get organization suspension state: %w", err))
+	}
+	if suspendedAt != nil {
+		return suspendedError(&reason)
+	}
+	return nil
+}
+
 func (s *service) Me(ctx context.Context, actor domain.Actor) (*User, error) {
 	user, err := s.users.GetByID(ctx, actor.UserID)
 	if err != nil {
@@ -376,6 +425,19 @@ func orgNameFor(displayName string) string {
 
 func errInvalidCredentials() error {
 	return apperrors.Unauthorized("auth.invalid_credentials", "email or password is incorrect")
+}
+
+// suspendedError is BUILD_GUIDE.md Phase 14's rejection for a suspended
+// user or organisation — Forbidden (403), not Unauthorized (401): the
+// credential itself is valid, the account is simply not permitted to act
+// right now, and the reason is meant to be visible (see Login's own
+// comment on this).
+func suspendedError(reason *string) error {
+	detail := "this account has been suspended"
+	if reason != nil && *reason != "" {
+		detail = "this account has been suspended: " + *reason
+	}
+	return apperrors.Forbidden("auth.account_suspended", detail)
 }
 
 func isNotFound(err error) bool {

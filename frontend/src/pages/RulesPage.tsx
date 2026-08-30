@@ -71,7 +71,13 @@ function TierBadge({ tier }: { tier: Tier }) {
 
 export function RulesPage() {
   const user = useAuthStore((s) => s.user)
-  const isAdmin = user?.role === 'admin'
+  // Re-gated from org-scoped role === 'admin' to platform-operator status
+  // (BUILD_GUIDE.md Phase 14) — `rules` is a single global catalogue, not
+  // org-scoped, so the backend now requires RequirePlatformOperator on
+  // `PATCH /rules/{id}` (see router.go's own comment on this change). An
+  // org's own admin would otherwise see this control and get a 403
+  // clicking it.
+  const isOperator = user?.isPlatformOperator ?? false
 
   const [rules, setRules] = useState<Rule[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -238,7 +244,7 @@ export function RulesPage() {
                           {rule.owasp.length > 0 && <span>OWASP: {rule.owasp.join(', ')}</span>}
                         </div>
                       )}
-                      {isAdmin && (
+                      {isOperator && (
                         <div>
                           <Button
                             variant={rule.enabled ? 'destructive' : 'secondary'}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
@@ -324,8 +325,9 @@ func TestRateLimit_TracksClientsIndependently(t *testing.T) {
 // identity.Service interface — only Verify has real behaviour, since that's
 // all Auth middleware calls; the rest exist only to satisfy the interface.
 type fakeIdentityService struct {
-	claims *identity.Claims
-	err    error
+	claims        *identity.Claims
+	err           error
+	suspensionErr error
 }
 
 func (f fakeIdentityService) Register(context.Context, identity.RegisterInput) (*identity.User, error) {
@@ -341,6 +343,7 @@ func (f fakeIdentityService) Logout(context.Context, string) error { return nil 
 func (f fakeIdentityService) Verify(context.Context, string) (*identity.Claims, error) {
 	return f.claims, f.err
 }
+func (f fakeIdentityService) CheckSuspension(context.Context, domain.Actor) error { return f.suspensionErr }
 func (f fakeIdentityService) Me(context.Context, domain.Actor) (*identity.User, error) {
 	return nil, nil
 }
@@ -444,4 +447,108 @@ func TestRBAC_RejectsNonMatchingRole(t *testing.T) {
 
 func bytesContainsString(b []byte, s string) bool {
 	return len(s) > 0 && bytes.Contains(b, []byte(s))
+}
+
+// --- SuspensionCheck (BUILD_GUIDE.md Phase 14) ---
+
+func TestSuspensionCheck_AllowsActiveAccount(t *testing.T) {
+	svc := fakeIdentityService{claims: &identity.Claims{UserID: id.New(), OrgID: id.New(), Role: domain.RoleMember}}
+	r := gin.New()
+	r.Use(middleware.ErrorMapper())
+	r.GET("/", middleware.Auth(svc), middleware.SuspensionCheck(svc), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for an active account", rec.Code)
+	}
+}
+
+// TestSuspensionCheck_RejectsSuspendedAccount is the near-miss: a valid,
+// unexpired access token for a since-suspended account must still be
+// rejected on the very next request, not just at its next login.
+func TestSuspensionCheck_RejectsSuspendedAccount(t *testing.T) {
+	svc := fakeIdentityService{
+		claims:        &identity.Claims{UserID: id.New(), OrgID: id.New(), Role: domain.RoleMember},
+		suspensionErr: apperrors.Forbidden("auth.account_suspended", "this account has been suspended"),
+	}
+	r := gin.New()
+	r.Use(middleware.ErrorMapper())
+	r.GET("/", middleware.Auth(svc), middleware.SuspensionCheck(svc), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a suspended account", rec.Code)
+	}
+}
+
+// --- RequirePlatformOperator (BUILD_GUIDE.md Phase 14) ---
+
+type fakeOperatorChecker struct {
+	operators map[uuid.UUID]bool
+	err       error
+}
+
+func (f fakeOperatorChecker) IsOperator(_ context.Context, userID uuid.UUID) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.operators[userID], nil
+}
+
+func TestRequirePlatformOperator_AllowsOperator(t *testing.T) {
+	userID := id.New()
+	authSvc := fakeIdentityService{claims: &identity.Claims{UserID: userID, OrgID: id.New(), Role: domain.RoleMember}}
+	opSvc := fakeOperatorChecker{operators: map[uuid.UUID]bool{userID: true}}
+
+	r := gin.New()
+	r.Use(middleware.ErrorMapper())
+	r.GET("/", middleware.Auth(authSvc), middleware.RequirePlatformOperator(opSvc), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a platform operator", rec.Code)
+	}
+}
+
+// TestRequirePlatformOperator_RejectsNonOperator is the near-miss: even an
+// org's own domain.RoleAdmin — a real role, just the wrong one — must be
+// rejected here. Being an org admin never implies platform-operator access
+// (see the package's own doc comment on why these two are never conflated).
+func TestRequirePlatformOperator_RejectsNonOperator(t *testing.T) {
+	userID := id.New()
+	authSvc := fakeIdentityService{claims: &identity.Claims{UserID: userID, OrgID: id.New(), Role: domain.RoleAdmin}}
+	opSvc := fakeOperatorChecker{operators: map[uuid.UUID]bool{}}
+
+	r := gin.New()
+	r.Use(middleware.ErrorMapper())
+	r.GET("/", middleware.Auth(authSvc), middleware.RequirePlatformOperator(opSvc), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for an org-admin who isn't a platform operator", rec.Code)
+	}
 }

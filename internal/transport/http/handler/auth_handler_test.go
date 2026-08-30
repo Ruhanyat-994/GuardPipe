@@ -59,12 +59,13 @@ func (f *fakeIdentityService) Verify(context.Context, string) (*identity.Claims,
 func (f *fakeIdentityService) Me(context.Context, domain.Actor) (*identity.User, error) {
 	return f.meUser, f.meErr
 }
+func (f *fakeIdentityService) CheckSuspension(context.Context, domain.Actor) error { return nil }
 
 func newRouter(svc identity.Service) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.ErrorMapper())
 	v := validate.New()
-	h := handler.NewAuthHandler(svc, v, false, 7*24*time.Hour)
+	h := handler.NewAuthHandler(svc, nil, v, false, 7*24*time.Hour)
 
 	r.POST("/register", h.Register)
 	r.POST("/login", h.Login)

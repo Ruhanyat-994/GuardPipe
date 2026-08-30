@@ -11,6 +11,20 @@ const DIVISIONS: [Intl.RelativeTimeFormatUnit, number][] = [
   ['minute', 60],
 ]
 
+const DATE_FORMAT = new Intl.DateTimeFormat('en', {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
+/** Absolute timestamp — used where "2 days ago" isn't precise enough (an
+ * audit trail, a suspension record) and the exact moment matters. */
+export function formatDate(iso: string): string {
+  return DATE_FORMAT.format(new Date(iso))
+}
+
 export function relativeTime(iso: string): string {
   const diffSec = Math.round((new Date(iso).getTime() - Date.now()) / 1000)
   for (const [unit, secondsInUnit] of DIVISIONS) {

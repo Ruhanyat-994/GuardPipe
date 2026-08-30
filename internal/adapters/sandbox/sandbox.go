@@ -274,6 +274,21 @@ func (s *DockerSandbox) SweepOrphans(ctx context.Context) (int, error) {
 	return len(ids), nil
 }
 
+// RunningSandboxCount satisfies admin.SandboxHealthReader for
+// `GET /admin/system-health` (BUILD_GUIDE.md Phase 14) — a real count of
+// this package's own containers currently alive, not a fabricated number.
+// Structurally implements admin.SandboxHealthReader without importing
+// modules/admin (an adapter has no business knowing about a platform
+// module — the interface is satisfied by shape, matched up in
+// cmd/guardpipe/main.go where both packages are already in scope).
+func (s *DockerSandbox) RunningSandboxCount(ctx context.Context) (int, error) {
+	ids, err := s.docker.ListContainerIDsByLabel(ctx, sandboxLabelKey, sandboxLabelValue)
+	if err != nil {
+		return 0, fmt.Errorf("sandbox: count running containers: %w", err)
+	}
+	return len(ids), nil
+}
+
 func applyDefaults(spec RunSpec) RunSpec {
 	if spec.MemoryMB <= 0 {
 		spec.MemoryMB = defaultMemoryMB

@@ -34,6 +34,10 @@ func (f *fakeAuditService) Log(_ context.Context, e audit.Entry) {
 	f.entries = append(f.entries, e)
 }
 
+func (f *fakeAuditService) List(_ context.Context, _ audit.ListFilter, _ audit.Page) ([]audit.Entry, int, error) {
+	return nil, 0, nil
+}
+
 func (f *fakeAuditService) actions() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -119,8 +123,9 @@ func (f *fakeUserRepo) RecordSuccessfulLogin(_ context.Context, id uuid.UUID, lo
 // organisation id, exactly like real registrations each getting their own
 // isolated org (no shared "sole" organisation any more).
 type fakeOrgRepo struct {
-	mu      sync.Mutex
-	created []string // names, for assertions that care
+	mu        sync.Mutex
+	created   []string // names, for assertions that care
+	suspended map[uuid.UUID]string
 }
 
 func (f *fakeOrgRepo) Create(_ context.Context, name string) (uuid.UUID, error) {
@@ -128,6 +133,17 @@ func (f *fakeOrgRepo) Create(_ context.Context, name string) (uuid.UUID, error) 
 	defer f.mu.Unlock()
 	f.created = append(f.created, name)
 	return id.New(), nil
+}
+
+func (f *fakeOrgRepo) GetSuspensionState(_ context.Context, orgID uuid.UUID) (*time.Time, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	reason, ok := f.suspended[orgID]
+	if !ok {
+		return nil, "", nil
+	}
+	now := time.Now().UTC()
+	return &now, reason, nil
 }
 
 type fakeTokenRepo struct {
@@ -453,6 +469,111 @@ func TestLogin_LocksAfterMaxFailedAttempts(t *testing.T) {
 	_, err := svc.Login(ctx, "nadia@example.com", "correct-horse-battery")
 	if err == nil {
 		t.Fatal("Login() with the correct password succeeded while the account should be locked")
+	}
+}
+
+// --- Suspension (BUILD_GUIDE.md Phase 14) ---
+
+// newTestServiceForSuspension is a dedicated helper (rather than extending
+// newTestServiceWithAudit's return signature and breaking every existing
+// call site) — these tests need direct access to the fakeOrgRepo, which
+// none of the others do.
+func newTestServiceForSuspension(t *testing.T) (identity.Service, *fakeUserRepo, *fakeOrgRepo) {
+	t.Helper()
+	orgID := id.New()
+	users := newFakeUserRepo(orgID)
+	orgs := &fakeOrgRepo{}
+	tokens := newFakeTokenRepo()
+	auditSvc := &fakeAuditService{}
+	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
+	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour)
+	return svc, users, orgs
+}
+
+func TestLogin_SuspendedUserIsRejected(t *testing.T) {
+	svc, users, _ := newTestServiceForSuspension(t)
+	ctx := context.Background()
+	user, err := svc.Register(ctx, identity.RegisterInput{
+		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	reason := "ToS violation"
+	now := time.Now().UTC()
+	users.mu.Lock()
+	users.byID[user.ID].SuspendedAt, users.byID[user.ID].SuspendedReason = &now, &reason
+	users.mu.Unlock()
+
+	_, err = svc.Login(ctx, "nadia@example.com", "correct-horse-battery")
+	if err == nil {
+		t.Fatal("Login() error = nil, want a rejection for a suspended user")
+	}
+	if code := appErrCode(t, err); code != "auth.account_suspended" {
+		t.Errorf("Login() error code = %q, want %q", code, "auth.account_suspended")
+	}
+}
+
+func TestLogin_SuspendedOrganizationIsRejected(t *testing.T) {
+	svc, _, orgs := newTestServiceForSuspension(t)
+	ctx := context.Background()
+	user, err := svc.Register(ctx, identity.RegisterInput{
+		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	reason := "org suspended pending investigation"
+	orgs.mu.Lock()
+	if orgs.suspended == nil {
+		orgs.suspended = map[uuid.UUID]string{}
+	}
+	orgs.suspended[user.OrgID] = reason
+	orgs.mu.Unlock()
+
+	_, err = svc.Login(ctx, "nadia@example.com", "correct-horse-battery")
+	if err == nil {
+		t.Fatal("Login() error = nil, want a rejection for a suspended organization")
+	}
+	if code := appErrCode(t, err); code != "auth.account_suspended" {
+		t.Errorf("Login() error code = %q, want %q", code, "auth.account_suspended")
+	}
+}
+
+// TestCheckSuspension_RejectsMidSessionSuspension is the near-miss that
+// matters most for this feature: a user who logged in *before* being
+// suspended must still be rejected on their very next request — this is
+// what middleware.SuspensionCheck calls on every authenticated route, not
+// just at Login.
+func TestCheckSuspension_RejectsMidSessionSuspension(t *testing.T) {
+	svc, users, _ := newTestServiceForSuspension(t)
+	ctx := context.Background()
+	user, err := svc.Register(ctx, identity.RegisterInput{
+		Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery",
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	actor := domain.Actor{UserID: user.ID, OrgID: user.OrgID, Role: user.Role}
+
+	if err := svc.CheckSuspension(ctx, actor); err != nil {
+		t.Fatalf("CheckSuspension() error = %v, want nil for an active account", err)
+	}
+
+	reason := "ToS violation"
+	now := time.Now().UTC()
+	users.mu.Lock()
+	users.byID[user.ID].SuspendedAt, users.byID[user.ID].SuspendedReason = &now, &reason
+	users.mu.Unlock()
+
+	err = svc.CheckSuspension(ctx, actor)
+	if err == nil {
+		t.Fatal("CheckSuspension() error = nil, want a rejection after suspension")
+	}
+	if code := appErrCode(t, err); code != "auth.account_suspended" {
+		t.Errorf("CheckSuspension() error code = %q, want %q", code, "auth.account_suspended")
 	}
 }
 
