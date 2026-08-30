@@ -24,21 +24,28 @@ func (r RegisterRequest) ToInput() identity.RegisterInput {
 
 // UserResponse matches the user shape in documentation/07-api-specification.md
 // §2 — never includes PasswordHash or any other internal field.
+// IsPlatformOperator (BUILD_GUIDE.md Phase 14) is the one addition since:
+// it's what the SPA's route guard reads to decide whether to render the
+// `/admin` nav entry and route tree at all — a non-operator shouldn't even
+// see it exists, not just get a 403 clicking it. The real enforcement is
+// still server-side (RequirePlatformOperator); this field is UX only.
 type UserResponse struct {
-	ID          string    `json:"id"`
-	Email       string    `json:"email"`
-	DisplayName string    `json:"display_name"`
-	Role        string    `json:"role"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                 string    `json:"id"`
+	Email              string    `json:"email"`
+	DisplayName        string    `json:"display_name"`
+	Role               string    `json:"role"`
+	IsPlatformOperator bool      `json:"is_platform_operator"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
-func FromUser(u *identity.User) UserResponse {
+func FromUser(u *identity.User, isPlatformOperator bool) UserResponse {
 	return UserResponse{
-		ID:          u.ID.String(),
-		Email:       u.Email,
-		DisplayName: u.DisplayName,
-		Role:        string(u.Role),
-		CreatedAt:   u.CreatedAt,
+		ID:                 u.ID.String(),
+		Email:              u.Email,
+		DisplayName:        u.DisplayName,
+		Role:               string(u.Role),
+		IsPlatformOperator: isPlatformOperator,
+		CreatedAt:          u.CreatedAt,
 	}
 }
 

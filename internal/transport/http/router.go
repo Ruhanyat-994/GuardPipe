@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
@@ -39,6 +40,11 @@ type RouterConfig struct {
 	ProjectSvc      project.Service
 	AdvisorySvc     advisory.Service
 	OrchestratorSvc orchestrator.Service
+	// AdminSvc is BUILD_GUIDE.md Phase 14's platform-operator control plane
+	// — never nil in production (cmd/guardpipe/main.go always wires it),
+	// kept as its own field rather than folded into an existing service so
+	// a test router that doesn't need it can simply omit it.
+	AdminSvc admin.Service
 	// Users backs the export report's accountability watermark (who
 	// requested this scan) — reporting.UserReader, satisfied directly by
 	// *store/repo.UserRepo.
@@ -87,9 +93,16 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	r.GET("/version", healthH.Version)
 
 	v := validate.New()
-	authH := handler.NewAuthHandler(cfg.IdentitySvc, v, cfg.SecureCookies, cfg.RefreshTokenTTL)
+	authH := handler.NewAuthHandler(cfg.IdentitySvc, cfg.AdminSvc, v, cfg.SecureCookies, cfg.RefreshTokenTTL)
 	authLimiter := middleware.RateLimit(cfg.AuthRateLimit, cfg.AuthRateWindow)
 	requireAuth := middleware.Auth(cfg.IdentitySvc)
+	// requireNotSuspended (BUILD_GUIDE.md Phase 14) runs on every
+	// authenticated route right after requireAuth — a suspended user or
+	// organisation is rejected on the very next request, not just at
+	// login. Deliberately not attached to /auth/login itself (Login checks
+	// suspension inline, before a token exists to attach an Actor to) or to
+	// /auth/refresh (cookie-authenticated, no Auth middleware either).
+	requireNotSuspended := middleware.SuspensionCheck(cfg.IdentitySvc)
 
 	api := r.Group("/api/v1")
 
@@ -101,12 +114,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		auth.POST("/register", authLimiter, authH.Register)
 		auth.POST("/login", authLimiter, authH.Login)
 		auth.POST("/refresh", authH.Refresh) // cookie-authenticated, not bearer — no Auth middleware
-		auth.POST("/logout", requireAuth, authH.Logout)
-		auth.GET("/me", requireAuth, authH.Me)
+		auth.POST("/logout", requireAuth, requireNotSuspended, authH.Logout)
+		auth.GET("/me", requireAuth, requireNotSuspended, authH.Me)
 	}
 
 	projectH := handler.NewProjectHandler(cfg.ProjectSvc, v)
-	projects := api.Group("/projects", requireAuth)
+	projects := api.Group("/projects", requireAuth, requireNotSuspended)
 	{
 		projects.GET("", middleware.RBAC(viewerAndAbove...), projectH.List)
 		projects.POST("", middleware.RBAC(memberAndAbove...), projectH.Create)
@@ -123,13 +136,13 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		projects.POST("/:id/documents/import", middleware.RBAC(memberAndAbove...), projectH.ImportDocument)
 	}
 
-	targets := api.Group("/targets", requireAuth)
+	targets := api.Group("/targets", requireAuth, requireNotSuspended)
 	{
 		targets.POST("/:id/attest", middleware.RBAC(memberAndAbove...), projectH.AttestTarget)
 		targets.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.RevokeTarget)
 	}
 
-	documents := api.Group("/documents", requireAuth)
+	documents := api.Group("/documents", requireAuth, requireNotSuspended)
 	{
 		documents.DELETE("/:id", middleware.RBAC(memberAndAbove...), projectH.DeleteDocument)
 	}
@@ -138,7 +151,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	scanH := handler.NewScanHandler(cfg.OrchestratorSvc, reportsAssembler, v)
 	projects.POST("/:id/scans", middleware.RBAC(memberAndAbove...), scanH.Create)
 	projects.GET("/:id/scans", middleware.RBAC(viewerAndAbove...), scanH.List)
-	scans := api.Group("/scans", requireAuth)
+	scans := api.Group("/scans", requireAuth, requireNotSuspended)
 	{
 		scans.GET("", middleware.RBAC(viewerAndAbove...), scanH.ListForOrg)
 		scans.GET("/:id", middleware.RBAC(viewerAndAbove...), scanH.Get)
@@ -148,12 +161,40 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		scans.GET("/:id/export", middleware.RBAC(viewerAndAbove...), scanH.Export)
 	}
 
+	// requireOperator (BUILD_GUIDE.md Phase 14) gates every `/admin/*`
+	// route, in addition to requireAuth+requireNotSuspended — see
+	// middleware.RequirePlatformOperator's own doc comment.
+	requireOperator := middleware.RequirePlatformOperator(cfg.AdminSvc)
+
 	ruleH := handler.NewRuleHandler(cfg.AdvisorySvc, v)
-	rules := api.Group("/rules", requireAuth)
+	rules := api.Group("/rules", requireAuth, requireNotSuspended)
 	{
 		rules.GET("", middleware.RBAC(viewerAndAbove...), ruleH.List)
 		rules.GET("/:id", middleware.RBAC(viewerAndAbove...), ruleH.Get)
-		rules.PATCH("/:id", middleware.RBAC(adminOnly...), ruleH.SetEnabled)
+		// Re-gated from org-scoped adminOnly to requireOperator
+		// (BUILD_GUIDE.md Phase 14): `rules` (documentation/06-database-design.md
+		// §4.15) is a single global catalogue, not org-scoped — as written
+		// before this phase, any org's own admin could disable a detection
+		// rule for every tenant on the platform, not just their own.
+		rules.PATCH("/:id", requireOperator, ruleH.SetEnabled)
+	}
+
+	adminH := handler.NewAdminHandler(cfg.AdminSvc, v)
+	adminGroup := api.Group("/admin", requireAuth, requireNotSuspended)
+	{
+		adminGroup.GET("/organizations", requireOperator, adminH.ListOrganizations)
+		adminGroup.GET("/organizations/:id", requireOperator, adminH.GetOrganization)
+		adminGroup.POST("/organizations/:id/suspend", requireOperator, adminH.SuspendOrganization)
+		adminGroup.POST("/organizations/:id/reinstate", requireOperator, adminH.ReinstateOrganization)
+		adminGroup.POST("/users/:id/suspend", requireOperator, adminH.SuspendUser)
+		adminGroup.POST("/users/:id/reinstate", requireOperator, adminH.ReinstateUser)
+		// CreateFlag is deliberately not behind requireOperator — see
+		// AdminHandler.CreateFlag's own doc comment.
+		adminGroup.POST("/pentest-flags", adminH.CreateFlag)
+		adminGroup.GET("/pentest-flags", requireOperator, adminH.ListFlags)
+		adminGroup.PATCH("/pentest-flags/:id", requireOperator, adminH.ResolveFlag)
+		adminGroup.GET("/audit-log", requireOperator, adminH.ListAuditLog)
+		adminGroup.GET("/system-health", requireOperator, adminH.SystemHealth)
 	}
 
 	return r

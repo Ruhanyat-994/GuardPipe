@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
 
@@ -76,6 +78,45 @@ func (r *ScanJobRepo) MarkRunning(ctx context.Context, id uuid.UUID) error {
 		return apperrors.NotFound("job.not_found", "job not found")
 	}
 	return nil
+}
+
+var _ admin.EngineJobStatsReader = (*ScanJobRepo)(nil)
+
+// EngineJobStatsSince satisfies admin.EngineJobStatsReader — real
+// success/failure/skip counts per engine over the given window, for
+// `GET /admin/system-health` (BUILD_GUIDE.md Phase 14). Always available:
+// every engine writes to scan_jobs regardless of whether Docker/Redis/AI
+// are reachable, unlike the other SystemHealth signals.
+func (r *ScanJobRepo) EngineJobStatsSince(ctx context.Context, since time.Time) ([]admin.EngineJobStats, error) {
+	const q = `
+		SELECT engine,
+			count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+			count(*) FILTER (WHERE status = 'failed')    AS failed,
+			count(*) FILTER (WHERE status = 'skipped')   AS skipped
+		FROM scan_jobs
+		WHERE claimed_at >= $1
+		GROUP BY engine
+		ORDER BY engine`
+	rows, err := r.db.Query(ctx, q, since)
+	if err != nil {
+		return nil, fmt.Errorf("repo: engine job stats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []admin.EngineJobStats
+	for rows.Next() {
+		var s admin.EngineJobStats
+		var engine string
+		if err := rows.Scan(&engine, &s.Succeeded, &s.Failed, &s.Skipped); err != nil {
+			return nil, fmt.Errorf("repo: scan engine job stats: %w", err)
+		}
+		s.Engine = domain.EngineID(engine)
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo: iterate engine job stats: %w", err)
+	}
+	return out, nil
 }
 
 const jobSelectColumns = `

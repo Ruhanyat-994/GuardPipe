@@ -25,8 +25,16 @@ type User struct {
 	LastLoginAt      *time.Time
 	FailedLoginCount int
 	LockedUntil      *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// SuspendedAt/SuspendedReason (migration 00017, BUILD_GUIDE.md Phase 14)
+	// are set only by modules/admin, through this module's own
+	// UserRepository.SetSuspended — never by anything in this package
+	// itself. identity only reads them, to reject a suspended account at
+	// Login and on every subsequent authenticated request
+	// (Service.CheckSuspension).
+	SuspendedAt     *time.Time
+	SuspendedReason *string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // RegisterInput is the input to Service.Register.

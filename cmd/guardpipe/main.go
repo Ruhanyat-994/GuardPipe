@@ -36,6 +36,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/docreview"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/k8sscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/pentest"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
@@ -84,6 +85,12 @@ func main() {
 	// product feature — see cmd/guardpipe/aiprobe.go.
 	if len(os.Args) > 1 && os.Args[1] == "aiprobe" {
 		os.Exit(runAIProbe(os.Args[2:]))
+	}
+	// admin grant-operator/revoke-operator is BUILD_GUIDE.md Phase 14's
+	// anti-escalation control — see cmd/guardpipe/admin.go's own doc
+	// comment for why this is CLI-only, never an HTTP endpoint.
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		os.Exit(runAdmin(os.Args[2:]))
 	}
 
 	if err := run(); err != nil {
@@ -229,13 +236,22 @@ func run() error {
 	// §10's own "Gemini unavailable" failure mode (rule findings only, job
 	// still succeeds), never as a reason to skip registering the engine
 	// itself — the 16 deterministic Core rules need no AI at all.
+	// geminiClient/aiCache are kept in outer-scope vars (not just local to
+	// this if-block) so modules/admin's SystemHealth (BUILD_GUIDE.md
+	// Phase 14) can read the real pool/cache state below — both stay nil
+	// when AI is disabled, which is exactly the "Available: false" signal
+	// admin.GeminiPoolReader/AICacheReader are meant to report honestly.
 	var aiSvc ai.Service
+	var geminiClient *gemini.Client
+	var aiCache *ai.MemoryCache
 	if cfg.AI.Enabled {
-		geminiClient, err := gemini.NewClient("", nil, cfg.AI.KeyPool())
+		var err error
+		geminiClient, err = gemini.NewClient("", nil, cfg.AI.KeyPool())
 		if err != nil {
 			return fmt.Errorf("create gemini client: %w", err)
 		}
-		aiSvc = ai.NewService(geminiClient, ai.NewMemoryCache(), cfg.AI.CacheTTL, cfg.AI.ModelFast, cfg.AI.ModelSmart)
+		aiCache = ai.NewMemoryCache()
+		aiSvc = ai.NewService(geminiClient, aiCache, cfg.AI.CacheTTL, cfg.AI.ModelFast, cfg.AI.ModelSmart)
 	}
 	registry.Register(cicdscan.New(aiSvc))
 	// docreview (Phase 11) has no deterministic fallback the way cicdscan
@@ -337,6 +353,38 @@ func run() error {
 		})
 	}
 
+	// modules/admin (BUILD_GUIDE.md Phase 14) — the platform-operator
+	// control plane. Repository constructions are repeated here rather
+	// than reusing a stored variable, matching this function's own
+	// existing convention (e.g. repo.NewScanJobRepo(db.Pool) is already
+	// called twice, once for orchestratorSvc and once for pool, above) —
+	// each is just a struct wrapping db.Pool, cheap to construct again.
+	//
+	// geminiHealthReader/aiCacheHealthReader stay nil (their declared
+	// interface's zero value) when AI is disabled — SystemHealth reports
+	// that honestly as Available: false rather than fabricating a number.
+	var geminiHealthReader admin.GeminiPoolReader
+	var aiCacheHealthReader admin.AICacheReader
+	if cfg.AI.Enabled {
+		geminiHealthReader = geminiPoolReader{client: geminiClient}
+		aiCacheHealthReader = aiCacheReader{cache: aiCache}
+	}
+	adminSandbox := sandbox.New(dockerClient)
+	adminSvc := admin.NewService(
+		repo.NewOrganizationRepo(db.Pool),
+		repo.NewUserRepo(db.Pool),
+		repo.NewPlatformOperatorRepo(db.Pool),
+		repo.NewPentestFlagRepo(db.Pool),
+		repo.NewTargetRepo(db.Pool),
+		projectSvc,
+		auditSvc,
+		repo.NewScanJobRepo(db.Pool),
+		jobQueue,
+		adminSandbox,
+		geminiHealthReader,
+		aiCacheHealthReader,
+	)
+
 	router := transporthttp.NewRouter(transporthttp.RouterConfig{
 		Logger:          log,
 		CORSOrigins:     cfg.Security.CORSOrigins,
@@ -344,6 +392,7 @@ func run() error {
 		ProjectSvc:      projectSvc,
 		AdvisorySvc:     advisorySvc,
 		OrchestratorSvc: orchestratorSvc,
+		AdminSvc:        adminSvc,
 		Users:           repo.NewUserRepo(db.Pool),
 		AISvc:           aiSvc,
 		HealthDB:        db,

@@ -40,6 +40,15 @@ type Service interface {
 	AttestTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID, in AttestationInput) (*Target, *TargetAttestation, error)
 	RevokeTarget(ctx context.Context, actor domain.Actor, targetID uuid.UUID) error
 
+	// AdminRevokeTarget is modules/admin's counterpart to RevokeTarget —
+	// same no-actor reasoning as GetCloneInfo below (BUILD_GUIDE.md
+	// Phase 14): the caller is a platform operator acting on a confirmed
+	// pentest_target_flags misuse report, not a per-request actor who owns
+	// this target's project, so the usual org-ownership check doesn't
+	// apply here — RequirePlatformOperator (transport/http/middleware) is
+	// the authorization boundary for this one.
+	AdminRevokeTarget(ctx context.Context, targetID uuid.UUID) error
+
 	// GetAttestedTarget is modules/orchestrator's background-worker read for
 	// the pentest engine — same no-actor shape as GetCloneInfo below (the
 	// worker isn't handling a per-request authorization check, it's
@@ -612,6 +621,13 @@ func (s *service) RevokeTarget(ctx context.Context, actor domain.Actor, targetID
 	}
 	if err := s.targets.UpdateStatus(ctx, targetID, TargetRevoked); err != nil {
 		return apperrors.Internal(fmt.Errorf("revoke target: %w", err))
+	}
+	return nil
+}
+
+func (s *service) AdminRevokeTarget(ctx context.Context, targetID uuid.UUID) error {
+	if err := s.targets.UpdateStatus(ctx, targetID, TargetRevoked); err != nil {
+		return apperrors.Internal(fmt.Errorf("admin revoke target: %w", err))
 	}
 	return nil
 }

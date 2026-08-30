@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
@@ -26,7 +27,10 @@ func NewUserRepo(db Querier) *UserRepo {
 	return &UserRepo{db: db}
 }
 
-var _ identity.UserRepository = (*UserRepo)(nil)
+var (
+	_ identity.UserRepository = (*UserRepo)(nil)
+	_ admin.UserRepository    = (*UserRepo)(nil)
+)
 
 func (r *UserRepo) Create(ctx context.Context, u *identity.User) error {
 	const q = `
@@ -51,20 +55,23 @@ func (r *UserRepo) CountAll(ctx context.Context) (int, error) {
 }
 
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*identity.User, error) {
-	const q = `
-		SELECT id, org_id, email, display_name, password_hash, role,
-		       last_login_at, failed_login_count, locked_until, created_at, updated_at
-		FROM users WHERE email = $1`
+	const q = userSelectColumns + ` FROM users WHERE email = $1`
 	return r.scanOne(ctx, q, email)
 }
 
 func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*identity.User, error) {
-	const q = `
-		SELECT id, org_id, email, display_name, password_hash, role,
-		       last_login_at, failed_login_count, locked_until, created_at, updated_at
-		FROM users WHERE id = $1`
+	const q = userSelectColumns + ` FROM users WHERE id = $1`
 	return r.scanOne(ctx, q, id)
 }
+
+// userSelectColumns is shared by GetByEmail/GetByID — suspended_at/
+// suspended_reason (migration 00017) are read here so identity.Service can
+// reject a suspended account at Login/CheckSuspension without a second
+// query; only modules/admin ever writes them (SetSuspended below).
+const userSelectColumns = `
+	SELECT id, org_id, email, display_name, password_hash, role,
+	       last_login_at, failed_login_count, locked_until,
+	       suspended_at, suspended_reason, created_at, updated_at`
 
 // GetDisplayName satisfies project.UserDisplayNameLookup — `project` needs
 // only this one field from `identity`'s tables, for a target attestation's
@@ -86,13 +93,83 @@ func (r *UserRepo) scanOne(ctx context.Context, q string, arg any) (*identity.Us
 	var role string
 	err := r.db.QueryRow(ctx, q, arg).Scan(
 		&u.ID, &u.OrgID, &u.Email, &u.DisplayName, &u.PasswordHash, &role,
-		&u.LastLoginAt, &u.FailedLoginCount, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt,
+		&u.LastLoginAt, &u.FailedLoginCount, &u.LockedUntil,
+		&u.SuspendedAt, &u.SuspendedReason, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, apperrors.NotFound("identity.user_not_found", "no such user")
 		}
 		return nil, fmt.Errorf("repo: get user: %w", err)
+	}
+	u.Role = domain.Role(role)
+	return &u, nil
+}
+
+// --- admin.UserRepository (BUILD_GUIDE.md Phase 14) ---
+//
+// This type already implements identity.UserRepository against the same
+// `users` table — one repository struct satisfying two modules'
+// interfaces, the same pattern GetDisplayName already establishes for
+// `project`.
+
+func (r *UserRepo) ListByOrg(ctx context.Context, orgID uuid.UUID) ([]admin.UserSummary, error) {
+	const q = userSummaryColumns + ` FROM users WHERE org_id = $1 ORDER BY created_at`
+	rows, err := r.db.Query(ctx, q, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("repo: list users by org: %w", err)
+	}
+	defer rows.Close()
+
+	var out []admin.UserSummary
+	for rows.Next() {
+		u, err := scanUserSummary(rows)
+		if err != nil {
+			return nil, fmt.Errorf("repo: scan user summary: %w", err)
+		}
+		out = append(out, *u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo: iterate users by org: %w", err)
+	}
+	return out, nil
+}
+
+func (r *UserRepo) GetSummaryByID(ctx context.Context, id uuid.UUID) (*admin.UserSummary, error) {
+	const q = userSummaryColumns + ` FROM users WHERE id = $1`
+	u, err := scanUserSummary(r.db.QueryRow(ctx, q, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.NotFound("admin.user_not_found", "user not found")
+		}
+		return nil, fmt.Errorf("repo: get user summary: %w", err)
+	}
+	return u, nil
+}
+
+func (r *UserRepo) SetSuspended(ctx context.Context, id uuid.UUID, suspendedAt *time.Time, reason *string) error {
+	const q = `UPDATE users SET suspended_at = $2, suspended_reason = $3 WHERE id = $1`
+	tag, err := r.db.Exec(ctx, q, id, suspendedAt, reason)
+	if err != nil {
+		return fmt.Errorf("repo: set user suspended: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("admin.user_not_found", "user not found")
+	}
+	return nil
+}
+
+const userSummaryColumns = `
+	SELECT id, org_id, email, display_name, role, suspended_at, suspended_reason, last_login_at, created_at`
+
+func scanUserSummary(row rowScanner) (*admin.UserSummary, error) {
+	var u admin.UserSummary
+	var role string
+	if err := row.Scan(
+		&u.ID, &u.OrgID, &u.Email, &u.DisplayName, &role,
+		&u.SuspendedAt, &u.SuspendedReason, &u.LastLoginAt, &u.CreatedAt,
+	); err != nil {
+		return nil, err
 	}
 	u.Role = domain.Role(role)
 	return &u, nil
