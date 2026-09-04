@@ -367,6 +367,8 @@ type testDeps struct {
 	targets      *fakeTargetRepo
 	attestations *fakeAttestationRepo
 	documents    *fakeDocumentRepo
+	assignments  *fakeAssignmentRepo
+	membership   *fakeMembershipChecker
 	users        *fakeUserLookup
 	vcs          *fakeVCS
 	resolver     fakeResolver
@@ -374,6 +376,78 @@ type testDeps struct {
 	urlFetcher   *fakeURLFetcher
 	pdfExtractor *fakePDFExtractor
 	denylist     []string
+}
+
+// fakeAssignmentRepo is a hand-written fake for
+// project.ProjectAssignmentRepository (BUILD_GUIDE.md Phase 15) — no
+// mocking framework.
+type fakeAssignmentRepo struct {
+	mu   sync.Mutex
+	rows map[string]project.ProjectAssignment // key: projectID+"|"+userID
+}
+
+func newFakeAssignmentRepo() *fakeAssignmentRepo {
+	return &fakeAssignmentRepo{rows: map[string]project.ProjectAssignment{}}
+}
+
+func assignmentKey(projectID, userID uuid.UUID) string {
+	return projectID.String() + "|" + userID.String()
+}
+
+func (f *fakeAssignmentRepo) Create(_ context.Context, a *project.ProjectAssignment) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
+	}
+	a.AssignedAt = time.Now().UTC()
+	f.rows[assignmentKey(a.ProjectID, a.UserID)] = *a
+	return nil
+}
+
+func (f *fakeAssignmentRepo) Delete(_ context.Context, projectID, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := assignmentKey(projectID, userID)
+	if _, ok := f.rows[k]; !ok {
+		return apperrors.NotFound("project.assignment_not_found", "assignment not found")
+	}
+	delete(f.rows, k)
+	return nil
+}
+
+func (f *fakeAssignmentRepo) ListByProject(_ context.Context, projectID uuid.UUID) ([]project.ProjectAssignment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []project.ProjectAssignment
+	for _, a := range f.rows {
+		if a.ProjectID == projectID {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAssignmentRepo) ListByOrg(_ context.Context, _ uuid.UUID) ([]project.ProjectAssignment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]project.ProjectAssignment, 0, len(f.rows))
+	for _, a := range f.rows {
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// fakeMembershipChecker is a hand-written fake for project.MembershipChecker
+// — members defaults to "everyone is a member" (true) so existing tests that
+// don't care about this check keep passing; individual tests override it.
+type fakeMembershipChecker struct {
+	isMember bool
+	err      error
+}
+
+func (f *fakeMembershipChecker) IsOrgMember(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	return f.isMember, f.err
 }
 
 // fakeAuditService is a hand-written fake — no mocking framework, matching
@@ -413,6 +487,8 @@ func newTestDeps() *testDeps {
 		targets:      newFakeTargetRepo(),
 		attestations: &fakeAttestationRepo{},
 		documents:    newFakeDocumentRepo(),
+		assignments:  newFakeAssignmentRepo(),
+		membership:   &fakeMembershipChecker{isMember: true},
 		users:        &fakeUserLookup{name: "Nadia R."},
 		vcs:          &fakeVCS{},
 		resolver:     fakeResolver{},
@@ -425,7 +501,7 @@ func newTestDeps() *testDeps {
 
 func (d *testDeps) build() project.Service {
 	key := make([]byte, crypto.KeySize)
-	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.documents, d.users, d.vcs, d.resolver, d.audit, d.urlFetcher, d.pdfExtractor, key, false, d.denylist)
+	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.documents, d.assignments, d.membership, d.users, d.vcs, d.resolver, d.audit, d.urlFetcher, d.pdfExtractor, key, false, d.denylist)
 }
 
 // fakeURLFetcher is a hand-written fake for project.URLFetcher — no
@@ -598,6 +674,45 @@ func TestArchive_SetsStatus(t *testing.T) {
 
 	actions := d.audit.actions()
 	require.Equal(t, []string{"project.created", "project.archived"}, actions)
+}
+
+// --- project assignments — BUILD_GUIDE.md Phase 15 ---
+
+func TestAssignProject_RejectsNonOrgMember(t *testing.T) {
+	d := newTestDeps()
+	d.membership = &fakeMembershipChecker{isMember: false}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.AssignProject(context.Background(), actor, detail.ID, uuid.New())
+	require.Error(t, err)
+}
+
+func TestAssignProject_ThenUnassign(t *testing.T) {
+	d := newTestDeps()
+	d.membership = &fakeMembershipChecker{isMember: true}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	assigneeID := uuid.New()
+	a, err := svc.AssignProject(context.Background(), actor, detail.ID, assigneeID)
+	require.NoError(t, err)
+	require.Equal(t, assigneeID, a.UserID)
+
+	list, err := svc.ListAssignments(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	require.NoError(t, svc.UnassignProject(context.Background(), actor, detail.ID, assigneeID))
+	list, err = svc.ListAssignments(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Empty(t, list)
 }
 
 // TestGetCloneInfo_PublicRepository_NoCredential confirms

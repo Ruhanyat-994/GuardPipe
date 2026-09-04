@@ -235,7 +235,7 @@ func newTestServiceWithAudit(t *testing.T) (identity.Service, *fakeUserRepo, *fa
 	tokens := newFakeTokenRepo()
 	auditSvc := &fakeAuditService{}
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
-	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour)
+	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour, nil)
 	return svc, users, tokens, auditSvc
 }
 
@@ -486,7 +486,7 @@ func newTestServiceForSuspension(t *testing.T) (identity.Service, *fakeUserRepo,
 	tokens := newFakeTokenRepo()
 	auditSvc := &fakeAuditService{}
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
-	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour)
+	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour, nil)
 	return svc, users, orgs
 }
 
@@ -798,7 +798,7 @@ func TestVerify_ValidAccessTokenRoundTrips(t *testing.T) {
 
 func TestVerify_ExpiredTokenReturnsTokenExpiredCode(t *testing.T) {
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), -1*time.Minute) // already expired
-	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, &fakeAuditService{}, -1*time.Minute, time.Hour, 12*time.Hour)
+	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, &fakeAuditService{}, -1*time.Minute, time.Hour, 12*time.Hour, nil)
 
 	token, err := issuer.Issue(id.New(), id.New(), domain.RoleMember)
 	if err != nil {
@@ -849,5 +849,149 @@ func TestMe_UnknownActorReturnsNotFound(t *testing.T) {
 	_, err := svc.Me(context.Background(), domain.Actor{UserID: id.New()})
 	if err == nil {
 		t.Fatal("Me() error = nil, want an error for an unknown actor")
+	}
+}
+
+// --- BUILD_GUIDE.md Phase 15 — switch-org / MembershipRoleReader ---
+
+// fakeMembershipRoleReader is a hand-written fake for
+// identity.MembershipRoleReader — no mocking framework.
+type fakeMembershipRoleReader struct {
+	mu    sync.Mutex
+	roles map[string]domain.Role // key: orgID|userID
+}
+
+func newFakeMembershipRoleReader() *fakeMembershipRoleReader {
+	return &fakeMembershipRoleReader{roles: map[string]domain.Role{}}
+}
+
+func (f *fakeMembershipRoleReader) set(orgID, userID uuid.UUID, role domain.Role) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.roles[orgID.String()+"|"+userID.String()] = role
+}
+
+func (f *fakeMembershipRoleReader) remove(orgID, userID uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.roles, orgID.String()+"|"+userID.String())
+}
+
+func (f *fakeMembershipRoleReader) GetRole(_ context.Context, orgID, userID uuid.UUID) (domain.Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	role, ok := f.roles[orgID.String()+"|"+userID.String()]
+	if !ok {
+		return "", apperrors.NotFound("organization.membership_not_found", "membership not found")
+	}
+	return role, nil
+}
+
+func newTestServiceWithMembershipRoles(t *testing.T, reader identity.MembershipRoleReader) (identity.Service, *fakeUserRepo, *fakeTokenRepo) {
+	t.Helper()
+	orgID := id.New()
+	users := newFakeUserRepo(orgID)
+	orgs := &fakeOrgRepo{}
+	tokens := newFakeTokenRepo()
+	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
+	svc := identity.NewService(users, orgs, tokens, issuer, &fakeAuditService{}, 15*time.Minute, 30*time.Minute, 12*time.Hour, reader)
+	return svc, users, tokens
+}
+
+func TestIssueTokenPairForOrg_MintsIndependentFamily(t *testing.T) {
+	reader := newFakeMembershipRoleReader()
+	svc, _, _ := newTestServiceWithMembershipRoles(t, reader)
+	ctx := context.Background()
+
+	user, err := svc.Register(ctx, identity.RegisterInput{Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	homePair, err := svc.Login(ctx, "nadia@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+
+	otherOrgID := id.New()
+	reader.set(otherOrgID, user.ID, domain.RoleViewer)
+
+	switched, err := svc.IssueTokenPairForOrg(ctx, user.ID, otherOrgID, domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("IssueTokenPairForOrg() error = %v", err)
+	}
+	if switched.RefreshToken == homePair.RefreshToken {
+		t.Error("IssueTokenPairForOrg() reused the home session's refresh token instead of minting an independent family")
+	}
+	if switched.User == nil || switched.User.OrgID != otherOrgID || switched.User.Role != domain.RoleViewer {
+		t.Errorf("IssueTokenPairForOrg() response user = %+v, want OrgID=%s Role=viewer", switched.User, otherOrgID)
+	}
+
+	// The original home session must still work, completely unaffected.
+	if _, err := svc.Refresh(ctx, homePair.RefreshToken); err != nil {
+		t.Errorf("home session Refresh() after switch-org error = %v, want nil (independent families)", err)
+	}
+}
+
+// TestRefresh_SwitchedOrgSessionKeepsItsOrgContext is the correctness case
+// the whole RefreshToken.OrgID column (migration 00022) exists for: without
+// it, Refresh would rebuild the next access token from the caller's HOME
+// org/role every time, silently reverting a switched session back to the
+// wrong org on its very next refresh.
+func TestRefresh_SwitchedOrgSessionKeepsItsOrgContext(t *testing.T) {
+	reader := newFakeMembershipRoleReader()
+	svc, _, _ := newTestServiceWithMembershipRoles(t, reader)
+	ctx := context.Background()
+
+	user, err := svc.Register(ctx, identity.RegisterInput{Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	otherOrgID := id.New()
+	reader.set(otherOrgID, user.ID, domain.RoleMember)
+	switched, err := svc.IssueTokenPairForOrg(ctx, user.ID, otherOrgID, domain.RoleMember)
+	if err != nil {
+		t.Fatalf("IssueTokenPairForOrg() error = %v", err)
+	}
+
+	refreshed, err := svc.Refresh(ctx, switched.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	claims, err := svc.Verify(ctx, refreshed.AccessToken)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if claims.OrgID != otherOrgID {
+		t.Errorf("refreshed access token OrgID = %s, want %s (the switched org, not the home org)", claims.OrgID, otherOrgID)
+	}
+	if claims.Role != domain.RoleMember {
+		t.Errorf("refreshed access token Role = %q, want %q", claims.Role, domain.RoleMember)
+	}
+}
+
+// TestRefresh_RevokedMembershipRejectsFurtherRefresh covers being kicked
+// from an org mid-session: the next refresh of a token pair scoped to that
+// org must fail, and revoke the whole family, not just this one call.
+func TestRefresh_RevokedMembershipRejectsFurtherRefresh(t *testing.T) {
+	reader := newFakeMembershipRoleReader()
+	svc, _, _ := newTestServiceWithMembershipRoles(t, reader)
+	ctx := context.Background()
+
+	user, err := svc.Register(ctx, identity.RegisterInput{Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	otherOrgID := id.New()
+	reader.set(otherOrgID, user.ID, domain.RoleMember)
+	switched, err := svc.IssueTokenPairForOrg(ctx, user.ID, otherOrgID, domain.RoleMember)
+	if err != nil {
+		t.Fatalf("IssueTokenPairForOrg() error = %v", err)
+	}
+
+	reader.remove(otherOrgID, user.ID) // the org's admin removed this member
+
+	if _, err := svc.Refresh(ctx, switched.RefreshToken); err == nil {
+		t.Fatal("Refresh() error = nil, want an error once the underlying membership is gone")
 	}
 }

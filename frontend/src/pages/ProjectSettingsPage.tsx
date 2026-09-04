@@ -6,6 +6,8 @@ import { Card, CardDescription, CardTitle } from '../components/ui/Card'
 import { Input } from '../components/ui/Input'
 import { DocumentUploadForm } from '../components/project/DocumentUploadForm'
 import { RepositoryAttachForm } from '../components/project/RepositoryAttachForm'
+import { ScheduledScansSection } from '../components/project/ScheduledScansSection'
+import { ProjectAssignmentsSection } from '../components/project/ProjectAssignmentsSection'
 import { useProjectContext } from '../components/project/ProjectContext'
 import { ApiError } from '../lib/apiClient'
 import { archiveProject, updateProject } from '../lib/projectsApi'
@@ -121,6 +123,10 @@ export function ProjectSettingsPage() {
       <div className="mb-4">
         <DocumentUploadForm projectId={project.id} />
       </div>
+
+      <ProjectAssignmentsSection projectId={project.id} />
+
+      <ScheduledScansSection projectId={project.id} />
 
       <Card className={project.repository?.credential_invalid ? 'mb-4 border-danger/30' : 'mb-4'}>
         <CardTitle className="text-h3">Credential</CardTitle>

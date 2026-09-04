@@ -94,6 +94,28 @@ type Service interface {
 	// visible cause. A project with no repository attached at all is not an
 	// error here — nothing to flag.
 	MarkCredentialInvalid(ctx context.Context, projectID uuid.UUID, reason string) error
+
+	// GetOrgID is modules/orchestrator's scheduler-ticker read (BUILD_GUIDE.md
+	// Phase 15) — same no-actor shape as GetCloneInfo below: a scheduled
+	// scan's trigger isn't a per-request authorization check, it resolves
+	// which org a schedule's own project belongs to so it can build the
+	// actor CreateScan needs.
+	GetOrgID(ctx context.Context, projectID uuid.UUID) (uuid.UUID, error)
+
+	// AssignProject/UnassignProject/ListAssignments are BUILD_GUIDE.md
+	// Phase 15's Team Dashboard primitive — see ProjectAssignment's own doc
+	// comment. AssignProject requires userID to already be a member of
+	// actor's org (home or via organization_memberships) — no assigning
+	// someone who hasn't accepted an invite yet.
+	AssignProject(ctx context.Context, actor domain.Actor, projectID, userID uuid.UUID) (*ProjectAssignment, error)
+	UnassignProject(ctx context.Context, actor domain.Actor, projectID, userID uuid.UUID) error
+	ListAssignments(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]ProjectAssignment, error)
+	// ListAssignmentsForOrg is the Team Dashboard's own read — every
+	// assignment across every one of actor's org's projects in one call,
+	// the same "no per-project ownership check needed, the query is already
+	// scoped to actor.OrgID" shape orchestrator.ListOrgScans already
+	// establishes.
+	ListAssignmentsForOrg(ctx context.Context, actor domain.Actor) ([]ProjectAssignment, error)
 }
 
 // ProjectDetail is a Project plus the pieces the API returns alongside it
@@ -204,6 +226,26 @@ var allowedDocumentExtensions = map[string]bool{
 	".md": true, ".txt": true, ".adoc": true, ".rst": true, ".pdf": true, ".csv": true,
 }
 
+// ProjectAssignmentRepository is defined by this package; implementation
+// lives in internal/store/repo.
+type ProjectAssignmentRepository interface {
+	Create(ctx context.Context, a *ProjectAssignment) error
+	Delete(ctx context.Context, projectID, userID uuid.UUID) error
+	ListByProject(ctx context.Context, projectID uuid.UUID) ([]ProjectAssignment, error)
+	ListByOrg(ctx context.Context, orgID uuid.UUID) ([]ProjectAssignment, error)
+}
+
+// MembershipChecker is the narrow slice of modules/organization this
+// package needs — AssignProject's "assignee must already be an org member"
+// rule (BUILD_GUIDE.md Phase 15). Implemented in internal/store/repo against
+// organization_memberships/users, the tables modules/organization and
+// modules/identity respectively own — this package only ever reads through
+// this one method, the same "define the interface you need, implemented by
+// store/repo" pattern UserDisplayNameLookup already establishes.
+type MembershipChecker interface {
+	IsOrgMember(ctx context.Context, orgID, userID uuid.UUID) (bool, error)
+}
+
 // UserDisplayNameLookup is the one thing this module needs from `identity`
 // — the attesting user's display name for the attestation response
 // (documentation/07-api-specification.md §4's "attested_by"). The module
@@ -221,6 +263,8 @@ type service struct {
 	targets       TargetRepository
 	attestations  AttestationRepository
 	documents     DocumentRepository
+	assignments   ProjectAssignmentRepository
+	membership    MembershipChecker
 	users         UserDisplayNameLookup
 	vcs           vcs.Service
 	resolver      validate.Resolver
@@ -244,6 +288,8 @@ func NewService(
 	targets TargetRepository,
 	attestations AttestationRepository,
 	documents DocumentRepository,
+	assignments ProjectAssignmentRepository,
+	membership MembershipChecker,
 	users UserDisplayNameLookup,
 	vcsSvc vcs.Service,
 	resolver validate.Resolver,
@@ -261,6 +307,8 @@ func NewService(
 		targets:             targets,
 		attestations:        attestations,
 		documents:           documents,
+		assignments:         assignments,
+		membership:          membership,
 		users:               users,
 		vcs:                 vcsSvc,
 		resolver:            resolver,
@@ -804,6 +852,76 @@ func (s *service) MarkCredentialInvalid(ctx context.Context, projectID uuid.UUID
 		Detail: map[string]any{"reason": reason},
 	})
 	return nil
+}
+
+func (s *service) GetOrgID(ctx context.Context, projectID uuid.UUID) (uuid.UUID, error) {
+	p, err := s.projects.GetByID(ctx, projectID)
+	if err != nil {
+		if isNotFound(err) {
+			return uuid.Nil, apperrors.NotFound("project.not_found", "project not found")
+		}
+		return uuid.Nil, apperrors.Internal(fmt.Errorf("get project: %w", err))
+	}
+	return p.OrgID, nil
+}
+
+func (s *service) AssignProject(ctx context.Context, actor domain.Actor, projectID, userID uuid.UUID) (*ProjectAssignment, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+	member, err := s.membership.IsOrgMember(ctx, actor.OrgID, userID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("check org membership: %w", err))
+	}
+	if !member {
+		return nil, apperrors.Validation("project.not_org_member", "assignee must already be a member of your organization", nil)
+	}
+
+	assignedBy := actor.UserID
+	a := &ProjectAssignment{ID: id.New(), ProjectID: projectID, UserID: userID, AssignedBy: &assignedBy}
+	if err := s.assignments.Create(ctx, a); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("assign project: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "project.assigned",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+		Detail: map[string]any{"user_id": userID.String()},
+	})
+	return a, nil
+}
+
+func (s *service) UnassignProject(ctx context.Context, actor domain.Actor, projectID, userID uuid.UUID) error {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return err
+	}
+	if err := s.assignments.Delete(ctx, projectID, userID); err != nil {
+		return apperrors.Internal(fmt.Errorf("unassign project: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "project.unassigned",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+		Detail: map[string]any{"user_id": userID.String()},
+	})
+	return nil
+}
+
+func (s *service) ListAssignments(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]ProjectAssignment, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+	list, err := s.assignments.ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list assignments: %w", err))
+	}
+	return list, nil
+}
+
+func (s *service) ListAssignmentsForOrg(ctx context.Context, actor domain.Actor) ([]ProjectAssignment, error) {
+	list, err := s.assignments.ListByOrg(ctx, actor.OrgID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list org assignments: %w", err))
+	}
+	return list, nil
 }
 
 func (s *service) getOwnedProject(ctx context.Context, actor domain.Actor, projectID uuid.UUID) (*Project, error) {

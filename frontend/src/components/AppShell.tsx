@@ -12,6 +12,7 @@ import {
   ScanSearch,
   Settings,
   ShieldAlert,
+  Users,
 } from 'lucide-react'
 import { cn } from '../lib/cn'
 import { GlobalSearch } from './GlobalSearch'
@@ -36,6 +37,9 @@ const NAV_ITEMS = [
   { to: '/findings', label: 'Findings', icon: ShieldAlert },
   { to: '/targets', label: 'Targets', icon: Crosshair },
   { to: '/rules', label: 'Rules', icon: BookOpen },
+  // Team Dashboard (BUILD_GUIDE.md Phase 15) — org-wide assignment × gate-
+  // verdict matrix.
+  { to: '/team', label: 'Team', icon: Users },
 ] as const
 
 export function AppShell({ children }: { children: ReactNode }) {

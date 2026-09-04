@@ -95,11 +95,11 @@ type EngineProgress struct {
 // (documentation/11-risk-scoring-and-severity.md §6) — scoring.Compute has
 // no access to other scans, so that lookup happens here, one layer up.
 type RiskAssessmentRecord struct {
-	ScanID         uuid.UUID
-	Score          int
-	Verdict        domain.Verdict
-	EngineScores   map[domain.EngineID]int
-	Breakdown      []scoring.Contribution
+	ScanID        uuid.UUID
+	Score         int
+	Verdict       domain.Verdict
+	EngineScores  map[domain.EngineID]int
+	Breakdown     []scoring.Contribution
 	PreviousScore *int
 	// Delta is Score - PreviousScore, computed at read time (GetScan) rather
 	// than stored — negative means improving, positive means regressing

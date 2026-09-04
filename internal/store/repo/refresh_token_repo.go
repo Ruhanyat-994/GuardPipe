@@ -27,9 +27,9 @@ var _ identity.RefreshTokenRepository = (*RefreshTokenRepo)(nil)
 
 func (r *RefreshTokenRepo) Create(ctx context.Context, rt *identity.RefreshToken) error {
 	const q = `
-		INSERT INTO refresh_tokens (id, user_id, token_hash, family_id, family_issued_at, expires_at, user_agent, ip)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
-	_, err := r.db.Exec(ctx, q, rt.ID, rt.UserID, rt.TokenHash, rt.FamilyID, rt.FamilyIssuedAt, rt.ExpiresAt, rt.UserAgent, rt.IP)
+		INSERT INTO refresh_tokens (id, user_id, token_hash, family_id, family_issued_at, expires_at, user_agent, ip, org_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	_, err := r.db.Exec(ctx, q, rt.ID, rt.UserID, rt.TokenHash, rt.FamilyID, rt.FamilyIssuedAt, rt.ExpiresAt, rt.UserAgent, rt.IP, rt.OrgID)
 	if err != nil {
 		return fmt.Errorf("repo: insert refresh token: %w", err)
 	}
@@ -38,12 +38,12 @@ func (r *RefreshTokenRepo) Create(ctx context.Context, rt *identity.RefreshToken
 
 func (r *RefreshTokenRepo) GetByHash(ctx context.Context, tokenHash string) (*identity.RefreshToken, error) {
 	const q = `
-		SELECT id, user_id, token_hash, family_id, created_at, family_issued_at, expires_at, consumed_at, revoked_at, user_agent, ip
+		SELECT id, user_id, token_hash, family_id, created_at, family_issued_at, expires_at, consumed_at, revoked_at, user_agent, ip, org_id
 		FROM refresh_tokens WHERE token_hash = $1`
 	var rt identity.RefreshToken
 	err := r.db.QueryRow(ctx, q, tokenHash).Scan(
 		&rt.ID, &rt.UserID, &rt.TokenHash, &rt.FamilyID, &rt.CreatedAt, &rt.FamilyIssuedAt, &rt.ExpiresAt,
-		&rt.ConsumedAt, &rt.RevokedAt, &rt.UserAgent, &rt.IP,
+		&rt.ConsumedAt, &rt.RevokedAt, &rt.UserAgent, &rt.IP, &rt.OrgID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -83,4 +83,12 @@ type RefreshToken struct {
 	RevokedAt      *time.Time
 	UserAgent      *string
 	IP             *string
+	// OrgID (migration 00022, BUILD_GUIDE.md Phase 15) is the organisation
+	// context this token pair was issued for — nil means "the user's home
+	// organisation" (every ordinary login, and every token issued before
+	// this column existed). Set explicitly by Service.IssueTokenPairForOrg
+	// (POST /auth/switch-org) so Refresh rebuilds the next access token
+	// against the org the caller actually switched to, not silently back
+	// onto users.org_id.
+	OrgID *uuid.UUID
 }

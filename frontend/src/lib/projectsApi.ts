@@ -194,3 +194,34 @@ export function importDocument(projectId: string, url: string): Promise<Document
 export function deleteDocument(documentId: string): Promise<void> {
   return apiClient.delete<void>(`/documents/${documentId}`)
 }
+
+// --- project assignments — BUILD_GUIDE.md Phase 15 (the Team Dashboard's
+// underlying data) ---
+
+export interface ProjectAssignment {
+  project_id: string
+  user_id: string
+  assigned_by: string | null
+  assigned_at: string
+}
+
+export function listAssignments(projectId: string): Promise<{ data: ProjectAssignment[] }> {
+  return apiClient.get(`/projects/${projectId}/assignments`)
+}
+
+export function assignProject(projectId: string, userId: string): Promise<ProjectAssignment> {
+  return apiClient.post(`/projects/${projectId}/assignments`, { user_id: userId })
+}
+
+export function unassignProject(projectId: string, userId: string): Promise<void> {
+  return apiClient.delete(`/projects/${projectId}/assignments/${encodeURIComponent(userId)}`)
+}
+
+/** Every assignment across every one of the caller's org's projects, for
+ * the Team Dashboard's matrix — client-composed with
+ * `organizationApi.listMembers` and each project's latest scan, the same
+ * "client-side composition of existing endpoints" precedent
+ * `GlobalDashboardPage` already established for Phase 13. */
+export function listAssignmentsForOrg(): Promise<{ data: ProjectAssignment[] }> {
+  return apiClient.get('/team/assignments')
+}

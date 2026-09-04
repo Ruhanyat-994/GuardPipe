@@ -103,6 +103,21 @@ func (f *fakeProjectService) DeleteDocument(context.Context, domain.Actor, uuid.
 func (f *fakeProjectService) GetDocuments(context.Context, uuid.UUID) ([]project.Document, error) {
 	return f.documents, f.err
 }
+func (f *fakeProjectService) GetOrgID(context.Context, uuid.UUID) (uuid.UUID, error) {
+	return uuid.UUID{}, f.err
+}
+func (f *fakeProjectService) AssignProject(context.Context, domain.Actor, uuid.UUID, uuid.UUID) (*project.ProjectAssignment, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) UnassignProject(context.Context, domain.Actor, uuid.UUID, uuid.UUID) error {
+	return f.err
+}
+func (f *fakeProjectService) ListAssignments(context.Context, domain.Actor, uuid.UUID) ([]project.ProjectAssignment, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) ListAssignmentsForOrg(context.Context, domain.Actor) ([]project.ProjectAssignment, error) {
+	return nil, f.err
+}
 
 func newProjectRouter(svc project.Service) *gin.Engine {
 	r := gin.New()

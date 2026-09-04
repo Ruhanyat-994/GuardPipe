@@ -17,6 +17,11 @@ export interface AuthUser {
   id: string
   email: string
   displayName: string
+  /** The caller's *active* organisation (BUILD_GUIDE.md Phase 15) — not
+   * necessarily their home org once switch-org exists (authStore.switchOrg).
+   * This is what every org-scoped screen (Members tab, Team Dashboard) reads
+   * to know which org it's managing. */
+  orgId: string
   role: 'admin' | 'member' | 'viewer'
   /** Platform-operator status (BUILD_GUIDE.md Phase 14) — never the same
    * thing as `role: 'admin'`, which is per-organisation. This is what the
@@ -30,6 +35,7 @@ interface UserResponse {
   id: string
   email: string
   display_name: string
+  org_id: string
   role: AuthUser['role']
   is_platform_operator: boolean
 }
@@ -52,6 +58,7 @@ function fromUserResponse(u: UserResponse): AuthUser {
     id: u.id,
     email: u.email,
     displayName: u.display_name,
+    orgId: u.org_id,
     role: u.role,
     isPlatformOperator: u.is_platform_operator,
   }
@@ -70,6 +77,11 @@ interface AuthState {
   register: (email: string, displayName: string, password: string) => Promise<void>
   logout: () => Promise<void>
   bootstrap: () => Promise<void>
+  /** BUILD_GUIDE.md Phase 15 — re-issues a token pair scoped to a different
+   * organisation the caller already holds a membership in (`POST
+   * /auth/switch-org`). Re-fetches `/auth/me` afterward so `user` reflects
+   * the new org context's role, the same way login already does. */
+  switchOrg: (orgId: string) => Promise<void>
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -96,6 +108,13 @@ export const useAuthStore = create<AuthState>((set) => ({
     } finally {
       set({ user: null, accessToken: null, isAuthenticated: false })
     }
+  },
+
+  switchOrg: async (orgId) => {
+    const res = await apiClient.post<RefreshResponse>('/auth/switch-org', { org_id: orgId })
+    set({ accessToken: res.access_token, isAuthenticated: true })
+    const me = await apiClient.get<UserResponse>('/auth/me')
+    set({ user: fromUserResponse(me) })
   },
 
   // Called once at app startup: attempts a silent refresh using the

@@ -12,6 +12,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
 
@@ -30,6 +31,7 @@ func NewUserRepo(db Querier) *UserRepo {
 var (
 	_ identity.UserRepository = (*UserRepo)(nil)
 	_ admin.UserRepository    = (*UserRepo)(nil)
+	_ organization.UserReader = (*UserRepo)(nil)
 )
 
 func (r *UserRepo) Create(ctx context.Context, u *identity.User) error {
@@ -189,4 +191,77 @@ func (r *UserRepo) RecordSuccessfulLogin(ctx context.Context, id uuid.UUID, logi
 		return fmt.Errorf("repo: record successful login: %w", err)
 	}
 	return nil
+}
+
+// --- organization.UserReader (BUILD_GUIDE.md Phase 15) ---
+//
+// This type already implements identity.UserRepository and
+// admin.UserRepository against the same `users` table — one repository
+// struct satisfying a third module's interface.
+
+// GetInfoByID is named distinctly from identity.UserRepository's own
+// GetByID (which returns a full identity.User) and admin.UserRepository's
+// GetSummaryByID (a different DTO) — all three are implemented by this same
+// struct, and Go doesn't allow two methods of the same name with different
+// signatures on one type.
+func (r *UserRepo) GetInfoByID(ctx context.Context, id uuid.UUID) (*organization.UserInfo, error) {
+	const q = `SELECT id, org_id, email, display_name, role FROM users WHERE id = $1`
+	u, err := scanUserInfo(r.db.QueryRow(ctx, q, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.NotFound("organization.user_not_found", "user not found")
+		}
+		return nil, fmt.Errorf("repo: get user info: %w", err)
+	}
+	return u, nil
+}
+
+// ListHomeMembers returns every user whose own home org is orgID — see
+// organization.UserReader's own doc comment on why this is read
+// generically rather than assumed to be exactly one row.
+func (r *UserRepo) ListHomeMembers(ctx context.Context, orgID uuid.UUID) ([]organization.UserInfo, error) {
+	const q = `SELECT id, org_id, email, display_name, role FROM users WHERE org_id = $1 ORDER BY created_at`
+	rows, err := r.db.Query(ctx, q, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("repo: list home members: %w", err)
+	}
+	defer rows.Close()
+
+	var out []organization.UserInfo
+	for rows.Next() {
+		u, err := scanUserInfo(rows)
+		if err != nil {
+			return nil, fmt.Errorf("repo: scan home member: %w", err)
+		}
+		out = append(out, *u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo: iterate home members: %w", err)
+	}
+	return out, nil
+}
+
+// SetHomeRole is the one write modules/organization makes against this
+// package's own table — see organization.UserReader's own doc comment for
+// why this narrow method is sanctioned.
+func (r *UserRepo) SetHomeRole(ctx context.Context, id uuid.UUID, role domain.Role) error {
+	const q = `UPDATE users SET role = $2 WHERE id = $1`
+	tag, err := r.db.Exec(ctx, q, id, string(role))
+	if err != nil {
+		return fmt.Errorf("repo: set home role: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("organization.user_not_found", "user not found")
+	}
+	return nil
+}
+
+func scanUserInfo(row rowScanner) (*organization.UserInfo, error) {
+	var u organization.UserInfo
+	var role string
+	if err := row.Scan(&u.ID, &u.OrgID, &u.Email, &u.DisplayName, &role); err != nil {
+		return nil, err
+	}
+	u.Role = domain.Role(role)
+	return &u, nil
 }
