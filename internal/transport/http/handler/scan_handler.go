@@ -259,6 +259,115 @@ func (h *ScanHandler) Export(c *gin.Context) {
 	c.Data(http.StatusOK, contentType, out)
 }
 
+// --- scan schedules — BUILD_GUIDE.md Phase 15 ---
+
+func (h *ScanHandler) CreateSchedule(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req dto.CreateScheduleRequest
+	if !h.bindAndValidate(c, &req) {
+		return
+	}
+	in, err := req.ToInput()
+	if err != nil {
+		c.Error(apperrors.Validation("schedule.invalid_input", "assigned_to is not a valid UUID", nil))
+		return
+	}
+	sched, err := h.svc.CreateSchedule(c.Request.Context(), actor, projectID, in)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusCreated, dto.FromScanSchedule(*sched))
+}
+
+func (h *ScanHandler) ListSchedules(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	schedules, err := h.svc.ListSchedules(c.Request.Context(), actor, projectID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.ScanScheduleResponse, len(schedules))
+	for i, s := range schedules {
+		items[i] = dto.FromScanSchedule(s)
+	}
+	c.JSON(http.StatusOK, dto.ScanScheduleListResponse{Data: items})
+}
+
+func (h *ScanHandler) GetSchedule(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	scheduleID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	sched, err := h.svc.GetSchedule(c.Request.Context(), actor, scheduleID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.FromScanSchedule(*sched))
+}
+
+func (h *ScanHandler) UpdateSchedule(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	scheduleID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req dto.UpdateScheduleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.Validation("schedule.invalid_body", "request body could not be parsed", nil))
+		return
+	}
+	in, err := req.ToInput()
+	if err != nil {
+		c.Error(apperrors.Validation("schedule.invalid_input", "assigned_to is not a valid UUID", nil))
+		return
+	}
+	sched, err := h.svc.UpdateSchedule(c.Request.Context(), actor, scheduleID, in)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.FromScanSchedule(*sched))
+}
+
+func (h *ScanHandler) DeleteSchedule(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	scheduleID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteSchedule(c.Request.Context(), actor, scheduleID); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h *ScanHandler) bindAndValidate(c *gin.Context, req any) bool {
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.Error(apperrors.Validation("scan.invalid_body", "request body could not be parsed", nil))

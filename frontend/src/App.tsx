@@ -21,6 +21,9 @@ import { BlogIndexPage } from './pages/BlogIndexPage'
 import { BlogPostPage } from './pages/BlogPostPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { RulesPage } from './pages/RulesPage'
+import { OrgSettingsPage } from './pages/OrgSettingsPage'
+import { TeamDashboardPage } from './pages/TeamDashboardPage'
+import { AcceptInvitePage } from './pages/AcceptInvitePage'
 import { AdminOrganizationsPage } from './pages/AdminOrganizationsPage'
 import { AdminOrganizationDetailPage } from './pages/AdminOrganizationDetailPage'
 import { AdminPentestFlagsPage } from './pages/AdminPentestFlagsPage'
@@ -89,6 +92,11 @@ function App() {
       <Route path="/guides/:slug" element={<GuideDetailPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      {/* Public-ish (BUILD_GUIDE.md Phase 15) — the page itself handles both
+          "already logged in" (accepts immediately) and "not logged in yet"
+          (CTA to /login or /register with the token preserved), so it isn't
+          wrapped in RequireAuth the way every other authenticated route is. */}
+      <Route path="/invites/:token/accept" element={<AcceptInvitePage />} />
 
       <Route element={<ProtectedShell />}>
         {/* The org-wide landing page after login (Phase 13, partial —
@@ -130,7 +138,13 @@ function App() {
           element={<PlaceholderPage title="Pentest Targets" phase="Phase 7" />}
         />
         <Route path="/rules" element={<RulesPage />} />
-        <Route path="/settings" element={<PlaceholderPage title="Settings" phase="Phase 9" />} />
+        {/* Team Dashboard (BUILD_GUIDE.md Phase 15) — org-wide assignment ×
+            gate-verdict matrix. */}
+        <Route path="/team" element={<TeamDashboardPage />} />
+        {/* Org Settings → Members (BUILD_GUIDE.md Phase 15) — the previous
+            Phase-9 placeholder's real content for org membership; per-account
+            profile fields remain a later addition. */}
+        <Route path="/settings" element={<OrgSettingsPage />} />
       </Route>
 
       {/* Platform admin panel (BUILD_GUIDE.md Phase 14) — a separate route

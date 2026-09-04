@@ -95,9 +95,9 @@ func (s FlagStatus) Valid() bool {
 type FlagSource string
 
 const (
-	FlagSourceSelfReported     FlagSource = "self_reported"
+	FlagSourceSelfReported      FlagSource = "self_reported"
 	FlagSourceExternalComplaint FlagSource = "external_complaint"
-	FlagSourceOperatorReview   FlagSource = "operator_review"
+	FlagSourceOperatorReview    FlagSource = "operator_review"
 )
 
 func (s FlagSource) Valid() bool {

@@ -19,8 +19,8 @@ import (
 // --- hand-written fakes (no mocking framework, documentation/15-testing-strategy.md) ---
 
 type fakeOrgRepo struct {
-	mu    sync.Mutex
-	orgs  map[uuid.UUID]admin.OrganizationSummary
+	mu   sync.Mutex
+	orgs map[uuid.UUID]admin.OrganizationSummary
 }
 
 func newFakeOrgRepo(orgs ...admin.OrganizationSummary) *fakeOrgRepo {

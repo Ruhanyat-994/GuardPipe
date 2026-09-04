@@ -249,3 +249,35 @@ type DocumentListResponse struct {
 type ImportDocumentRequest struct {
 	URL string `json:"url" binding:"required"`
 }
+
+// --- project assignments — BUILD_GUIDE.md Phase 15 (doc debt, see
+// dto/organization.go's own note) ---
+
+// AssignProjectRequest matches `POST /projects/{id}/assignments`.
+type AssignProjectRequest struct {
+	UserID string `json:"user_id" validate:"required"`
+}
+
+// ProjectAssignmentResponse matches one row of `GET /projects/{id}/assignments`
+// and the Team Dashboard's own org-wide read.
+type ProjectAssignmentResponse struct {
+	ProjectID  string    `json:"project_id"`
+	UserID     string    `json:"user_id"`
+	AssignedBy *string   `json:"assigned_by"`
+	AssignedAt time.Time `json:"assigned_at"`
+}
+
+func FromProjectAssignment(a project.ProjectAssignment) ProjectAssignmentResponse {
+	resp := ProjectAssignmentResponse{ProjectID: a.ProjectID.String(), UserID: a.UserID.String(), AssignedAt: a.AssignedAt}
+	if a.AssignedBy != nil {
+		s := a.AssignedBy.String()
+		resp.AssignedBy = &s
+	}
+	return resp
+}
+
+// ProjectAssignmentListResponse matches `GET /projects/{id}/assignments`
+// and `GET /team/assignments`.
+type ProjectAssignmentListResponse struct {
+	Data []ProjectAssignmentResponse `json:"data"`
+}

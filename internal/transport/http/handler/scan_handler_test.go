@@ -72,6 +72,24 @@ func (f *fakeOrchestratorService) CancelScan(context.Context, domain.Actor, uuid
 func (f *fakeOrchestratorService) ListFindings(context.Context, domain.Actor, uuid.UUID, orchestrator.Page) ([]domain.Finding, int, error) {
 	return f.findings, f.total, f.err
 }
+func (f *fakeOrchestratorService) CreateSchedule(context.Context, domain.Actor, uuid.UUID, orchestrator.CreateScheduleInput) (*orchestrator.ScanSchedule, error) {
+	return nil, f.err
+}
+func (f *fakeOrchestratorService) GetSchedule(context.Context, domain.Actor, uuid.UUID) (*orchestrator.ScanSchedule, error) {
+	return nil, f.err
+}
+func (f *fakeOrchestratorService) ListSchedules(context.Context, domain.Actor, uuid.UUID) ([]orchestrator.ScanSchedule, error) {
+	return nil, f.err
+}
+func (f *fakeOrchestratorService) UpdateSchedule(context.Context, domain.Actor, uuid.UUID, orchestrator.UpdateScheduleInput) (*orchestrator.ScanSchedule, error) {
+	return nil, f.err
+}
+func (f *fakeOrchestratorService) DeleteSchedule(context.Context, domain.Actor, uuid.UUID) error {
+	return f.err
+}
+func (f *fakeOrchestratorService) TriggerSchedule(context.Context, uuid.UUID) (*orchestrator.ScanDetail, error) {
+	return nil, f.err
+}
 
 func newScanRouter(svc orchestrator.Service) *gin.Engine {
 	return newScanRouterWithReports(svc, &fakeReportBuilder{})

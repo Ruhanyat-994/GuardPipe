@@ -49,6 +49,15 @@ type Service interface {
 	// "auth.account_suspended") when either the user or their organisation
 	// is currently suspended, nil otherwise.
 	CheckSuspension(ctx context.Context, actor domain.Actor) error
+
+	// IssueTokenPairForOrg is BUILD_GUIDE.md Phase 15's `POST /auth/switch-org`
+	// primitive — mints a brand-new token pair (its own rotation family, independent
+	// of whatever family the caller is currently using) scoped to orgID/role
+	// rather than the user's home organisation. The caller (modules/organization)
+	// has already verified userID actually holds role in orgID — this method does
+	// not re-check membership, only that the user/org aren't suspended, the same
+	// gate Login already applies.
+	IssueTokenPairForOrg(ctx context.Context, userID, orgID uuid.UUID, role domain.Role) (*TokenPair, error)
 }
 
 // UserRepository is defined by this package (the consumer), per
@@ -86,6 +95,22 @@ type RefreshTokenRepository interface {
 	RevokeFamily(ctx context.Context, familyID uuid.UUID, revokedAt time.Time) error
 }
 
+// MembershipRoleReader is the one thing this package needs from
+// modules/organization (BUILD_GUIDE.md Phase 15) — implemented in
+// internal/store/repo against organization_memberships, the table that
+// module owns; identity only ever reads it through this narrow interface,
+// never writes it (the same "define the interface you need, not the whole
+// module" pattern project.UserDisplayNameLookup already establishes against
+// identity). It's what lets Refresh rebuild the correct role for a
+// non-home-org-scoped refresh token (RefreshToken.OrgID) instead of only
+// ever knowing about the user's own home-org role.
+type MembershipRoleReader interface {
+	// GetRole returns the caller's role within orgID via
+	// organization_memberships, or a NotFound *platform/errors.Error if
+	// userID does not currently hold a membership in orgID.
+	GetRole(ctx context.Context, orgID, userID uuid.UUID) (domain.Role, error)
+}
+
 type service struct {
 	users              UserRepository
 	orgs               OrganizationRepository
@@ -95,6 +120,11 @@ type service struct {
 	accessTokenTTL     time.Duration
 	refreshTokenTTL    time.Duration
 	sessionAbsoluteTTL time.Duration
+	// membershipRoles is BUILD_GUIDE.md Phase 15's MembershipRoleReader — may
+	// be nil (a test that never exercises a non-home-org refresh doesn't need
+	// one), but is always wired in production. Never consulted by Login;
+	// Login only ever issues a home-org token pair.
+	membershipRoles MembershipRoleReader
 }
 
 // NewService wires the identity module. accessTokenTTL/refreshTokenTTL/
@@ -108,6 +138,9 @@ type service struct {
 // rotation — is older than this, regardless of activity. auditSvc is
 // BUILD_GUIDE.md Phase 6's retroactive instrumentation —
 // login/logout/refresh-reuse-detected are the three events named there.
+// membershipRoles (BUILD_GUIDE.md Phase 15) may be nil — a caller that never
+// exercises a non-home-org refresh (most existing tests) doesn't need one;
+// cmd/guardpipe/main.go always wires a real one in production.
 func NewService(
 	users UserRepository,
 	orgs OrganizationRepository,
@@ -115,6 +148,7 @@ func NewService(
 	issuer *TokenIssuer,
 	auditSvc audit.Service,
 	accessTokenTTL, refreshTokenTTL, sessionAbsoluteTTL time.Duration,
+	membershipRoles MembershipRoleReader,
 ) Service {
 	return &service{
 		users:              users,
@@ -125,6 +159,7 @@ func NewService(
 		accessTokenTTL:     accessTokenTTL,
 		refreshTokenTTL:    refreshTokenTTL,
 		sessionAbsoluteTTL: sessionAbsoluteTTL,
+		membershipRoles:    membershipRoles,
 	}
 }
 
@@ -289,7 +324,33 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		return nil, apperrors.Internal(fmt.Errorf("get user for refresh: %w", err))
 	}
 
-	pair, err := s.issueTokenPairInFamily(ctx, user, rt.FamilyID, rt.FamilyIssuedAt)
+	// orgID/role default to the user's home organisation — the behaviour
+	// every refresh token issued before migration 00022 (rt.OrgID nil) and
+	// every ordinary login already has. A switch-org'd token pair
+	// (rt.OrgID set, BUILD_GUIDE.md Phase 15) instead rebuilds against that
+	// org context, resolving the role via membershipRoles rather than
+	// user.Role whenever it isn't the home org.
+	orgID, role := user.OrgID, user.Role
+	if rt.OrgID != nil && *rt.OrgID != user.OrgID {
+		orgID = *rt.OrgID
+		if s.membershipRoles == nil {
+			return nil, apperrors.Internal(errors.New("identity: refresh token carries a non-home org context but no MembershipRoleReader is wired"))
+		}
+		role, err = s.membershipRoles.GetRole(ctx, orgID, user.ID)
+		if err != nil {
+			if isNotFound(err) {
+				// The membership backing this session was removed since it
+				// was issued (kicked from the org) — the whole family dies,
+				// not just this one refresh, so a stale token can't keep
+				// being retried against an org the user no longer belongs to.
+				_ = s.tokens.RevokeFamily(ctx, rt.FamilyID, now)
+				return nil, apperrors.Unauthorized("auth.token_invalid", "you are no longer a member of this organization")
+			}
+			return nil, apperrors.Internal(fmt.Errorf("resolve membership role for refresh: %w", err))
+		}
+	}
+
+	pair, err := s.issueTokenPairInFamily(ctx, user, orgID, role, rt.FamilyID, rt.FamilyIssuedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -359,15 +420,18 @@ func (s *service) Me(ctx context.Context, actor domain.Actor) (*User, error) {
 
 func (s *service) issueTokenPair(ctx context.Context, user *User) (*TokenPair, error) {
 	now := time.Now().UTC()
-	return s.issueTokenPairInFamily(ctx, user, id.New(), now)
+	return s.issueTokenPairInFamily(ctx, user, user.OrgID, user.Role, id.New(), now)
 }
 
 // issueTokenPairInFamily issues a token pair within an existing rotation
-// family. familyIssuedAt is the family's original login time — unchanged
-// across every rotation — carried forward so the absolute session cap in
-// Refresh has something to measure against without a second query.
-func (s *service) issueTokenPairInFamily(ctx context.Context, user *User, familyID uuid.UUID, familyIssuedAt time.Time) (*TokenPair, error) {
-	accessToken, err := s.issuer.Issue(user.ID, user.OrgID, user.Role)
+// family, scoped to orgID/role — ordinarily user.OrgID/user.Role (the
+// caller's home org), but BUILD_GUIDE.md Phase 15's switch-org and Refresh
+// (for an already-switched session) pass a non-home org context instead.
+// familyIssuedAt is the family's original login time — unchanged across
+// every rotation — carried forward so the absolute session cap in Refresh
+// has something to measure against without a second query.
+func (s *service) issueTokenPairInFamily(ctx context.Context, user *User, orgID uuid.UUID, role domain.Role, familyID uuid.UUID, familyIssuedAt time.Time) (*TokenPair, error) {
+	accessToken, err := s.issuer.Issue(user.ID, orgID, role)
 	if err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("issue access token: %w", err))
 	}
@@ -384,17 +448,52 @@ func (s *service) issueTokenPairInFamily(ctx context.Context, user *User, family
 		FamilyID:       familyID,
 		FamilyIssuedAt: familyIssuedAt,
 		ExpiresAt:      time.Now().UTC().Add(s.refreshTokenTTL),
+		OrgID:          &orgID,
 	}
 	if err := s.tokens.Create(ctx, rt); err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("store refresh token: %w", err))
 	}
 
+	// The response User always reflects the org context this token pair is
+	// actually scoped to (Login's home-org pair unaffected: orgID/role are
+	// already user.OrgID/user.Role there), not always the account's literal
+	// home-org row — a switch-org'd caller's `/auth/me`-shaped User.Role
+	// should read as their role in the org they're now acting as.
+	responseUser := *user
+	responseUser.OrgID, responseUser.Role = orgID, role
+
 	return &TokenPair{
 		AccessToken:  accessToken,
 		RefreshToken: rawRefresh,
 		ExpiresIn:    int(s.accessTokenTTL.Seconds()),
-		User:         user,
+		User:         &responseUser,
 	}, nil
+}
+
+// IssueTokenPairForOrg is BUILD_GUIDE.md Phase 15's switch-org primitive —
+// see the Service interface's own doc comment. Always starts a brand-new
+// rotation family (id.New()/now), independent of any family the caller is
+// currently using — a member of two orgs holds two independent sessions,
+// never a blended one, matching CLAUDE.md's stated multi-membership model.
+func (s *service) IssueTokenPairForOrg(ctx context.Context, userID, orgID uuid.UUID, role domain.Role) (*TokenPair, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, apperrors.Unauthorized("auth.token_invalid", "account no longer exists")
+		}
+		return nil, apperrors.Internal(fmt.Errorf("get user for org switch: %w", err))
+	}
+	if user.SuspendedAt != nil {
+		return nil, suspendedError(user.SuspendedReason)
+	}
+	if suspendedAt, reason, err := s.orgs.GetSuspensionState(ctx, orgID); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("get organization suspension state: %w", err))
+	} else if suspendedAt != nil {
+		return nil, suspendedError(&reason)
+	}
+
+	now := time.Now().UTC()
+	return s.issueTokenPairInFamily(ctx, user, orgID, role, id.New(), now)
 }
 
 func newRefreshToken() (raw, hash string, err error) {

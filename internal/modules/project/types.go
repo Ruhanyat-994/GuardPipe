@@ -146,6 +146,20 @@ type Page struct {
 	PageSize int
 }
 
+// ProjectAssignment mirrors one row of `project_assignments` (migration
+// 00021, BUILD_GUIDE.md Phase 15) — the Team Dashboard's "which developer is
+// on which project" join. Assigning a project to a teammate doesn't grant
+// them any extra access beyond their existing org role (RBAC is still the
+// org-membership role, viewer/member/admin) — it's a workload/visibility
+// label, not a permission grant.
+type ProjectAssignment struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	UserID     uuid.UUID
+	AssignedBy *uuid.UUID
+	AssignedAt time.Time
+}
+
 // CreateProjectInput is Service.Create's input.
 // documentation/07-api-specification.md §3, `POST /projects`.
 type CreateProjectInput struct {

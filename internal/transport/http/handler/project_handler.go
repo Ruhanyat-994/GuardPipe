@@ -382,6 +382,95 @@ func (h *ProjectHandler) DeleteDocument(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// --- project assignments — BUILD_GUIDE.md Phase 15 ---
+
+func (h *ProjectHandler) AssignProject(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req dto.AssignProjectRequest
+	if !h.bindAndValidate(c, &req) {
+		return
+	}
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		c.Error(apperrors.Validation("project.invalid_input", "user_id is not a valid UUID", nil))
+		return
+	}
+	a, err := h.svc.AssignProject(c.Request.Context(), actor, projectID, userID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusCreated, dto.FromProjectAssignment(*a))
+}
+
+func (h *ProjectHandler) UnassignProject(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	userID, ok := requirePathUUID(c, "userId")
+	if !ok {
+		return
+	}
+	if err := h.svc.UnassignProject(c.Request.Context(), actor, projectID, userID); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *ProjectHandler) ListAssignments(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	list, err := h.svc.ListAssignments(c.Request.Context(), actor, projectID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.ProjectAssignmentResponse, len(list))
+	for i, a := range list {
+		items[i] = dto.FromProjectAssignment(a)
+	}
+	c.JSON(http.StatusOK, dto.ProjectAssignmentListResponse{Data: items})
+}
+
+// ListAssignmentsForOrg is `GET /team/assignments` — the Team Dashboard's
+// own org-wide read, every assignment across every one of actor's org's
+// projects in one call.
+func (h *ProjectHandler) ListAssignmentsForOrg(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	list, err := h.svc.ListAssignmentsForOrg(c.Request.Context(), actor)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.ProjectAssignmentResponse, len(list))
+	for i, a := range list {
+		items[i] = dto.FromProjectAssignment(a)
+	}
+	c.JSON(http.StatusOK, dto.ProjectAssignmentListResponse{Data: items})
+}
+
 // --- shared handler-layer helpers ---
 
 func (h *ProjectHandler) bindAndValidate(c *gin.Context, req any) bool {
