@@ -266,12 +266,12 @@ type PendingProjectInvite struct {
 // 00024) — the actual grant, created once a ProjectInvite is accepted. Never
 // touches organization_memberships or users.org_id.
 type ProjectCollaborator struct {
-	ID         uuid.UUID
-	ProjectID  uuid.UUID
-	UserID     uuid.UUID
-	Role       domain.Role
-	InvitedBy  *uuid.UUID
-	CreatedAt  time.Time
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	UserID    uuid.UUID
+	Role      domain.Role
+	InvitedBy *uuid.UUID
+	CreatedAt time.Time
 }
 
 // ProjectCollaboratorSummary is one entry in the caller's own "shared

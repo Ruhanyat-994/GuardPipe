@@ -664,24 +664,24 @@ func (f *fakeAuditService) actions() []string {
 
 func newTestDeps() *testDeps {
 	return &testDeps{
-		projects:     newFakeProjectRepo(),
-		repositories: newFakeRepositoryRepo(),
-		credentials:  newFakeCredentialRepo(),
-		targets:      newFakeTargetRepo(),
-		attestations: &fakeAttestationRepo{},
-		documents:    newFakeDocumentRepo(),
+		projects:      newFakeProjectRepo(),
+		repositories:  newFakeRepositoryRepo(),
+		credentials:   newFakeCredentialRepo(),
+		targets:       newFakeTargetRepo(),
+		attestations:  &fakeAttestationRepo{},
+		documents:     newFakeDocumentRepo(),
 		assignments:   newFakeAssignmentRepo(),
 		invites:       newFakeInviteRepo(),
 		collaborators: newFakeCollaboratorRepo(),
 		membership:    &fakeMembershipChecker{isMember: true},
 		users:         &fakeUserLookup{name: "Nadia R.", email: "nadia@example.com"},
 		orgs:          &fakeOrgNameLookup{name: "Acme Org"},
-		vcs:          &fakeVCS{},
-		resolver:     fakeResolver{},
-		audit:        &fakeAuditService{},
-		urlFetcher:   &fakeURLFetcher{contentType: "text/plain", body: []byte("Imported document content.")},
-		pdfExtractor: &fakePDFExtractor{text: "Extracted PDF content."},
-		denylist:     nil,
+		vcs:           &fakeVCS{},
+		resolver:      fakeResolver{},
+		audit:         &fakeAuditService{},
+		urlFetcher:    &fakeURLFetcher{contentType: "text/plain", body: []byte("Imported document content.")},
+		pdfExtractor:  &fakePDFExtractor{text: "Extracted PDF content."},
+		denylist:      nil,
 	}
 }
 

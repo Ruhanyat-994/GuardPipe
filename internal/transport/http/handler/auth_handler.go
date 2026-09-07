@@ -40,8 +40,8 @@ const refreshCookiePath = "/api/v1/auth"
 // AuthHandler implements the 5 endpoints in documentation/07-api-specification.md
 // §2.
 type AuthHandler struct {
-	svc             identity.Service
-	operators       OperatorLookup
+	svc       identity.Service
+	operators OperatorLookup
 	// orgSvc backs the one BUILD_GUIDE.md Phase 15 addition to this
 	// handler — SwitchOrg (`POST /auth/switch-org`) — kept here rather than
 	// on a separate OrganizationHandler because it needs the exact same
