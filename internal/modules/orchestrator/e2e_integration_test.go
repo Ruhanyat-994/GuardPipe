@@ -89,6 +89,7 @@ type e2eStaticCloneInfo struct{ projectID uuid.UUID }
 func (e2eStaticCloneInfo) GetCloneInfo(context.Context, uuid.UUID) (string, string, string, error) {
 	return "https://example.invalid/fixture-vulnerable", "main", "", nil
 }
+
 // Get's Repository must be non-nil — resolveEngines (service.go) only
 // includes an engine that requires a repository (depscan does) when the
 // project actually has one attached; a nil Repository here would silently
@@ -106,6 +107,10 @@ func (e e2eStaticCloneInfo) Get(_ context.Context, _ domain.Actor, id uuid.UUID)
 // orchestrator.ProjectAccess.
 func (e2eStaticCloneInfo) GetAttestedTarget(context.Context, uuid.UUID) (*project.Target, error) {
 	return nil, apperrors.NotFound("project.pentest_target_not_found", "no attested pentest target attached to this project")
+}
+
+func (e2eStaticCloneInfo) GetOrgID(context.Context, uuid.UUID) (uuid.UUID, error) {
+	return uuid.Nil, nil
 }
 
 // MarkCredentialInvalid: this E2E test's clone always succeeds
@@ -182,7 +187,7 @@ func TestEndToEnd_ScanThroughOrchestrator_FindingsLandInPostgres(t *testing.T) {
 	cloneInfo := e2eStaticCloneInfo{projectID: projectID}
 	svc := orchestrator.NewService(
 		repo.NewScanRepo(pool), repo.NewScanJobRepo(pool), repo.NewFindingRepo(pool), repo.NewRiskAssessmentRepo(pool),
-		cloneInfo, jobQueue, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, nil,
+		cloneInfo, jobQueue, registry, domain.PentestPresetDeepConfig(), nil, nil, 0, nil, nil, nil,
 	)
 
 	fixtureDir, err := filepath.Abs(filepath.Join("..", "..", "..", "testdata", "fixtures", "fixture-vulnerable"))

@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { AuthShell } from '../components/AuthShell'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
@@ -14,6 +14,7 @@ import { useAuthStore } from '../stores/authStore'
 export function RegisterPage() {
   const register = useAuthStore((s) => s.register)
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -29,7 +30,15 @@ export function RegisterPage() {
     setSubmitting(true)
     try {
       await register(email, displayName, password)
-      navigate('/login', { replace: true })
+      // Preserves an in-flight invite-accept redirect (BUILD_GUIDE.md
+      // Phase 15's AcceptInvitePage) across the register-then-login hop —
+      // Register itself never logs the user in (see this component's own
+      // doc comment / authStore.register's), so /login is always the next
+      // stop regardless.
+      const returnTo = searchParams.get('returnTo')
+      navigate(returnTo ? `/login?returnTo=${encodeURIComponent(returnTo)}` : '/login', {
+        replace: true,
+      })
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.problem.errors && err.problem.errors.length > 0) {

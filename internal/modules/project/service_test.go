@@ -15,6 +15,7 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/crypto"
@@ -323,10 +324,188 @@ func (f *fakeDocumentRepo) Delete(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-type fakeUserLookup struct{ name string }
+type fakeUserLookup struct {
+	name  string
+	email string
+}
 
 func (f *fakeUserLookup) GetDisplayName(context.Context, uuid.UUID) (string, error) {
 	return f.name, nil
+}
+
+func (f *fakeUserLookup) GetEmail(context.Context, uuid.UUID) (string, error) {
+	return f.email, nil
+}
+
+// fakeOrgNameLookup is a hand-written fake for project.OrganizationNameLookup
+// (project-collaborators follow-up) — no mocking framework.
+type fakeOrgNameLookup struct{ name string }
+
+func (f *fakeOrgNameLookup) GetName(context.Context, uuid.UUID) (string, error) {
+	return f.name, nil
+}
+
+// fakeInviteRepo is a hand-written fake for project.ProjectInviteRepository
+// (project-collaborators follow-up) — no mocking framework.
+type fakeInviteRepo struct {
+	mu      sync.Mutex
+	byID    map[uuid.UUID]*project.ProjectInvite
+	byToken map[string]*project.ProjectInvite
+}
+
+func newFakeInviteRepo() *fakeInviteRepo {
+	return &fakeInviteRepo{byID: map[uuid.UUID]*project.ProjectInvite{}, byToken: map[string]*project.ProjectInvite{}}
+}
+
+func (f *fakeInviteRepo) Create(_ context.Context, in *project.ProjectInvite) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if in.ID == uuid.Nil {
+		in.ID = id.New()
+	}
+	in.CreatedAt = time.Now().UTC()
+	cp := *in
+	f.byID[in.ID] = &cp
+	f.byToken[in.TokenHash] = &cp
+	return nil
+}
+
+func (f *fakeInviteRepo) GetByTokenHash(_ context.Context, tokenHash string) (*project.ProjectInvite, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inv, ok := f.byToken[tokenHash]
+	if !ok {
+		return nil, apperrors.NotFound("project.invite_not_found", "invite not found")
+	}
+	cp := *inv
+	return &cp, nil
+}
+
+func (f *fakeInviteRepo) GetByID(_ context.Context, invID uuid.UUID) (*project.ProjectInvite, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inv, ok := f.byID[invID]
+	if !ok {
+		return nil, apperrors.NotFound("project.invite_not_found", "invite not found")
+	}
+	cp := *inv
+	return &cp, nil
+}
+
+func (f *fakeInviteRepo) ListByProject(_ context.Context, projectID uuid.UUID) ([]project.ProjectInvite, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []project.ProjectInvite
+	for _, inv := range f.byID {
+		if inv.ProjectID == projectID {
+			out = append(out, *inv)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeInviteRepo) ListByEmail(_ context.Context, email string) ([]project.ProjectInvite, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []project.ProjectInvite
+	for _, inv := range f.byID {
+		if inv.Email == email {
+			out = append(out, *inv)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeInviteRepo) ExistsPending(_ context.Context, projectID uuid.UUID, email string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, inv := range f.byID {
+		if inv.ProjectID == projectID && inv.Email == email && inv.Status == project.InvitePending {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeInviteRepo) SetStatus(_ context.Context, invID uuid.UUID, status project.InviteStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inv, ok := f.byID[invID]
+	if !ok {
+		return apperrors.NotFound("project.invite_not_found", "invite not found")
+	}
+	inv.Status = status
+	return nil
+}
+
+// fakeCollaboratorRepo is a hand-written fake for
+// project.ProjectCollaboratorRepository (project-collaborators follow-up) —
+// no mocking framework.
+type fakeCollaboratorRepo struct {
+	mu   sync.Mutex
+	rows map[[2]uuid.UUID]*project.ProjectCollaborator
+}
+
+func newFakeCollaboratorRepo() *fakeCollaboratorRepo {
+	return &fakeCollaboratorRepo{rows: map[[2]uuid.UUID]*project.ProjectCollaborator{}}
+}
+
+func (f *fakeCollaboratorRepo) Create(_ context.Context, c *project.ProjectCollaborator) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c.ID == uuid.Nil {
+		c.ID = id.New()
+	}
+	c.CreatedAt = time.Now().UTC()
+	cp := *c
+	f.rows[[2]uuid.UUID{c.ProjectID, c.UserID}] = &cp
+	return nil
+}
+
+func (f *fakeCollaboratorRepo) GetByProjectAndUser(_ context.Context, projectID, userID uuid.UUID) (*project.ProjectCollaborator, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.rows[[2]uuid.UUID{projectID, userID}]
+	if !ok {
+		return nil, apperrors.NotFound("project.collaborator_not_found", "collaborator not found")
+	}
+	cp := *c
+	return &cp, nil
+}
+
+func (f *fakeCollaboratorRepo) ListByProject(_ context.Context, projectID uuid.UUID) ([]project.ProjectCollaborator, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []project.ProjectCollaborator
+	for k, c := range f.rows {
+		if k[0] == projectID {
+			out = append(out, *c)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeCollaboratorRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]project.ProjectCollaborator, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []project.ProjectCollaborator
+	for k, c := range f.rows {
+		if k[1] == userID {
+			out = append(out, *c)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeCollaboratorRepo) Delete(_ context.Context, projectID, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := [2]uuid.UUID{projectID, userID}
+	if _, ok := f.rows[key]; !ok {
+		return apperrors.NotFound("project.collaborator_not_found", "collaborator not found")
+	}
+	delete(f.rows, key)
+	return nil
 }
 
 type fakeVCS struct {
@@ -361,19 +540,97 @@ func ipAddrs(ips ...string) []net.IPAddr {
 // testDeps bundles everything needed to build a project.Service under test,
 // with sensible defaults each test can override before calling build().
 type testDeps struct {
-	projects     *fakeProjectRepo
-	repositories *fakeRepositoryRepo
-	credentials  *fakeCredentialRepo
-	targets      *fakeTargetRepo
-	attestations *fakeAttestationRepo
-	documents    *fakeDocumentRepo
-	users        *fakeUserLookup
-	vcs          *fakeVCS
-	resolver     fakeResolver
-	audit        *fakeAuditService
-	urlFetcher   *fakeURLFetcher
-	pdfExtractor *fakePDFExtractor
-	denylist     []string
+	projects      *fakeProjectRepo
+	repositories  *fakeRepositoryRepo
+	credentials   *fakeCredentialRepo
+	targets       *fakeTargetRepo
+	attestations  *fakeAttestationRepo
+	documents     *fakeDocumentRepo
+	assignments   *fakeAssignmentRepo
+	invites       *fakeInviteRepo
+	collaborators *fakeCollaboratorRepo
+	membership    *fakeMembershipChecker
+	users         *fakeUserLookup
+	orgs          *fakeOrgNameLookup
+	identitySvc   identity.Service
+	vcs           *fakeVCS
+	resolver      fakeResolver
+	audit         *fakeAuditService
+	urlFetcher    *fakeURLFetcher
+	pdfExtractor  *fakePDFExtractor
+	denylist      []string
+}
+
+// fakeAssignmentRepo is a hand-written fake for
+// project.ProjectAssignmentRepository (BUILD_GUIDE.md Phase 15) — no
+// mocking framework.
+type fakeAssignmentRepo struct {
+	mu   sync.Mutex
+	rows map[string]project.ProjectAssignment // key: projectID+"|"+userID
+}
+
+func newFakeAssignmentRepo() *fakeAssignmentRepo {
+	return &fakeAssignmentRepo{rows: map[string]project.ProjectAssignment{}}
+}
+
+func assignmentKey(projectID, userID uuid.UUID) string {
+	return projectID.String() + "|" + userID.String()
+}
+
+func (f *fakeAssignmentRepo) Create(_ context.Context, a *project.ProjectAssignment) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
+	}
+	a.AssignedAt = time.Now().UTC()
+	f.rows[assignmentKey(a.ProjectID, a.UserID)] = *a
+	return nil
+}
+
+func (f *fakeAssignmentRepo) Delete(_ context.Context, projectID, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := assignmentKey(projectID, userID)
+	if _, ok := f.rows[k]; !ok {
+		return apperrors.NotFound("project.assignment_not_found", "assignment not found")
+	}
+	delete(f.rows, k)
+	return nil
+}
+
+func (f *fakeAssignmentRepo) ListByProject(_ context.Context, projectID uuid.UUID) ([]project.ProjectAssignment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []project.ProjectAssignment
+	for _, a := range f.rows {
+		if a.ProjectID == projectID {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAssignmentRepo) ListByOrg(_ context.Context, _ uuid.UUID) ([]project.ProjectAssignment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]project.ProjectAssignment, 0, len(f.rows))
+	for _, a := range f.rows {
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// fakeMembershipChecker is a hand-written fake for project.MembershipChecker
+// — members defaults to "everyone is a member" (true) so existing tests that
+// don't care about this check keep passing; individual tests override it.
+type fakeMembershipChecker struct {
+	isMember bool
+	err      error
+}
+
+func (f *fakeMembershipChecker) IsOrgMember(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	return f.isMember, f.err
 }
 
 // fakeAuditService is a hand-written fake — no mocking framework, matching
@@ -413,7 +670,12 @@ func newTestDeps() *testDeps {
 		targets:      newFakeTargetRepo(),
 		attestations: &fakeAttestationRepo{},
 		documents:    newFakeDocumentRepo(),
-		users:        &fakeUserLookup{name: "Nadia R."},
+		assignments:   newFakeAssignmentRepo(),
+		invites:       newFakeInviteRepo(),
+		collaborators: newFakeCollaboratorRepo(),
+		membership:    &fakeMembershipChecker{isMember: true},
+		users:         &fakeUserLookup{name: "Nadia R.", email: "nadia@example.com"},
+		orgs:          &fakeOrgNameLookup{name: "Acme Org"},
 		vcs:          &fakeVCS{},
 		resolver:     fakeResolver{},
 		audit:        &fakeAuditService{},
@@ -425,7 +687,11 @@ func newTestDeps() *testDeps {
 
 func (d *testDeps) build() project.Service {
 	key := make([]byte, crypto.KeySize)
-	return project.NewService(d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.documents, d.users, d.vcs, d.resolver, d.audit, d.urlFetcher, d.pdfExtractor, key, false, d.denylist)
+	return project.NewService(
+		d.projects, d.repositories, d.credentials, d.targets, d.attestations, d.documents,
+		d.assignments, d.invites, d.collaborators, d.membership, d.users, d.orgs, d.identitySvc,
+		d.vcs, d.resolver, d.audit, d.urlFetcher, d.pdfExtractor, key, false, d.denylist,
+	)
 }
 
 // fakeURLFetcher is a hand-written fake for project.URLFetcher — no
@@ -599,6 +865,152 @@ func TestArchive_SetsStatus(t *testing.T) {
 	actions := d.audit.actions()
 	require.Equal(t, []string{"project.created", "project.archived"}, actions)
 }
+
+// --- project assignments — BUILD_GUIDE.md Phase 15 ---
+
+func TestAssignProject_RejectsNonOrgMember(t *testing.T) {
+	d := newTestDeps()
+	d.membership = &fakeMembershipChecker{isMember: false}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	_, err = svc.AssignProject(context.Background(), actor, detail.ID, uuid.New())
+	require.Error(t, err)
+}
+
+func TestAssignProject_ThenUnassign(t *testing.T) {
+	d := newTestDeps()
+	d.membership = &fakeMembershipChecker{isMember: true}
+	svc := d.build()
+	actor := newActor()
+
+	detail, err := svc.Create(context.Background(), actor, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	assigneeID := uuid.New()
+	a, err := svc.AssignProject(context.Background(), actor, detail.ID, assigneeID)
+	require.NoError(t, err)
+	require.Equal(t, assigneeID, a.UserID)
+
+	list, err := svc.ListAssignments(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	require.NoError(t, svc.UnassignProject(context.Background(), actor, detail.ID, assigneeID))
+	list, err = svc.ListAssignments(context.Background(), actor, detail.ID)
+	require.NoError(t, err)
+	require.Empty(t, list)
+}
+
+// --- project collaborators (project-collaborators follow-up) ---
+
+func TestInviteCollaborator_AcceptGrantsAccessDoesNotTouchOrgMembership(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	owner := newActor()
+
+	detail, err := svc.Create(context.Background(), owner, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+
+	created, err := svc.InviteCollaborator(context.Background(), owner, detail.ID, project.InviteCollaboratorInput{Email: "collab@example.com", Role: domain.RoleMember})
+	require.NoError(t, err)
+	require.Equal(t, project.InvitePending, created.Status)
+	require.NotEmpty(t, created.RawToken)
+
+	// A second invite to the same email while one is still pending is a
+	// conflict — the same "an invite is already pending" rule org invites
+	// already enforce.
+	_, err = svc.InviteCollaborator(context.Background(), owner, detail.ID, project.InviteCollaboratorInput{Email: "collab@example.com", Role: domain.RoleMember})
+	require.Error(t, err)
+
+	// The invitee — a completely different account, in a different org —
+	// accepts by the invite's id (the live-notification flow).
+	collabUserID := id.New()
+	d.users.email = "collab@example.com" // callerEmail resolves through the same fake for every actor in this test
+	collaborator, err := svc.AcceptCollaboratorInvite(context.Background(), domain.Actor{UserID: collabUserID, OrgID: id.New(), Role: domain.RoleViewer}, created.ID.String())
+	require.NoError(t, err)
+	require.Equal(t, detail.ID, collaborator.ProjectID)
+	require.Equal(t, domain.RoleMember, collaborator.Role)
+
+	// Accepting twice is a conflict, not a silent no-op.
+	_, err = svc.AcceptCollaboratorInvite(context.Background(), domain.Actor{UserID: collabUserID, OrgID: id.New(), Role: domain.RoleViewer}, created.ID.String())
+	require.Error(t, err)
+
+	list, err := svc.ListCollaborators(context.Background(), owner, detail.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, collabUserID, list[0].UserID)
+}
+
+func TestAcceptCollaboratorInvite_EmailMismatchRejected(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	owner := newActor()
+
+	detail, err := svc.Create(context.Background(), owner, project.CreateProjectInput{Name: "Payments API"})
+	require.NoError(t, err)
+	created, err := svc.InviteCollaborator(context.Background(), owner, detail.ID, project.InviteCollaboratorInput{Email: "collab@example.com", Role: domain.RoleViewer})
+	require.NoError(t, err)
+
+	d.users.email = "someone-else@example.com"
+	_, err = svc.AcceptCollaboratorInvite(context.Background(), domain.Actor{UserID: id.New(), OrgID: id.New(), Role: domain.RoleViewer}, created.ID.String())
+	require.Error(t, err)
+}
+
+// TestGetOwnedProject_ScopedActorConfinedToItsOwnProject is the security-
+// critical case: a token scoped to one shared project (actor.ProjectID set)
+// must read every *other* project in the same org as 404 — not just be
+// denied write access to it — the same "confirming existence is itself a
+// leak" rule the org-boundary check right above it already enforces. This
+// is what actually makes "added to one project" not become "sees the whole
+// org's dashboard."
+func TestGetOwnedProject_ScopedActorConfinedToItsOwnProject(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	owner := newActor()
+
+	sharedProject, err := svc.Create(context.Background(), owner, project.CreateProjectInput{Name: "Shared With Collaborator"})
+	require.NoError(t, err)
+	otherProject, err := svc.Create(context.Background(), owner, project.CreateProjectInput{Name: "Not Shared"})
+	require.NoError(t, err)
+
+	scopedActor := domain.Actor{UserID: id.New(), OrgID: owner.OrgID, Role: domain.RoleMember, ProjectID: &sharedProject.ID}
+
+	// The scoped project itself is reachable.
+	_, err = svc.Get(context.Background(), scopedActor, sharedProject.ID)
+	require.NoError(t, err)
+
+	// Any other project in the very same org reads as not-found.
+	_, err = svc.Get(context.Background(), scopedActor, otherProject.ID)
+	require.Error(t, err)
+	var appErr *apperrors.Error
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, apperrors.KindNotFound, appErr.Kind)
+
+	// List transparently narrows to just the one scoped project.
+	list, total, err := svc.List(context.Background(), scopedActor, project.Page{Page: 1, PageSize: 25})
+	require.NoError(t, err)
+	require.Equal(t, 1, total)
+	require.Len(t, list, 1)
+	require.Equal(t, sharedProject.ID, list[0].ID)
+}
+
+func TestScopedActor_CannotCreateProjectsOrReadTeamDashboard(t *testing.T) {
+	d := newTestDeps()
+	svc := d.build()
+	scopedActor := domain.Actor{UserID: id.New(), OrgID: id.New(), Role: domain.RoleAdmin, ProjectID: uuidPtr(id.New())}
+
+	_, err := svc.Create(context.Background(), scopedActor, project.CreateProjectInput{Name: "Should Not Be Allowed"})
+	require.Error(t, err)
+
+	_, err = svc.ListAssignmentsForOrg(context.Background(), scopedActor)
+	require.Error(t, err)
+}
+
+func uuidPtr(id uuid.UUID) *uuid.UUID { return &id }
 
 // TestGetCloneInfo_PublicRepository_NoCredential confirms
 // modules/orchestrator's worker gets an empty token (not an error) for a

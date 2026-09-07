@@ -343,7 +343,15 @@ func (f fakeIdentityService) Logout(context.Context, string) error { return nil 
 func (f fakeIdentityService) Verify(context.Context, string) (*identity.Claims, error) {
 	return f.claims, f.err
 }
-func (f fakeIdentityService) CheckSuspension(context.Context, domain.Actor) error { return f.suspensionErr }
+func (f fakeIdentityService) CheckSuspension(context.Context, domain.Actor) error {
+	return f.suspensionErr
+}
+func (f fakeIdentityService) IssueTokenPairForOrg(context.Context, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
+	return nil, nil
+}
+func (f fakeIdentityService) IssueTokenPairForProject(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
+	return nil, nil
+}
 func (f fakeIdentityService) Me(context.Context, domain.Actor) (*identity.User, error) {
 	return nil, nil
 }

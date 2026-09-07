@@ -7,6 +7,9 @@ package dto
 import (
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 )
 
@@ -29,24 +32,62 @@ func (r RegisterRequest) ToInput() identity.RegisterInput {
 // `/admin` nav entry and route tree at all — a non-operator shouldn't even
 // see it exists, not just get a 403 clicking it. The real enforcement is
 // still server-side (RequirePlatformOperator); this field is UX only.
+// OrgID/Role (BUILD_GUIDE.md Phase 15) are the caller's *active* org
+// context — actor.OrgID/actor.Role from the JWT claims, not necessarily
+// identity.User's own OrgID/Role (the account's home org) once switch-org
+// exists: a switched session's `/auth/me` must report the org it's
+// currently acting as, not silently fall back to home. Login/Register still
+// pass the freshly-created/home values here, which are identical to the
+// user's own fields at that point anyway.
 type UserResponse struct {
 	ID                 string    `json:"id"`
 	Email              string    `json:"email"`
 	DisplayName        string    `json:"display_name"`
+	OrgID              string    `json:"org_id"`
 	Role               string    `json:"role"`
 	IsPlatformOperator bool      `json:"is_platform_operator"`
 	CreatedAt          time.Time `json:"created_at"`
+	// ScopedProjectID (project-collaborators follow-up) mirrors
+	// identity.User.ScopedProjectID / domain.Actor.ProjectID — nil for
+	// every ordinary session, set only once the caller has switched into a
+	// single shared project, so the SPA knows to render that project only
+	// (AppShell's banner + nav gating), not the org's normal dashboard.
+	ScopedProjectID *string `json:"scoped_project_id,omitempty"`
+	// HomeOrgID (project-collaborators follow-up) is always the account's
+	// true home organisation (u.OrgID, never overridden by OrgID/orgID
+	// above) — unlike OrgID, which reflects whatever context this session
+	// is currently switched into. Lets the SPA offer "return to your
+	// dashboard" (switchOrg(homeOrgId)) from a switched-org *or*
+	// switched-project session alike, without needing to have remembered
+	// it from before the switch happened.
+	HomeOrgID string `json:"home_org_id"`
 }
 
 func FromUser(u *identity.User, isPlatformOperator bool) UserResponse {
-	return UserResponse{
+	return FromUserInOrg(u, u.OrgID, u.Role, u.ScopedProjectID, isPlatformOperator)
+}
+
+// FromUserInOrg is FromUser with an explicit active-org override — see the
+// type's own doc comment. Me (`GET /auth/me`) uses this with actor.OrgID/
+// actor.Role/actor.ProjectID; every other caller (Register, Login) uses
+// FromUser, since there's no other org context to consider at those two
+// moments.
+func FromUserInOrg(u *identity.User, orgID uuid.UUID, role domain.Role, scopedProjectID *uuid.UUID, isPlatformOperator bool) UserResponse {
+	resp := UserResponse{
 		ID:                 u.ID.String(),
 		Email:              u.Email,
 		DisplayName:        u.DisplayName,
-		Role:               string(u.Role),
+		OrgID:              orgID.String(),
+		Role:               string(role),
 		IsPlatformOperator: isPlatformOperator,
 		CreatedAt:          u.CreatedAt,
+		HomeOrgID:          u.OrgID.String(),
 	}
+	if scopedProjectID != nil {
+		s := scopedProjectID.String()
+		resp.ScopedProjectID = &s
+	}
+	return resp
 }
 
 // LoginRequest matches `POST /auth/login`.

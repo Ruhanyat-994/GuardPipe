@@ -35,7 +35,7 @@ func Auth(svc identity.Service) gin.HandlerFunc {
 			return
 		}
 
-		c.Set(actorContextKey, domain.Actor{UserID: claims.UserID, OrgID: claims.OrgID, Role: claims.Role})
+		c.Set(actorContextKey, domain.Actor{UserID: claims.UserID, OrgID: claims.OrgID, Role: claims.Role, ProjectID: claims.ProjectID})
 		c.Next()
 	}
 }

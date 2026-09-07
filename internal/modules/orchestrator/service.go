@@ -39,6 +39,17 @@ type Service interface {
 	GetProgress(ctx context.Context, actor domain.Actor, scanID uuid.UUID) (*Progress, error)
 	CancelScan(ctx context.Context, actor domain.Actor, scanID uuid.UUID) error
 	ListFindings(ctx context.Context, actor domain.Actor, scanID uuid.UUID, page Page) ([]domain.Finding, int, error)
+
+	// CreateSchedule/GetSchedule/ListSchedules/UpdateSchedule/DeleteSchedule
+	// are BUILD_GUIDE.md Phase 15's cron scan scheduling — see schedule.go.
+	CreateSchedule(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in CreateScheduleInput) (*ScanSchedule, error)
+	GetSchedule(ctx context.Context, actor domain.Actor, scheduleID uuid.UUID) (*ScanSchedule, error)
+	ListSchedules(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]ScanSchedule, error)
+	UpdateSchedule(ctx context.Context, actor domain.Actor, scheduleID uuid.UUID, in UpdateScheduleInput) (*ScanSchedule, error)
+	DeleteSchedule(ctx context.Context, actor domain.Actor, scheduleID uuid.UUID) error
+	// TriggerSchedule is the scheduler ticker's own entry point (scheduler.go)
+	// — never called from the HTTP layer, see its own doc comment.
+	TriggerSchedule(ctx context.Context, scheduleID uuid.UUID) (*ScanDetail, error)
 }
 
 // ScanRepository is defined by this package; implementation lives in
@@ -143,6 +154,10 @@ type RiskAssessmentRepository interface {
 type ProjectAccess interface {
 	Get(ctx context.Context, actor domain.Actor, id uuid.UUID) (*project.ProjectDetail, error)
 	GetAttestedTarget(ctx context.Context, projectID uuid.UUID) (*project.Target, error)
+	// GetOrgID is the scheduler ticker's own read (BUILD_GUIDE.md Phase 15,
+	// see schedule.go's TriggerSchedule) — mirrors project.Service's own
+	// no-actor GetOrgID exactly.
+	GetOrgID(ctx context.Context, projectID uuid.UUID) (uuid.UUID, error)
 }
 
 type service struct {
@@ -151,10 +166,10 @@ type service struct {
 	findings        FindingRepository
 	riskAssessments RiskAssessmentRepository
 	projects        ProjectAccess
-	queue          Enqueuer
-	registry       *Registry
-	pentestCeiling domain.PentestScanConfig
-	audit          audit.Service
+	queue           Enqueuer
+	registry        *Registry
+	pentestCeiling  domain.PentestScanConfig
+	audit           audit.Service
 	// progress/engineTimeouts/defaultTimeout back GetProgress's per-engine
 	// percentage: progress is the live store Pool writes to as an engine
 	// reports real stage progress (nil-safe — a nil store just means every
@@ -164,6 +179,12 @@ type service struct {
 	progress       *LiveProgress
 	engineTimeouts map[domain.EngineID]time.Duration
 	defaultTimeout time.Duration
+	// schedules/membership back BUILD_GUIDE.md Phase 15's cron scan
+	// scheduling (schedule.go) — membership may be nil (requireOrgMember
+	// then skips the check, a test-only convenience; cmd/guardpipe/main.go
+	// always wires a real one in production).
+	schedules  ScanScheduleRepository
+	membership MembershipChecker
 }
 
 // Enqueuer is the subset of adapters/queue.JobQueue this package needs —
@@ -182,10 +203,11 @@ type Enqueuer interface {
 // job, never a frozen constant); engineTimeouts/defaultTimeout should be
 // the same values Pool itself uses so the estimate matches what the worker
 // will actually enforce.
-func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, riskAssessments RiskAssessmentRepository, projects ProjectAccess, q Enqueuer, registry *Registry, pentestCeiling domain.PentestScanConfig, progress *LiveProgress, engineTimeouts map[domain.EngineID]time.Duration, defaultTimeout time.Duration, auditSvc audit.Service) Service {
+func NewService(scans ScanRepository, jobs ScanJobRepository, findings FindingRepository, riskAssessments RiskAssessmentRepository, projects ProjectAccess, q Enqueuer, registry *Registry, pentestCeiling domain.PentestScanConfig, progress *LiveProgress, engineTimeouts map[domain.EngineID]time.Duration, defaultTimeout time.Duration, auditSvc audit.Service, schedules ScanScheduleRepository, membership MembershipChecker) Service {
 	return &service{
 		scans: scans, jobs: jobs, findings: findings, riskAssessments: riskAssessments, projects: projects, queue: q, registry: registry, pentestCeiling: pentestCeiling,
 		progress: progress, engineTimeouts: engineTimeouts, defaultTimeout: defaultTimeout, audit: auditSvc,
+		schedules: schedules, membership: membership,
 	}
 }
 
