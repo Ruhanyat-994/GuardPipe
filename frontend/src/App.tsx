@@ -24,6 +24,7 @@ import { RulesPage } from './pages/RulesPage'
 import { OrgSettingsPage } from './pages/OrgSettingsPage'
 import { TeamDashboardPage } from './pages/TeamDashboardPage'
 import { AcceptInvitePage } from './pages/AcceptInvitePage'
+import { AcceptProjectInvitePage } from './pages/AcceptProjectInvitePage'
 import { AdminOrganizationsPage } from './pages/AdminOrganizationsPage'
 import { AdminOrganizationDetailPage } from './pages/AdminOrganizationDetailPage'
 import { AdminPentestFlagsPage } from './pages/AdminPentestFlagsPage'
@@ -97,6 +98,7 @@ function App() {
           (CTA to /login or /register with the token preserved), so it isn't
           wrapped in RequireAuth the way every other authenticated route is. */}
       <Route path="/invites/:token/accept" element={<AcceptInvitePage />} />
+      <Route path="/project-invites/:token/accept" element={<AcceptProjectInvitePage />} />
 
       <Route element={<ProtectedShell />}>
         {/* The org-wide landing page after login (Phase 13, partial —

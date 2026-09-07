@@ -225,3 +225,109 @@ export function unassignProject(projectId: string, userId: string): Promise<void
 export function listAssignmentsForOrg(): Promise<{ data: ProjectAssignment[] }> {
   return apiClient.get('/team/assignments')
 }
+
+// --- project collaborators (project-collaborators follow-up) — unlike
+// assignments above, these actually grant access to someone who need not
+// already be a member of this project's org. Mirrors organizationApi.ts's
+// own invite/accept/decline/switch shape almost exactly, project-scoped
+// instead of org-scoped.
+
+export type ProjectRole = 'admin' | 'member' | 'viewer'
+
+export interface ProjectInvite {
+  id: string
+  project_id: string
+  email: string
+  role: ProjectRole
+  status: 'pending' | 'accepted' | 'expired' | 'revoked' | 'declined'
+  expires_at: string
+  created_at: string
+}
+
+export interface CreatedProjectInvite extends ProjectInvite {
+  /** The raw invite token, shown exactly this once. */
+  token: string
+}
+
+/** One row of `GET /project-invites/mine` — the live, in-app notification
+ * feed, mirroring organizationApi.PendingInvite exactly. */
+export interface PendingProjectInvite {
+  id: string
+  project_id: string
+  project_name: string
+  org_name: string
+  role: ProjectRole
+  expires_at: string
+  created_at: string
+}
+
+export interface ProjectCollaborator {
+  project_id: string
+  user_id: string
+  role: ProjectRole
+  created_at: string
+}
+
+/** One entry in the "shared projects" switcher list
+ * (`GET /collaborations/mine`) — every project (any org) the caller holds
+ * an accepted collaborator grant on. */
+export interface ProjectCollaboratorSummary {
+  project_id: string
+  project_name: string
+  org_id: string
+  org_name: string
+  role: ProjectRole
+}
+
+export function listCollaboratorInvites(projectId: string): Promise<{ data: ProjectInvite[] }> {
+  return apiClient.get(`/projects/${projectId}/collaborators/invites`)
+}
+
+export function inviteCollaborator(
+  projectId: string,
+  email: string,
+  role: ProjectRole,
+): Promise<CreatedProjectInvite> {
+  return apiClient.post(`/projects/${projectId}/collaborators/invites`, { email, role })
+}
+
+export function revokeCollaboratorInvite(projectId: string, inviteId: string): Promise<void> {
+  return apiClient.delete(
+    `/projects/${projectId}/collaborators/invites/${encodeURIComponent(inviteId)}`,
+  )
+}
+
+export function listCollaborators(projectId: string): Promise<{ data: ProjectCollaborator[] }> {
+  return apiClient.get(`/projects/${projectId}/collaborators`)
+}
+
+export function removeCollaborator(projectId: string, userId: string): Promise<void> {
+  return apiClient.delete(`/projects/${projectId}/collaborators/${encodeURIComponent(userId)}`)
+}
+
+/** The live notification feed's own read — NotificationPanel.tsx polls
+ * this alongside organizationApi.listMyInvites. */
+export function listMyProjectInvites(): Promise<{ data: PendingProjectInvite[] }> {
+  return apiClient.get('/project-invites/mine')
+}
+
+export function acceptProjectInvite(identifier: string): Promise<ProjectCollaborator> {
+  return apiClient.post(`/project-invites/${encodeURIComponent(identifier)}/accept`)
+}
+
+export function declineProjectInvite(inviteId: string): Promise<void> {
+  return apiClient.post(`/project-invites/${encodeURIComponent(inviteId)}/decline`)
+}
+
+/** Every project (any org) the caller holds an accepted collaborator grant
+ * on — the "shared projects" switcher's own read. */
+export function listMyCollaborations(): Promise<{ data: ProjectCollaboratorSummary[] }> {
+  return apiClient.get('/collaborations/mine')
+}
+
+/** The shareable accept link for a freshly created project invite's raw
+ * token — mirrors organizationApi.inviteAcceptPath exactly, routed to
+ * AcceptProjectInvitePage (App.tsx). */
+export function projectInviteAcceptPath(token: string): string {
+  return `/project-invites/${token}/accept`
+}

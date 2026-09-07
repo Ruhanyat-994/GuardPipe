@@ -12,6 +12,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 )
@@ -30,6 +31,7 @@ var (
 	_ identity.OrganizationRepository = (*OrganizationRepo)(nil)
 	_ admin.OrganizationRepository    = (*OrganizationRepo)(nil)
 	_ organization.OrganizationReader = (*OrganizationRepo)(nil)
+	_ project.OrganizationNameLookup  = (*OrganizationRepo)(nil)
 )
 
 // GetName satisfies organization.OrganizationReader (BUILD_GUIDE.md

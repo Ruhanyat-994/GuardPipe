@@ -6,10 +6,13 @@
 package project
 
 import (
+	"context"
 	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 )
 
 // Status mirrors the `project_status` Postgres enum
@@ -194,4 +197,124 @@ type AttestationInput struct {
 	AttestationTextVersion string
 	Accepted               bool
 	SourceIP               string
+}
+
+// --- project collaborators (project-collaborators follow-up to BUILD_GUIDE.md
+// Phase 15) ---
+//
+// An org invite (modules/organization) grants org-wide access. A
+// ProjectAssignment (above) grants nothing at all — just a label for people
+// already in the org. Neither covers "give one specific GuardPipe user
+// access to exactly this one project, and nothing else in this org." These
+// two types (mirroring organization.Invite/Membership almost exactly,
+// scoped to a project instead of an org) and ProjectCollaboratorRepository
+// below are that: an email invite with a role, accepted or declined by the
+// invitee, that grants a ProjectCollaborator row — never an
+// organization_memberships row, the grantee's own home org is untouched.
+
+// InviteStatus reuses the `invite_status` Postgres enum organization.Invite
+// already uses (migration 00019) — the same states apply unchanged to a
+// project-scoped invite, so this is a type alias, not a new enum.
+type InviteStatus = string
+
+const (
+	InvitePending  InviteStatus = "pending"
+	InviteAccepted InviteStatus = "accepted"
+	InviteExpired  InviteStatus = "expired"
+	InviteRevoked  InviteStatus = "revoked"
+	InviteDeclined InviteStatus = "declined"
+)
+
+// ProjectInvite mirrors one row of `project_invites` (migration 00024).
+type ProjectInvite struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Email     string
+	Role      domain.Role
+	InvitedBy *uuid.UUID
+	TokenHash string
+	Status    InviteStatus
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+// InviteCollaboratorInput is Service.InviteCollaborator's input.
+type InviteCollaboratorInput struct {
+	Email string
+	Role  domain.Role
+}
+
+// CreatedProjectInvite is InviteCollaborator's return value — the
+// ProjectInvite row plus the one-time-visible raw token, same "shown once"
+// convention organization.CreatedInvite's own doc comment establishes.
+type CreatedProjectInvite struct {
+	ProjectInvite
+	RawToken string
+}
+
+// PendingProjectInvite is one row of the invitee's own live notification
+// feed (ListMyProjectInvites) — a ProjectInvite plus enough project/org
+// identity to render it, mirroring organization.PendingInvite's own OrgName
+// field exactly.
+type PendingProjectInvite struct {
+	ProjectInvite
+	ProjectName string
+	OrgName     string
+}
+
+// ProjectCollaborator mirrors one row of `project_collaborators` (migration
+// 00024) — the actual grant, created once a ProjectInvite is accepted. Never
+// touches organization_memberships or users.org_id.
+type ProjectCollaborator struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	UserID     uuid.UUID
+	Role       domain.Role
+	InvitedBy  *uuid.UUID
+	CreatedAt  time.Time
+}
+
+// ProjectCollaboratorSummary is one entry in the caller's own "shared
+// projects" switcher list (ListMyCollaborations) — a ProjectCollaborator
+// joined with just enough project/org identity to render and switch into.
+type ProjectCollaboratorSummary struct {
+	ProjectID   uuid.UUID
+	ProjectName string
+	OrgID       uuid.UUID
+	OrgName     string
+	Role        domain.Role
+}
+
+// SwitchProjectResult is `POST /auth/switch-project/{id}`'s response — a
+// fresh, independent token pair scoped to exactly one shared project (see
+// identity.Service.IssueTokenPairForProject's own doc comment).
+type SwitchProjectResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int
+}
+
+// ProjectInviteRepository is defined by this package; implementation lives
+// in internal/store/repo, mirroring organization.InviteRepository exactly.
+type ProjectInviteRepository interface {
+	Create(ctx context.Context, in *ProjectInvite) error
+	GetByTokenHash(ctx context.Context, tokenHash string) (*ProjectInvite, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*ProjectInvite, error)
+	ListByProject(ctx context.Context, projectID uuid.UUID) ([]ProjectInvite, error)
+	ListByEmail(ctx context.Context, email string) ([]ProjectInvite, error)
+	ExistsPending(ctx context.Context, projectID uuid.UUID, email string) (bool, error)
+	SetStatus(ctx context.Context, id uuid.UUID, status InviteStatus) error
+}
+
+// ProjectCollaboratorRepository is defined by this package; implementation
+// lives in internal/store/repo, mirroring organization.MembershipRepository
+// (the parts this package needs) exactly.
+type ProjectCollaboratorRepository interface {
+	Create(ctx context.Context, c *ProjectCollaborator) error
+	GetByProjectAndUser(ctx context.Context, projectID, userID uuid.UUID) (*ProjectCollaborator, error)
+	ListByProject(ctx context.Context, projectID uuid.UUID) ([]ProjectCollaborator, error)
+	// ListByUser backs ListMyCollaborations — every project (across every
+	// org) the caller holds an accepted grant on.
+	ListByUser(ctx context.Context, userID uuid.UUID) ([]ProjectCollaborator, error)
+	Delete(ctx context.Context, projectID, userID uuid.UUID) error
 }

@@ -118,6 +118,36 @@ func (f *fakeProjectService) ListAssignments(context.Context, domain.Actor, uuid
 func (f *fakeProjectService) ListAssignmentsForOrg(context.Context, domain.Actor) ([]project.ProjectAssignment, error) {
 	return nil, f.err
 }
+func (f *fakeProjectService) InviteCollaborator(context.Context, domain.Actor, uuid.UUID, project.InviteCollaboratorInput) (*project.CreatedProjectInvite, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) ListCollaboratorInvites(context.Context, domain.Actor, uuid.UUID) ([]project.ProjectInvite, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) RevokeCollaboratorInvite(context.Context, domain.Actor, uuid.UUID, uuid.UUID) error {
+	return f.err
+}
+func (f *fakeProjectService) ListCollaborators(context.Context, domain.Actor, uuid.UUID) ([]project.ProjectCollaborator, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) RemoveCollaborator(context.Context, domain.Actor, uuid.UUID, uuid.UUID) error {
+	return f.err
+}
+func (f *fakeProjectService) ListMyProjectInvites(context.Context, domain.Actor) ([]project.PendingProjectInvite, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) AcceptCollaboratorInvite(context.Context, domain.Actor, string) (*project.ProjectCollaborator, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) DeclineCollaboratorInvite(context.Context, domain.Actor, uuid.UUID) error {
+	return f.err
+}
+func (f *fakeProjectService) ListMyCollaborations(context.Context, domain.Actor) ([]project.ProjectCollaboratorSummary, error) {
+	return nil, f.err
+}
+func (f *fakeProjectService) SwitchProject(context.Context, domain.Actor, uuid.UUID) (*project.SwitchProjectResult, error) {
+	return nil, f.err
+}
 
 func newProjectRouter(svc project.Service) *gin.Engine {
 	r := gin.New()

@@ -134,6 +134,12 @@ func run() error {
 	// satisfying every module's own narrow interface for it (BUILD_GUIDE.md
 	// Phase 15).
 	membershipRepo := repo.NewMembershipRepo(db.Pool)
+	// projectCollaboratorRepo is shared the same way membershipRepo is —
+	// identity's ProjectCollaboratorRoleReader (a plain repo read, wired
+	// before identity.Service exists) and project's
+	// ProjectCollaboratorRepository (project-collaborators follow-up) both
+	// against project_collaborators.
+	projectCollaboratorRepo := repo.NewProjectCollaboratorRepo(db.Pool)
 
 	identitySvc := identity.NewService(
 		repo.NewUserRepo(db.Pool),
@@ -145,6 +151,7 @@ func run() error {
 		cfg.Security.RefreshTokenTTL,
 		cfg.Security.SessionAbsoluteTTL,
 		membershipRepo,
+		projectCollaboratorRepo,
 	)
 
 	githubClient := github.NewClient(cfg.External.GitHubAPIURL, nil)
@@ -157,8 +164,12 @@ func run() error {
 		repo.NewAttestationRepo(db.Pool),
 		repo.NewDocumentRepo(db.Pool),
 		repo.NewProjectAssignmentRepo(db.Pool),
+		repo.NewProjectInviteRepo(db.Pool),
+		projectCollaboratorRepo,
 		membershipRepo,
 		repo.NewUserRepo(db.Pool),
+		repo.NewOrganizationRepo(db.Pool),
+		identitySvc,
 		vcsSvc,
 		net.DefaultResolver,
 		auditSvc,

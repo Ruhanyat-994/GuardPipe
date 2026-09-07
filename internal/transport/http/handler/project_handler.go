@@ -471,6 +471,187 @@ func (h *ProjectHandler) ListAssignmentsForOrg(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.ProjectAssignmentListResponse{Data: items})
 }
 
+// --- project collaborators (project-collaborators follow-up) ---
+
+func (h *ProjectHandler) InviteCollaborator(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req dto.InviteCollaboratorRequest
+	if !h.bindAndValidate(c, &req) {
+		return
+	}
+	created, err := h.svc.InviteCollaborator(c.Request.Context(), actor, projectID, project.InviteCollaboratorInput{Email: req.Email, Role: domain.Role(req.Role)})
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusCreated, dto.FromCreatedProjectInvite(*created))
+}
+
+func (h *ProjectHandler) ListCollaboratorInvites(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	invites, err := h.svc.ListCollaboratorInvites(c.Request.Context(), actor, projectID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.ProjectInviteResponse, len(invites))
+	for i, inv := range invites {
+		items[i] = dto.FromProjectInvite(inv)
+	}
+	c.JSON(http.StatusOK, dto.ProjectInviteListResponse{Data: items})
+}
+
+func (h *ProjectHandler) RevokeCollaboratorInvite(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	inviteID, ok := requirePathUUID(c, "inviteId")
+	if !ok {
+		return
+	}
+	if err := h.svc.RevokeCollaboratorInvite(c.Request.Context(), actor, projectID, inviteID); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *ProjectHandler) ListCollaborators(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	list, err := h.svc.ListCollaborators(c.Request.Context(), actor, projectID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.ProjectCollaboratorResponse, len(list))
+	for i, col := range list {
+		items[i] = dto.FromProjectCollaborator(col)
+	}
+	c.JSON(http.StatusOK, dto.ProjectCollaboratorListResponse{Data: items})
+}
+
+func (h *ProjectHandler) RemoveCollaborator(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	projectID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	userID, ok := requirePathUUID(c, "userId")
+	if !ok {
+		return
+	}
+	if err := h.svc.RemoveCollaborator(c.Request.Context(), actor, projectID, userID); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// ListMyProjectInvites is `GET /project-invites/mine` — mirrors
+// OrganizationHandler.ListMyInvites exactly, for project_invites.
+func (h *ProjectHandler) ListMyProjectInvites(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	invites, err := h.svc.ListMyProjectInvites(c.Request.Context(), actor)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.PendingProjectInviteResponse, len(invites))
+	for i, inv := range invites {
+		items[i] = dto.FromPendingProjectInvite(inv)
+	}
+	c.JSON(http.StatusOK, dto.PendingProjectInviteListResponse{Data: items})
+}
+
+// AcceptCollaboratorInvite is `POST /project-invites/{id}/accept` — mirrors
+// OrganizationHandler.AcceptInvite exactly.
+func (h *ProjectHandler) AcceptCollaboratorInvite(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	identifier := c.Param("id")
+	if identifier == "" {
+		c.Error(apperrors.Validation("project.invalid_input", "token is required", nil))
+		return
+	}
+	collaborator, err := h.svc.AcceptCollaboratorInvite(c.Request.Context(), actor, identifier)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.FromProjectCollaborator(*collaborator))
+}
+
+// DeclineCollaboratorInvite is `POST /project-invites/{id}/decline` —
+// mirrors OrganizationHandler.DeclineInvite exactly.
+func (h *ProjectHandler) DeclineCollaboratorInvite(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	inviteID, ok := requirePathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.svc.DeclineCollaboratorInvite(c.Request.Context(), actor, inviteID); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// ListMyCollaborations is `GET /collaborations/mine` — the "shared
+// projects" switcher's own read.
+func (h *ProjectHandler) ListMyCollaborations(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	list, err := h.svc.ListMyCollaborations(c.Request.Context(), actor)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.ProjectCollaboratorSummaryResponse, len(list))
+	for i, s := range list {
+		items[i] = dto.FromProjectCollaboratorSummary(s)
+	}
+	c.JSON(http.StatusOK, dto.ProjectCollaboratorSummaryListResponse{Data: items})
+}
+
 // --- shared handler-layer helpers ---
 
 func (h *ProjectHandler) bindAndValidate(c *gin.Context, req any) bool {
