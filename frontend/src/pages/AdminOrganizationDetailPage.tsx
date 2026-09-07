@@ -16,9 +16,7 @@ import {
 import { formatDate } from '../lib/format'
 
 type PendingAction =
-  | { kind: 'suspend-org' }
-  | { kind: 'suspend-user'; userId: string; displayName: string }
-  | null
+  { kind: 'suspend-org' } | { kind: 'suspend-user'; userId: string; displayName: string } | null
 
 /** Screen 18 detail view — Admin: Organization (BUILD_GUIDE.md Phase 14). */
 export function AdminOrganizationDetailPage() {
@@ -46,7 +44,9 @@ export function AdminOrganizationDetailPage() {
       await reinstateOrganization(id)
       refresh()
     } catch (err) {
-      setError(err instanceof ApiError ? err.problem.detail : 'Could not reinstate this organization.')
+      setError(
+        err instanceof ApiError ? err.problem.detail : 'Could not reinstate this organization.',
+      )
     } finally {
       setBusy(false)
     }
@@ -118,8 +118,8 @@ export function AdminOrganizationDetailPage() {
           <div>
             <h1 className="text-h1 text-text-primary">{org.name}</h1>
             <p className="mt-1 text-caption text-text-tertiary">
-              Created {formatDate(org.created_at)} · {org.project_count} projects ·{' '}
-              {org.scan_count} scans
+              Created {formatDate(org.created_at)} · {org.project_count} projects · {org.scan_count}{' '}
+              scans
             </p>
           </div>
           {org.suspended_at ? (
@@ -127,10 +127,7 @@ export function AdminOrganizationDetailPage() {
               Reinstate organization
             </Button>
           ) : (
-            <Button
-              variant="destructive"
-              onClick={() => setPending({ kind: 'suspend-org' })}
-            >
+            <Button variant="destructive" onClick={() => setPending({ kind: 'suspend-org' })}>
               <ShieldOff className="h-4 w-4" aria-hidden="true" />
               Suspend organization
             </Button>

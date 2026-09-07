@@ -1001,8 +1001,8 @@ func TestRefresh_RevokedMembershipRejectsFurtherRefresh(t *testing.T) {
 // fakeProjectCollaboratorRoleReader is a hand-written fake for
 // identity.ProjectCollaboratorRoleReader — no mocking framework.
 type fakeProjectCollaboratorRoleReader struct {
-	mu    sync.Mutex
-	rows  map[string][2]any // key: projectID|userID -> [role, orgID]
+	mu   sync.Mutex
+	rows map[string][2]any // key: projectID|userID -> [role, orgID]
 }
 
 func newFakeProjectCollaboratorRoleReader() *fakeProjectCollaboratorRoleReader {

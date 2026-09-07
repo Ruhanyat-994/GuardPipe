@@ -50,7 +50,11 @@ export function AdminSystemHealthPage() {
       {health && (
         <>
           <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <MetricCard label="Jobs in flight" value={health.jobs_in_flight} caption="Redis queue" />
+            <MetricCard
+              label="Jobs in flight"
+              value={health.jobs_in_flight}
+              caption="Redis queue"
+            />
             <MetricCard
               label="Sandbox containers"
               value={health.sandbox_containers_running ?? '—'}

@@ -29,7 +29,7 @@ func NewProjectCollaboratorRepo(db Querier) *ProjectCollaboratorRepo {
 }
 
 var (
-	_ project.ProjectCollaboratorRepository = (*ProjectCollaboratorRepo)(nil)
+	_ project.ProjectCollaboratorRepository  = (*ProjectCollaboratorRepo)(nil)
 	_ identity.ProjectCollaboratorRoleReader = (*ProjectCollaboratorRepo)(nil)
 )
 
