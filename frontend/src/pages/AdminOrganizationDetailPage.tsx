@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, ShieldOff, Users } from "lucide-react";
-import { Card, CardDescription, CardTitle } from "../components/ui/Card";
-import { Button } from "../components/ui/Button";
-import { ReasonDialog } from "../components/admin/ReasonDialog";
-import { ApiError } from "../lib/apiClient";
+import { useEffect, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { ArrowLeft, ShieldOff, Users } from 'lucide-react'
+import { Card, CardDescription, CardTitle } from '../components/ui/Card'
+import { Button } from '../components/ui/Button'
+import { ReasonDialog } from '../components/admin/ReasonDialog'
+import { ApiError } from '../lib/apiClient'
 import {
   getOrganization,
   reinstateOrganization,
@@ -12,79 +12,67 @@ import {
   suspendOrganization,
   suspendUser,
   type OrganizationDetail,
-} from "../lib/adminApi";
-import { formatDate } from "../lib/format";
+} from '../lib/adminApi'
+import { formatDate } from '../lib/format'
 
 type PendingAction =
-  | { kind: "suspend-org" }
-  | { kind: "suspend-user"; userId: string; displayName: string }
-  | null;
+  { kind: 'suspend-org' } | { kind: 'suspend-user'; userId: string; displayName: string } | null
 
 /** Screen 18 detail view — Admin: Organization (BUILD_GUIDE.md Phase 14). */
 export function AdminOrganizationDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const [org, setOrg] = useState<OrganizationDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [pending, setPending] = useState<PendingAction>(null);
+  const { id } = useParams<{ id: string }>()
+  const [org, setOrg] = useState<OrganizationDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [pending, setPending] = useState<PendingAction>(null)
 
   function refresh() {
-    if (!id) return;
+    if (!id) return
     getOrganization(id)
       .then(setOrg)
       .catch((err: unknown) => {
-        setError(
-          err instanceof ApiError
-            ? err.problem.detail
-            : "Could not load this organization.",
-        );
-      });
+        setError(err instanceof ApiError ? err.problem.detail : 'Could not load this organization.')
+      })
   }
 
-  useEffect(refresh, [id]);
+  useEffect(refresh, [id])
 
   async function handleReinstateOrg() {
-    if (!id) return;
-    setBusy(true);
+    if (!id) return
+    setBusy(true)
     try {
-      await reinstateOrganization(id);
-      refresh();
+      await reinstateOrganization(id)
+      refresh()
     } catch (err) {
       setError(
-        err instanceof ApiError
-          ? err.problem.detail
-          : "Could not reinstate this organization.",
-      );
+        err instanceof ApiError ? err.problem.detail : 'Could not reinstate this organization.',
+      )
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
   }
 
   async function handleReinstateUser(userId: string) {
-    setBusy(true);
+    setBusy(true)
     try {
-      await reinstateUser(userId);
-      refresh();
+      await reinstateUser(userId)
+      refresh()
     } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.problem.detail
-          : "Could not reinstate this user.",
-      );
+      setError(err instanceof ApiError ? err.problem.detail : 'Could not reinstate this user.')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
   }
 
   async function handleConfirmReason(reason: string) {
-    if (!id || !pending) return;
-    if (pending.kind === "suspend-org") {
-      await suspendOrganization(id, reason);
+    if (!id || !pending) return
+    if (pending.kind === 'suspend-org') {
+      await suspendOrganization(id, reason)
     } else {
-      await suspendUser(pending.userId, reason);
+      await suspendUser(pending.userId, reason)
     }
-    setPending(null);
-    refresh();
+    setPending(null)
+    refresh()
   }
 
   if (error && !org) {
@@ -96,7 +84,7 @@ export function AdminOrganizationDetailPage() {
           </p>
         </Card>
       </main>
-    );
+    )
   }
 
   if (!org) {
@@ -104,7 +92,7 @@ export function AdminOrganizationDetailPage() {
       <main className="mx-auto max-w-4xl px-6 py-8">
         <CardDescription>Loading…</CardDescription>
       </main>
-    );
+    )
   }
 
   return (
@@ -130,23 +118,16 @@ export function AdminOrganizationDetailPage() {
           <div>
             <h1 className="text-h1 text-text-primary">{org.name}</h1>
             <p className="mt-1 text-caption text-text-tertiary">
-              Created {formatDate(org.created_at)} · {org.project_count}{" "}
-              projects · {org.scan_count} scans
+              Created {formatDate(org.created_at)} · {org.project_count} projects · {org.scan_count}{' '}
+              scans
             </p>
           </div>
           {org.suspended_at ? (
-            <Button
-              variant="secondary"
-              loading={busy}
-              onClick={() => void handleReinstateOrg()}
-            >
+            <Button variant="secondary" loading={busy} onClick={() => void handleReinstateOrg()}>
               Reinstate organization
             </Button>
           ) : (
-            <Button
-              variant="destructive"
-              onClick={() => setPending({ kind: "suspend-org" })}
-            >
+            <Button variant="destructive" onClick={() => setPending({ kind: 'suspend-org' })}>
               <ShieldOff className="h-4 w-4" aria-hidden="true" />
               Suspend organization
             </Button>
@@ -182,20 +163,12 @@ export function AdminOrganizationDetailPage() {
               {org.members.map((member) => (
                 <tr key={member.id}>
                   <td className="py-2.5 pr-4">
-                    <div className="font-medium text-text-primary">
-                      {member.display_name}
-                    </div>
-                    <div className="text-caption text-text-tertiary">
-                      {member.email}
-                    </div>
+                    <div className="font-medium text-text-primary">{member.display_name}</div>
+                    <div className="text-caption text-text-tertiary">{member.email}</div>
                   </td>
-                  <td className="py-2.5 pr-4 text-text-secondary capitalize">
-                    {member.role}
-                  </td>
+                  <td className="py-2.5 pr-4 text-text-secondary capitalize">{member.role}</td>
                   <td className="py-2.5 pr-4 text-text-tertiary">
-                    {member.last_login_at
-                      ? formatDate(member.last_login_at)
-                      : "Never"}
+                    {member.last_login_at ? formatDate(member.last_login_at) : 'Never'}
                   </td>
                   <td className="py-2.5 pr-4">
                     {member.suspended_at ? (
@@ -224,7 +197,7 @@ export function AdminOrganizationDetailPage() {
                         size="sm"
                         onClick={() =>
                           setPending({
-                            kind: "suspend-user",
+                            kind: 'suspend-user',
                             userId: member.id,
                             displayName: member.display_name,
                           })
@@ -241,7 +214,7 @@ export function AdminOrganizationDetailPage() {
         </div>
       </Card>
 
-      {pending?.kind === "suspend-org" && (
+      {pending?.kind === 'suspend-org' && (
         <ReasonDialog
           title={`Suspend ${org.name}?`}
           description="Every member of this organization will be signed out and unable to log back in until reinstated."
@@ -250,7 +223,7 @@ export function AdminOrganizationDetailPage() {
           onCancel={() => setPending(null)}
         />
       )}
-      {pending?.kind === "suspend-user" && (
+      {pending?.kind === 'suspend-user' && (
         <ReasonDialog
           title={`Suspend ${pending.displayName}?`}
           description="This person will be signed out and unable to log back in until reinstated. Other members of the organization are unaffected."
@@ -260,5 +233,5 @@ export function AdminOrganizationDetailPage() {
         />
       )}
     </main>
-  );
+  )
 }
