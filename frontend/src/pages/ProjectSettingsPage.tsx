@@ -8,6 +8,7 @@ import { DocumentUploadForm } from '../components/project/DocumentUploadForm'
 import { RepositoryAttachForm } from '../components/project/RepositoryAttachForm'
 import { ScheduledScansSection } from '../components/project/ScheduledScansSection'
 import { ProjectAssignmentsSection } from '../components/project/ProjectAssignmentsSection'
+import { ProjectCollaboratorsSection } from '../components/project/ProjectCollaboratorsSection'
 import { useProjectContext } from '../components/project/ProjectContext'
 import { ApiError } from '../lib/apiClient'
 import { archiveProject, updateProject } from '../lib/projectsApi'
@@ -125,6 +126,8 @@ export function ProjectSettingsPage() {
       </div>
 
       <ProjectAssignmentsSection projectId={project.id} />
+
+      <ProjectCollaboratorsSection projectId={project.id} />
 
       <ScheduledScansSection projectId={project.id} />
 

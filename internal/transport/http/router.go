@@ -97,7 +97,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	r.GET("/version", healthH.Version)
 
 	v := validate.New()
-	authH := handler.NewAuthHandler(cfg.IdentitySvc, cfg.AdminSvc, cfg.OrgSvc, v, cfg.SecureCookies, cfg.RefreshTokenTTL)
+	authH := handler.NewAuthHandler(cfg.IdentitySvc, cfg.AdminSvc, cfg.OrgSvc, cfg.ProjectSvc, v, cfg.SecureCookies, cfg.RefreshTokenTTL)
 	authLimiter := middleware.RateLimit(cfg.AuthRateLimit, cfg.AuthRateWindow)
 	requireAuth := middleware.Auth(cfg.IdentitySvc)
 	// requireNotSuspended (BUILD_GUIDE.md Phase 14) runs on every
@@ -123,6 +123,10 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// switch-org (BUILD_GUIDE.md Phase 15) — re-issues a token pair for a
 		// different org the caller already holds a membership in.
 		auth.POST("/switch-org", requireAuth, requireNotSuspended, authH.SwitchOrg)
+		// switch-project (project-collaborators follow-up) — re-issues a
+		// token pair scoped to exactly one project the caller holds an
+		// accepted collaborator grant on, not the whole of its org.
+		auth.POST("/switch-project/:id", requireAuth, requireNotSuspended, authH.SwitchProject)
 	}
 
 	// organizations (BUILD_GUIDE.md Phase 15) — membership, invites, and the
@@ -181,7 +185,33 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		projects.POST("/:id/assignments", middleware.RBAC(memberAndAbove...), projectH.AssignProject)
 		projects.DELETE("/:id/assignments/:userId", middleware.RBAC(memberAndAbove...), projectH.UnassignProject)
 		projects.GET("/:id/assignments", middleware.RBAC(viewerAndAbove...), projectH.ListAssignments)
+		// project collaborators (project-collaborators follow-up) — unlike
+		// assignments above, these actually grant access (see
+		// ProjectCollaborator's own doc comment), to a GuardPipe user who
+		// need not already be a member of this project's org. Reachable by
+		// a project-scoped collaborator session too, but only for the one
+		// project it's scoped to — getOwnedProject enforces that centrally.
+		projects.POST("/:id/collaborators/invites", middleware.RBAC(memberAndAbove...), projectH.InviteCollaborator)
+		projects.GET("/:id/collaborators/invites", middleware.RBAC(viewerAndAbove...), projectH.ListCollaboratorInvites)
+		projects.DELETE("/:id/collaborators/invites/:inviteId", middleware.RBAC(memberAndAbove...), projectH.RevokeCollaboratorInvite)
+		projects.GET("/:id/collaborators", middleware.RBAC(viewerAndAbove...), projectH.ListCollaborators)
+		projects.DELETE("/:id/collaborators/:userId", middleware.RBAC(memberAndAbove...), projectH.RemoveCollaborator)
 	}
+	// project-invites (project-collaborators follow-up) — the invitee's own
+	// live notification feed and accept/decline, mirroring the /invites
+	// group above exactly but for project_invites; kept as its own path so
+	// NotificationPanel.tsx can poll both without either handler needing to
+	// know about the other kind of invite.
+	projectInvites := api.Group("/project-invites", requireAuth, requireNotSuspended)
+	{
+		projectInvites.GET("/mine", projectH.ListMyProjectInvites)
+		projectInvites.POST("/:id/accept", projectH.AcceptCollaboratorInvite)
+		projectInvites.POST("/:id/decline", projectH.DeclineCollaboratorInvite)
+	}
+	// collaborations/mine (project-collaborators follow-up) — every project
+	// (any org) the caller holds an accepted collaborator grant on, the
+	// "shared projects" switcher's own read.
+	api.GET("/collaborations/mine", requireAuth, requireNotSuspended, projectH.ListMyCollaborations)
 	// team (BUILD_GUIDE.md Phase 15) — the Team Dashboard's own org-wide
 	// assignment read, client-composed with GET /organizations/{id}/members
 	// and each project's latest scan the same way Phase 13's

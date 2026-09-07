@@ -35,6 +35,12 @@ type User struct {
 	SuspendedReason *string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	// ScopedProjectID mirrors domain.Actor.ProjectID onto the response
+	// User a Login/Refresh/switch call returns — nil for every ordinary
+	// session, set only once the caller has switched into a single shared
+	// project (project-collaborators follow-up), so the frontend knows to
+	// render that project only, not the org's normal dashboard.
+	ScopedProjectID *uuid.UUID
 }
 
 // RegisterInput is the input to Service.Register.
@@ -57,9 +63,12 @@ type TokenPair struct {
 
 // Claims is what Verify extracts from a valid access token.
 type Claims struct {
-	UserID    uuid.UUID
-	OrgID     uuid.UUID
-	Role      domain.Role
+	UserID uuid.UUID
+	OrgID  uuid.UUID
+	Role   domain.Role
+	// ProjectID mirrors domain.Actor.ProjectID — nil for every ordinary
+	// token, set only for a session switched into one shared project.
+	ProjectID *uuid.UUID
 	JTI       string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
@@ -91,4 +100,11 @@ type RefreshToken struct {
 	// against the org the caller actually switched to, not silently back
 	// onto users.org_id.
 	OrgID *uuid.UUID
+	// ProjectID (migration 00024, project-collaborators follow-up) mirrors
+	// OrgID's own pattern one level narrower: nil for every ordinary token
+	// (including every switch-org token), set only by
+	// Service.IssueTokenPairForProject (POST /auth/switch-project/{id}) so
+	// Refresh keeps rebuilding against that single project, never silently
+	// widening back out to the whole org.
+	ProjectID *uuid.UUID
 }

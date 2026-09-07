@@ -349,6 +349,9 @@ func (f fakeIdentityService) CheckSuspension(context.Context, domain.Actor) erro
 func (f fakeIdentityService) IssueTokenPairForOrg(context.Context, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
 	return nil, nil
 }
+func (f fakeIdentityService) IssueTokenPairForProject(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
+	return nil, nil
+}
 func (f fakeIdentityService) Me(context.Context, domain.Actor) (*identity.User, error) {
 	return nil, nil
 }

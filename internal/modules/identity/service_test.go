@@ -235,7 +235,7 @@ func newTestServiceWithAudit(t *testing.T) (identity.Service, *fakeUserRepo, *fa
 	tokens := newFakeTokenRepo()
 	auditSvc := &fakeAuditService{}
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
-	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour, nil)
+	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour, nil, nil)
 	return svc, users, tokens, auditSvc
 }
 
@@ -486,7 +486,7 @@ func newTestServiceForSuspension(t *testing.T) (identity.Service, *fakeUserRepo,
 	tokens := newFakeTokenRepo()
 	auditSvc := &fakeAuditService{}
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
-	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour, nil)
+	svc := identity.NewService(users, orgs, tokens, issuer, auditSvc, 15*time.Minute, 30*time.Minute, 12*time.Hour, nil, nil)
 	return svc, users, orgs
 }
 
@@ -798,9 +798,9 @@ func TestVerify_ValidAccessTokenRoundTrips(t *testing.T) {
 
 func TestVerify_ExpiredTokenReturnsTokenExpiredCode(t *testing.T) {
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), -1*time.Minute) // already expired
-	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, &fakeAuditService{}, -1*time.Minute, time.Hour, 12*time.Hour, nil)
+	svc := identity.NewService(newFakeUserRepo(id.New()), &fakeOrgRepo{}, newFakeTokenRepo(), issuer, &fakeAuditService{}, -1*time.Minute, time.Hour, 12*time.Hour, nil, nil)
 
-	token, err := issuer.Issue(id.New(), id.New(), domain.RoleMember)
+	token, err := issuer.Issue(id.New(), id.New(), domain.RoleMember, nil)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -894,7 +894,7 @@ func newTestServiceWithMembershipRoles(t *testing.T, reader identity.MembershipR
 	orgs := &fakeOrgRepo{}
 	tokens := newFakeTokenRepo()
 	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
-	svc := identity.NewService(users, orgs, tokens, issuer, &fakeAuditService{}, 15*time.Minute, 30*time.Minute, 12*time.Hour, reader)
+	svc := identity.NewService(users, orgs, tokens, issuer, &fakeAuditService{}, 15*time.Minute, 30*time.Minute, 12*time.Hour, reader, nil)
 	return svc, users, tokens
 }
 
@@ -993,5 +993,165 @@ func TestRefresh_RevokedMembershipRejectsFurtherRefresh(t *testing.T) {
 
 	if _, err := svc.Refresh(ctx, switched.RefreshToken); err == nil {
 		t.Fatal("Refresh() error = nil, want an error once the underlying membership is gone")
+	}
+}
+
+// --- project-collaborators follow-up — switch-project / ProjectCollaboratorRoleReader ---
+
+// fakeProjectCollaboratorRoleReader is a hand-written fake for
+// identity.ProjectCollaboratorRoleReader — no mocking framework.
+type fakeProjectCollaboratorRoleReader struct {
+	mu    sync.Mutex
+	rows  map[string][2]any // key: projectID|userID -> [role, orgID]
+}
+
+func newFakeProjectCollaboratorRoleReader() *fakeProjectCollaboratorRoleReader {
+	return &fakeProjectCollaboratorRoleReader{rows: map[string][2]any{}}
+}
+
+func (f *fakeProjectCollaboratorRoleReader) set(projectID, userID, orgID uuid.UUID, role domain.Role) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows[projectID.String()+"|"+userID.String()] = [2]any{role, orgID}
+}
+
+func (f *fakeProjectCollaboratorRoleReader) remove(projectID, userID uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.rows, projectID.String()+"|"+userID.String())
+}
+
+func (f *fakeProjectCollaboratorRoleReader) GetRoleAndOrg(_ context.Context, projectID, userID uuid.UUID) (domain.Role, uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.rows[projectID.String()+"|"+userID.String()]
+	if !ok {
+		return "", uuid.Nil, apperrors.NotFound("project.collaborator_not_found", "collaborator not found")
+	}
+	return row[0].(domain.Role), row[1].(uuid.UUID), nil
+}
+
+func newTestServiceWithProjectRoles(t *testing.T, reader identity.ProjectCollaboratorRoleReader) (identity.Service, *fakeUserRepo, *fakeTokenRepo) {
+	t.Helper()
+	orgID := id.New()
+	users := newFakeUserRepo(orgID)
+	orgs := &fakeOrgRepo{}
+	tokens := newFakeTokenRepo()
+	issuer := identity.NewTokenIssuer([]byte(testJWTSecret), 15*time.Minute)
+	svc := identity.NewService(users, orgs, tokens, issuer, &fakeAuditService{}, 15*time.Minute, 30*time.Minute, 12*time.Hour, nil, reader)
+	return svc, users, tokens
+}
+
+func TestIssueTokenPairForProject_ScopesTheTokenToOneProject(t *testing.T) {
+	reader := newFakeProjectCollaboratorRoleReader()
+	svc, _, _ := newTestServiceWithProjectRoles(t, reader)
+	ctx := context.Background()
+
+	user, err := svc.Register(ctx, identity.RegisterInput{Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	homePair, err := svc.Login(ctx, "nadia@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+
+	sharedProjectOrgID := id.New()
+	sharedProjectID := id.New()
+	reader.set(sharedProjectID, user.ID, sharedProjectOrgID, domain.RoleMember)
+
+	switched, err := svc.IssueTokenPairForProject(ctx, user.ID, sharedProjectID, sharedProjectOrgID, domain.RoleMember)
+	if err != nil {
+		t.Fatalf("IssueTokenPairForProject() error = %v", err)
+	}
+	if switched.RefreshToken == homePair.RefreshToken {
+		t.Error("IssueTokenPairForProject() reused the home session's refresh token instead of minting an independent family")
+	}
+
+	claims, err := svc.Verify(ctx, switched.AccessToken)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if claims.OrgID != sharedProjectOrgID || claims.Role != domain.RoleMember {
+		t.Errorf("claims = %+v, want OrgID=%s Role=member", claims, sharedProjectOrgID)
+	}
+	if claims.ProjectID == nil || *claims.ProjectID != sharedProjectID {
+		t.Errorf("claims.ProjectID = %v, want %s", claims.ProjectID, sharedProjectID)
+	}
+	if switched.User == nil || switched.User.ScopedProjectID == nil || *switched.User.ScopedProjectID != sharedProjectID {
+		t.Errorf("switched.User.ScopedProjectID = %v, want %s", switched.User, sharedProjectID)
+	}
+
+	// The original home session must still work, completely unaffected —
+	// its own claims carry no project scope at all.
+	homeClaims, err := svc.Verify(ctx, homePair.AccessToken)
+	if err != nil {
+		t.Fatalf("Verify(home) error = %v", err)
+	}
+	if homeClaims.ProjectID != nil {
+		t.Errorf("home session claims.ProjectID = %v, want nil", homeClaims.ProjectID)
+	}
+}
+
+func TestRefresh_SwitchedProjectSessionKeepsItsProjectScope(t *testing.T) {
+	reader := newFakeProjectCollaboratorRoleReader()
+	svc, _, _ := newTestServiceWithProjectRoles(t, reader)
+	ctx := context.Background()
+
+	user, err := svc.Register(ctx, identity.RegisterInput{Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	sharedProjectOrgID := id.New()
+	sharedProjectID := id.New()
+	reader.set(sharedProjectID, user.ID, sharedProjectOrgID, domain.RoleViewer)
+
+	switched, err := svc.IssueTokenPairForProject(ctx, user.ID, sharedProjectID, sharedProjectOrgID, domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("IssueTokenPairForProject() error = %v", err)
+	}
+
+	refreshed, err := svc.Refresh(ctx, switched.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	claims, err := svc.Verify(ctx, refreshed.AccessToken)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if claims.ProjectID == nil || *claims.ProjectID != sharedProjectID {
+		t.Errorf("refreshed claims.ProjectID = %v, want %s", claims.ProjectID, sharedProjectID)
+	}
+	if claims.OrgID != sharedProjectOrgID || claims.Role != domain.RoleViewer {
+		t.Errorf("refreshed claims = %+v, want OrgID=%s Role=viewer", claims, sharedProjectOrgID)
+	}
+}
+
+// TestRefresh_RevokedCollaboratorGrantRejectsFurtherRefresh mirrors
+// TestRefresh_RevokedMembershipRejectsFurtherRefresh — a revoked project
+// collaborator grant must kill the session on its very next refresh, the
+// same way a revoked org membership already does.
+func TestRefresh_RevokedCollaboratorGrantRejectsFurtherRefresh(t *testing.T) {
+	reader := newFakeProjectCollaboratorRoleReader()
+	svc, _, _ := newTestServiceWithProjectRoles(t, reader)
+	ctx := context.Background()
+
+	user, err := svc.Register(ctx, identity.RegisterInput{Email: "nadia@example.com", DisplayName: "Nadia", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	sharedProjectOrgID := id.New()
+	sharedProjectID := id.New()
+	reader.set(sharedProjectID, user.ID, sharedProjectOrgID, domain.RoleMember)
+
+	switched, err := svc.IssueTokenPairForProject(ctx, user.ID, sharedProjectID, sharedProjectOrgID, domain.RoleMember)
+	if err != nil {
+		t.Fatalf("IssueTokenPairForProject() error = %v", err)
+	}
+
+	reader.remove(sharedProjectID, user.ID) // the project owner removed this collaborator
+
+	if _, err := svc.Refresh(ctx, switched.RefreshToken); err == nil {
+		t.Fatal("Refresh() error = nil, want an error once the underlying collaborator grant is gone")
 	}
 }

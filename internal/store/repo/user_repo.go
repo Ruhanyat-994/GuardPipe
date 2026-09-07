@@ -13,6 +13,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 )
 
@@ -29,9 +30,10 @@ func NewUserRepo(db Querier) *UserRepo {
 }
 
 var (
-	_ identity.UserRepository = (*UserRepo)(nil)
-	_ admin.UserRepository    = (*UserRepo)(nil)
-	_ organization.UserReader = (*UserRepo)(nil)
+	_ identity.UserRepository       = (*UserRepo)(nil)
+	_ admin.UserRepository          = (*UserRepo)(nil)
+	_ organization.UserReader       = (*UserRepo)(nil)
+	_ project.UserDisplayNameLookup = (*UserRepo)(nil)
 )
 
 func (r *UserRepo) Create(ctx context.Context, u *identity.User) error {
@@ -88,6 +90,21 @@ func (r *UserRepo) GetDisplayName(ctx context.Context, id uuid.UUID) (string, er
 		return "", fmt.Errorf("repo: get display name: %w", err)
 	}
 	return name, nil
+}
+
+// GetEmail satisfies project.UserDisplayNameLookup's other method
+// (project-collaborators follow-up) — the caller's own email, matched
+// against a ProjectInvite's Email on accept/decline.
+func (r *UserRepo) GetEmail(ctx context.Context, id uuid.UUID) (string, error) {
+	const q = `SELECT email FROM users WHERE id = $1`
+	var email string
+	if err := r.db.QueryRow(ctx, q, id).Scan(&email); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", apperrors.NotFound("identity.user_not_found", "no such user")
+		}
+		return "", fmt.Errorf("repo: get email: %w", err)
+	}
+	return email, nil
 }
 
 func (r *UserRepo) scanOne(ctx context.Context, q string, arg any) (*identity.User, error) {

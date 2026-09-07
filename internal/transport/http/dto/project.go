@@ -281,3 +281,117 @@ func FromProjectAssignment(a project.ProjectAssignment) ProjectAssignmentRespons
 type ProjectAssignmentListResponse struct {
 	Data []ProjectAssignmentResponse `json:"data"`
 }
+
+// --- project collaborators (project-collaborators follow-up) — mirrors
+// dto/organization.go's own invite DTOs exactly, project-scoped instead of
+// org-scoped; same "not yet in documentation/07-api-specification.md" doc
+// debt note applies.
+
+// InviteCollaboratorRequest matches `POST /projects/{id}/collaborators/invites`.
+type InviteCollaboratorRequest struct {
+	Email string `json:"email" validate:"required,email"`
+	Role  string `json:"role" validate:"required,oneof=admin member viewer"`
+}
+
+// ProjectInviteResponse matches `GET /projects/{id}/collaborators/invites`
+// and the response of `POST /projects/{id}/collaborators/invites` (with
+// Token populated exactly once — see CreatedProjectInviteResponse below).
+type ProjectInviteResponse struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	Status    string    `json:"status"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func FromProjectInvite(inv project.ProjectInvite) ProjectInviteResponse {
+	return ProjectInviteResponse{
+		ID: inv.ID.String(), ProjectID: inv.ProjectID.String(), Email: inv.Email,
+		Role: string(inv.Role), Status: string(inv.Status), ExpiresAt: inv.ExpiresAt, CreatedAt: inv.CreatedAt,
+	}
+}
+
+// ProjectInviteListResponse matches `GET /projects/{id}/collaborators/invites`.
+type ProjectInviteListResponse struct {
+	Data []ProjectInviteResponse `json:"data"`
+}
+
+// CreatedProjectInviteResponse matches `POST /projects/{id}/collaborators/invites`'s
+// response — Token is the raw invite token, same "shown once" convention
+// dto.CreatedInviteResponse already establishes for org invites.
+type CreatedProjectInviteResponse struct {
+	ProjectInviteResponse
+	Token string `json:"token"`
+}
+
+func FromCreatedProjectInvite(c project.CreatedProjectInvite) CreatedProjectInviteResponse {
+	return CreatedProjectInviteResponse{ProjectInviteResponse: FromProjectInvite(c.ProjectInvite), Token: c.RawToken}
+}
+
+// PendingProjectInviteResponse matches one row of `GET /project-invites/mine`
+// — the live, in-app invite-notification feed, mirroring
+// dto.PendingInviteResponse exactly.
+type PendingProjectInviteResponse struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"project_id"`
+	ProjectName string    `json:"project_name"`
+	OrgName     string    `json:"org_name"`
+	Role        string    `json:"role"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func FromPendingProjectInvite(p project.PendingProjectInvite) PendingProjectInviteResponse {
+	return PendingProjectInviteResponse{
+		ID: p.ID.String(), ProjectID: p.ProjectID.String(), ProjectName: p.ProjectName,
+		OrgName: p.OrgName, Role: string(p.Role), ExpiresAt: p.ExpiresAt, CreatedAt: p.CreatedAt,
+	}
+}
+
+// PendingProjectInviteListResponse matches `GET /project-invites/mine`.
+type PendingProjectInviteListResponse struct {
+	Data []PendingProjectInviteResponse `json:"data"`
+}
+
+// ProjectCollaboratorResponse matches one row of `GET /projects/{id}/collaborators`.
+type ProjectCollaboratorResponse struct {
+	ProjectID string    `json:"project_id"`
+	UserID    string    `json:"user_id"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func FromProjectCollaborator(c project.ProjectCollaborator) ProjectCollaboratorResponse {
+	return ProjectCollaboratorResponse{
+		ProjectID: c.ProjectID.String(), UserID: c.UserID.String(), Role: string(c.Role), CreatedAt: c.CreatedAt,
+	}
+}
+
+// ProjectCollaboratorListResponse matches `GET /projects/{id}/collaborators`.
+type ProjectCollaboratorListResponse struct {
+	Data []ProjectCollaboratorResponse `json:"data"`
+}
+
+// ProjectCollaboratorSummaryResponse is one entry in the "shared projects"
+// switcher list (`GET /collaborations/mine`).
+type ProjectCollaboratorSummaryResponse struct {
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+	OrgID       string `json:"org_id"`
+	OrgName     string `json:"org_name"`
+	Role        string `json:"role"`
+}
+
+func FromProjectCollaboratorSummary(s project.ProjectCollaboratorSummary) ProjectCollaboratorSummaryResponse {
+	return ProjectCollaboratorSummaryResponse{
+		ProjectID: s.ProjectID.String(), ProjectName: s.ProjectName,
+		OrgID: s.OrgID.String(), OrgName: s.OrgName, Role: string(s.Role),
+	}
+}
+
+// ProjectCollaboratorSummaryListResponse matches `GET /collaborations/mine`.
+type ProjectCollaboratorSummaryListResponse struct {
+	Data []ProjectCollaboratorSummaryResponse `json:"data"`
+}

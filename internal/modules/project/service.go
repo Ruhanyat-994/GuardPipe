@@ -2,6 +2,10 @@ package project
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +19,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/crypto"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
@@ -116,6 +121,37 @@ type Service interface {
 	// scoped to actor.OrgID" shape orchestrator.ListOrgScans already
 	// establishes.
 	ListAssignmentsForOrg(ctx context.Context, actor domain.Actor) ([]ProjectAssignment, error)
+
+	// --- project collaborators (project-collaborators follow-up) — see
+	// ProjectInvite/ProjectCollaborator's own doc comments in types.go.
+	// InviteCollaborator/ListCollaboratorInvites/RevokeCollaboratorInvite/
+	// ListCollaborators/RemoveCollaborator are all gated through
+	// getOwnedProject like everything else on this interface — including,
+	// once actor.ProjectID is set, restricted to that one project only.
+	InviteCollaborator(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in InviteCollaboratorInput) (*CreatedProjectInvite, error)
+	ListCollaboratorInvites(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]ProjectInvite, error)
+	RevokeCollaboratorInvite(ctx context.Context, actor domain.Actor, projectID, inviteID uuid.UUID) error
+	ListCollaborators(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]ProjectCollaborator, error)
+	RemoveCollaborator(ctx context.Context, actor domain.Actor, projectID, userID uuid.UUID) error
+
+	// ListMyProjectInvites is the live notification feed's own read —
+	// mirrors organization.Service.ListMyInvites exactly, just against
+	// project_invites instead of organization_invites.
+	ListMyProjectInvites(ctx context.Context, actor domain.Actor) ([]PendingProjectInvite, error)
+	AcceptCollaboratorInvite(ctx context.Context, actor domain.Actor, identifier string) (*ProjectCollaborator, error)
+	DeclineCollaboratorInvite(ctx context.Context, actor domain.Actor, inviteID uuid.UUID) error
+
+	// ListMyCollaborations backs the "shared projects" switcher entries —
+	// every project (any org) the caller holds an accepted collaborator
+	// grant on.
+	ListMyCollaborations(ctx context.Context, actor domain.Actor) ([]ProjectCollaboratorSummary, error)
+	// SwitchProject is `POST /auth/switch-project/{id}` — see
+	// identity.Service.IssueTokenPairForProject's own doc comment for why
+	// this always mints a brand-new, independent token pair. Not gated
+	// through getOwnedProject (the caller, by definition, isn't in this
+	// project's org) — GetByProjectAndUser against project_collaborators is
+	// itself the authorization check.
+	SwitchProject(ctx context.Context, actor domain.Actor, projectID uuid.UUID) (*SwitchProjectResult, error)
 }
 
 // ProjectDetail is a Project plus the pieces the API returns alongside it
@@ -246,14 +282,27 @@ type MembershipChecker interface {
 	IsOrgMember(ctx context.Context, orgID, userID uuid.UUID) (bool, error)
 }
 
-// UserDisplayNameLookup is the one thing this module needs from `identity`
-// — the attesting user's display name for the attestation response
-// (documentation/07-api-specification.md §4's "attested_by"). The module
-// dependency table (documentation/05-module-specifications.md §1) lists
+// UserDisplayNameLookup is what this module needs from `identity` — the
+// attesting user's display name for the attestation response
+// (documentation/07-api-specification.md §4's "attested_by"), plus (project-
+// collaborators follow-up) the caller's own email, to match an invite's
+// Email against, the same purpose organization.Service's own UserReader
+// interface serves for org invites. The module dependency table
+// (documentation/05-module-specifications.md §1) lists
 // `project → identity, vcs`, so this dependency is intentional, not a
 // layering violation.
 type UserDisplayNameLookup interface {
 	GetDisplayName(ctx context.Context, userID uuid.UUID) (string, error)
+	GetEmail(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
+// OrganizationNameLookup is the one thing this module needs from
+// modules/organization (project-collaborators follow-up) — an owning org's
+// display name, purely for PendingProjectInvite/ProjectCollaboratorSummary
+// rendering. Implemented in internal/store/repo against `organizations`, the
+// same GetName shape organization.OrganizationReader already establishes.
+type OrganizationNameLookup interface {
+	GetName(ctx context.Context, orgID uuid.UUID) (string, error)
 }
 
 type service struct {
@@ -264,8 +313,12 @@ type service struct {
 	attestations  AttestationRepository
 	documents     DocumentRepository
 	assignments   ProjectAssignmentRepository
+	invites       ProjectInviteRepository
+	collaborators ProjectCollaboratorRepository
 	membership    MembershipChecker
 	users         UserDisplayNameLookup
+	orgs          OrganizationNameLookup
+	identitySvc   identity.Service
 	vcs           vcs.Service
 	resolver      validate.Resolver
 	audit         audit.Service
@@ -289,8 +342,12 @@ func NewService(
 	attestations AttestationRepository,
 	documents DocumentRepository,
 	assignments ProjectAssignmentRepository,
+	invites ProjectInviteRepository,
+	collaborators ProjectCollaboratorRepository,
 	membership MembershipChecker,
 	users UserDisplayNameLookup,
+	orgs OrganizationNameLookup,
+	identitySvc identity.Service,
 	vcsSvc vcs.Service,
 	resolver validate.Resolver,
 	auditSvc audit.Service,
@@ -308,8 +365,12 @@ func NewService(
 		attestations:        attestations,
 		documents:           documents,
 		assignments:         assignments,
+		invites:             invites,
+		collaborators:       collaborators,
 		membership:          membership,
 		users:               users,
+		orgs:                orgs,
+		identitySvc:         identitySvc,
 		vcs:                 vcsSvc,
 		resolver:            resolver,
 		audit:               auditSvc,
@@ -323,6 +384,9 @@ func NewService(
 }
 
 func (s *service) Create(ctx context.Context, actor domain.Actor, in CreateProjectInput) (*ProjectDetail, error) {
+	if err := requireUnscoped(actor); err != nil {
+		return nil, err
+	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" || len(name) > 120 {
 		return nil, apperrors.Validation("project.invalid_input", "name must be between 1 and 120 characters", nil)
@@ -372,6 +436,19 @@ func (s *service) Create(ctx context.Context, actor domain.Actor, in CreateProje
 }
 
 func (s *service) List(ctx context.Context, actor domain.Actor, page Page) ([]ProjectDetail, int, error) {
+	// A project-scoped collaborator session's "my projects" list is just
+	// the one project it was switched into — never the rest of that
+	// project's org — so it needs no frontend-visible branching: the same
+	// GET /projects call a home session makes just returns a single-item
+	// result.
+	if actor.ProjectID != nil {
+		d, err := s.Get(ctx, actor, *actor.ProjectID)
+		if err != nil {
+			return nil, 0, err
+		}
+		return []ProjectDetail{*d}, 1, nil
+	}
+
 	projects, total, err := s.projects.List(ctx, actor.OrgID, page)
 	if err != nil {
 		return nil, 0, apperrors.Internal(fmt.Errorf("list projects: %w", err))
@@ -917,11 +994,27 @@ func (s *service) ListAssignments(ctx context.Context, actor domain.Actor, proje
 }
 
 func (s *service) ListAssignmentsForOrg(ctx context.Context, actor domain.Actor) ([]ProjectAssignment, error) {
+	if err := requireUnscoped(actor); err != nil {
+		return nil, err
+	}
 	list, err := s.assignments.ListByOrg(ctx, actor.OrgID)
 	if err != nil {
 		return nil, apperrors.Internal(fmt.Errorf("list org assignments: %w", err))
 	}
 	return list, nil
+}
+
+// requireUnscoped rejects a project-collaborator session (actor.ProjectID
+// set) from any operation with no single project to check it against —
+// creating a brand-new project, or reading the org-wide Team Dashboard. A
+// scoped session may only ever touch the one project named in its token
+// (enforced in getOwnedProject below) plus whatever hangs off it; it must
+// never browse or create anything else in that project's organisation.
+func requireUnscoped(actor domain.Actor) error {
+	if actor.ProjectID != nil {
+		return apperrors.Forbidden("project.scoped_session", "this session is scoped to a single shared project")
+	}
+	return nil
 }
 
 func (s *service) getOwnedProject(ctx context.Context, actor domain.Actor, projectID uuid.UUID) (*Project, error) {
@@ -936,6 +1029,17 @@ func (s *service) getOwnedProject(ctx context.Context, actor domain.Actor, proje
 	// as 404, not 403 — confirming existence is itself a leak
 	// (documentation/07-api-specification.md §1.4).
 	if p.OrgID != actor.OrgID {
+		return nil, apperrors.NotFound("project.not_found", "project not found")
+	}
+	// A project-collaborator session (project-collaborators follow-up) may
+	// only ever touch the one project it was switched into — this is the
+	// single choke point every project/scan/finding/document/target/report
+	// authorisation check in the codebase funnels through (getOwnedTarget/
+	// getOwnedDocument below, orchestrator.getOwnedScan via projects.Get),
+	// so this one guard is what makes the scoped session unable to reach
+	// any other project in the same org, even though p.OrgID == actor.OrgID
+	// already passed above.
+	if actor.ProjectID != nil && *actor.ProjectID != projectID {
 		return nil, apperrors.NotFound("project.not_found", "project not found")
 	}
 	return p, nil
@@ -1015,6 +1119,321 @@ func maskToken(token string) string {
 		return prefix + "••••" + token
 	}
 	return prefix + "••••" + token[len(token)-4:]
+}
+
+// projectInviteTTL mirrors organization's own inviteTTL constant (Phase 15) —
+// no requirement doc specifies one, same conservative default.
+const projectInviteTTL = 7 * 24 * time.Hour
+
+func (s *service) InviteCollaborator(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in InviteCollaboratorInput) (*CreatedProjectInvite, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	if email == "" {
+		return nil, apperrors.Validation("project.invalid_input", "email is required", nil)
+	}
+	if !in.Role.Valid() {
+		return nil, apperrors.Validation("project.invalid_input", "role must be a recognised role", nil)
+	}
+
+	// Whether email already maps to an existing collaborator can't be
+	// checked here — InviteCollaborator only has an email, not a resolved
+	// user id (a project_collaborators row is keyed by user_id, and the
+	// invitee may not even have an account yet). AcceptCollaboratorInvite
+	// re-checks by resolved user id once the invite is actually accepted.
+	if pending, err := s.invites.ExistsPending(ctx, projectID, email); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("check pending project invite: %w", err))
+	} else if pending {
+		return nil, apperrors.Conflict("project.invite_already_pending", "an invite is already pending for this email")
+	}
+
+	rawToken, tokenHash, err := newProjectInviteToken()
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("generate invite token: %w", err))
+	}
+
+	invitedBy := actor.UserID
+	inv := &ProjectInvite{
+		ID: id.New(), ProjectID: projectID, Email: email, Role: in.Role,
+		InvitedBy: &invitedBy, TokenHash: tokenHash, Status: InvitePending,
+		ExpiresAt: time.Now().UTC().Add(projectInviteTTL),
+	}
+	if err := s.invites.Create(ctx, inv); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("create project invite: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "project.collaborator_invited",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+		Detail: map[string]any{"email": email, "role": string(in.Role)},
+	})
+	return &CreatedProjectInvite{ProjectInvite: *inv, RawToken: rawToken}, nil
+}
+
+func (s *service) ListCollaboratorInvites(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]ProjectInvite, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+	list, err := s.invites.ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list project invites: %w", err))
+	}
+	return list, nil
+}
+
+func (s *service) RevokeCollaboratorInvite(ctx context.Context, actor domain.Actor, projectID, inviteID uuid.UUID) error {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return err
+	}
+	inv, err := s.invites.GetByID(ctx, inviteID)
+	if err != nil {
+		if isNotFound(err) {
+			return apperrors.NotFound("project.invite_not_found", "invite not found")
+		}
+		return apperrors.Internal(fmt.Errorf("get project invite: %w", err))
+	}
+	if inv.ProjectID != projectID {
+		return apperrors.NotFound("project.invite_not_found", "invite not found")
+	}
+	if err := s.invites.SetStatus(ctx, inviteID, InviteRevoked); err != nil {
+		return apperrors.Internal(fmt.Errorf("revoke project invite: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "project.collaborator_invite_revoked",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+	})
+	return nil
+}
+
+func (s *service) ListCollaborators(ctx context.Context, actor domain.Actor, projectID uuid.UUID) ([]ProjectCollaborator, error) {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return nil, err
+	}
+	list, err := s.collaborators.ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list project collaborators: %w", err))
+	}
+	return list, nil
+}
+
+func (s *service) RemoveCollaborator(ctx context.Context, actor domain.Actor, projectID, userID uuid.UUID) error {
+	if _, err := s.getOwnedProject(ctx, actor, projectID); err != nil {
+		return err
+	}
+	if err := s.collaborators.Delete(ctx, projectID, userID); err != nil {
+		return apperrors.Internal(fmt.Errorf("remove project collaborator: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "project.collaborator_removed",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+		Detail: map[string]any{"user_id": userID.String()},
+	})
+	return nil
+}
+
+func (s *service) ListMyProjectInvites(ctx context.Context, actor domain.Actor) ([]PendingProjectInvite, error) {
+	email, err := s.callerEmail(ctx, actor)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("get caller: %w", err))
+	}
+
+	invites, err := s.invites.ListByEmail(ctx, email)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list project invites by email: %w", err))
+	}
+
+	now := time.Now().UTC()
+	out := make([]PendingProjectInvite, 0, len(invites))
+	for _, inv := range invites {
+		if inv.Status != InvitePending {
+			continue
+		}
+		if inv.ExpiresAt.Before(now) {
+			_ = s.invites.SetStatus(ctx, inv.ID, InviteExpired)
+			continue
+		}
+		p, err := s.projects.GetByID(ctx, inv.ProjectID)
+		if err != nil {
+			if isNotFound(err) {
+				continue // the project was deleted out from under a still-pending invite
+			}
+			return nil, apperrors.Internal(fmt.Errorf("get invited project: %w", err))
+		}
+		orgName, err := s.orgName(ctx, p.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, PendingProjectInvite{ProjectInvite: inv, ProjectName: p.Name, OrgName: orgName})
+	}
+	return out, nil
+}
+
+func (s *service) AcceptCollaboratorInvite(ctx context.Context, actor domain.Actor, identifier string) (*ProjectCollaborator, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, apperrors.Validation("project.invalid_input", "token is required", nil)
+	}
+
+	var inv *ProjectInvite
+	var err error
+	if inviteID, parseErr := uuid.Parse(identifier); parseErr == nil {
+		inv, err = s.invites.GetByID(ctx, inviteID)
+	} else {
+		inv, err = s.invites.GetByTokenHash(ctx, hashProjectInviteToken(identifier))
+	}
+	if err != nil {
+		if isNotFound(err) {
+			return nil, apperrors.NotFound("project.invite_not_found", "invite not found or already used")
+		}
+		return nil, apperrors.Internal(fmt.Errorf("get project invite: %w", err))
+	}
+
+	if inv.Status != InvitePending {
+		return nil, apperrors.Unprocessable("project.invite_not_pending", "this invite is no longer valid")
+	}
+	if inv.ExpiresAt.Before(time.Now().UTC()) {
+		_ = s.invites.SetStatus(ctx, inv.ID, InviteExpired)
+		return nil, apperrors.Unprocessable("project.invite_expired", "this invite has expired")
+	}
+
+	callerEmail, err := s.callerEmail(ctx, actor)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("get caller: %w", err))
+	}
+	if !strings.EqualFold(callerEmail, inv.Email) {
+		return nil, apperrors.Forbidden("project.invite_email_mismatch", "this invite was sent to a different email address — log in with that account to accept it")
+	}
+	if existing, err := s.collaborators.GetByProjectAndUser(ctx, inv.ProjectID, actor.UserID); err != nil && !isNotFound(err) {
+		return nil, apperrors.Internal(fmt.Errorf("check existing collaborator: %w", err))
+	} else if existing != nil {
+		return nil, apperrors.Conflict("project.already_collaborator", "you already have access to this project")
+	}
+
+	c := &ProjectCollaborator{ID: id.New(), ProjectID: inv.ProjectID, UserID: actor.UserID, Role: inv.Role, InvitedBy: inv.InvitedBy}
+	if err := s.collaborators.Create(ctx, c); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("create project collaborator: %w", err))
+	}
+	if err := s.invites.SetStatus(ctx, inv.ID, InviteAccepted); err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("mark project invite accepted: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		ActorID: &actor.UserID, Action: "project.collaborator_invite_accepted",
+		ResourceType: strPtr("project"), ResourceID: &inv.ProjectID,
+	})
+	return c, nil
+}
+
+func (s *service) DeclineCollaboratorInvite(ctx context.Context, actor domain.Actor, inviteID uuid.UUID) error {
+	inv, err := s.invites.GetByID(ctx, inviteID)
+	if err != nil {
+		if isNotFound(err) {
+			return apperrors.NotFound("project.invite_not_found", "invite not found")
+		}
+		return apperrors.Internal(fmt.Errorf("get project invite: %w", err))
+	}
+	if inv.Status != InvitePending {
+		return apperrors.Unprocessable("project.invite_not_pending", "this invite is no longer pending")
+	}
+	callerEmail, err := s.callerEmail(ctx, actor)
+	if err != nil {
+		return apperrors.Internal(fmt.Errorf("get caller: %w", err))
+	}
+	if !strings.EqualFold(callerEmail, inv.Email) {
+		return apperrors.Forbidden("project.invite_email_mismatch", "this invite was sent to a different email address")
+	}
+	if err := s.invites.SetStatus(ctx, inviteID, InviteDeclined); err != nil {
+		return apperrors.Internal(fmt.Errorf("decline project invite: %w", err))
+	}
+	s.audit.Log(ctx, audit.Entry{
+		ActorID: &actor.UserID, Action: "project.collaborator_invite_declined",
+		ResourceType: strPtr("project"), ResourceID: &inv.ProjectID,
+	})
+	return nil
+}
+
+func (s *service) ListMyCollaborations(ctx context.Context, actor domain.Actor) ([]ProjectCollaboratorSummary, error) {
+	grants, err := s.collaborators.ListByUser(ctx, actor.UserID)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list project collaborations: %w", err))
+	}
+	out := make([]ProjectCollaboratorSummary, 0, len(grants))
+	for _, g := range grants {
+		p, err := s.projects.GetByID(ctx, g.ProjectID)
+		if err != nil {
+			if isNotFound(err) {
+				continue // the project was deleted out from under an accepted grant
+			}
+			return nil, apperrors.Internal(fmt.Errorf("get shared project: %w", err))
+		}
+		orgName, err := s.orgName(ctx, p.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ProjectCollaboratorSummary{
+			ProjectID: p.ID, ProjectName: p.Name, OrgID: p.OrgID, OrgName: orgName, Role: g.Role,
+		})
+	}
+	return out, nil
+}
+
+func (s *service) SwitchProject(ctx context.Context, actor domain.Actor, projectID uuid.UUID) (*SwitchProjectResult, error) {
+	grant, err := s.collaborators.GetByProjectAndUser(ctx, projectID, actor.UserID)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, apperrors.Forbidden("project.not_a_collaborator", "you do not have access to this project")
+		}
+		return nil, apperrors.Internal(fmt.Errorf("get project collaborator grant: %w", err))
+	}
+	p, err := s.projects.GetByID(ctx, projectID)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, apperrors.NotFound("project.not_found", "project not found")
+		}
+		return nil, apperrors.Internal(fmt.Errorf("get project: %w", err))
+	}
+
+	pair, err := s.identitySvc.IssueTokenPairForProject(ctx, actor.UserID, projectID, p.OrgID, grant.Role)
+	if err != nil {
+		return nil, err
+	}
+	s.audit.Log(ctx, audit.Entry{
+		OrgID: &p.OrgID, ActorID: &actor.UserID, Action: "auth.project_switched",
+		ResourceType: strPtr("project"), ResourceID: &projectID,
+	})
+	return &SwitchProjectResult{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: pair.ExpiresIn}, nil
+}
+
+// callerEmail resolves actor's own account email — Accept/Decline/
+// ListMyProjectInvites all need it to match against a ProjectInvite's Email,
+// the same purpose organization.Service's caller-email lookup serves for
+// org invites.
+func (s *service) callerEmail(ctx context.Context, actor domain.Actor) (string, error) {
+	return s.users.GetEmail(ctx, actor.UserID)
+}
+
+// orgName resolves an owning org's display name for
+// ListMyProjectInvites/ListMyCollaborations — both need it purely for
+// display, the same reason organization.PendingInvite.OrgName exists.
+func (s *service) orgName(ctx context.Context, orgID uuid.UUID) (string, error) {
+	name, err := s.orgs.GetName(ctx, orgID)
+	if err != nil {
+		return "", apperrors.Internal(fmt.Errorf("get organization name: %w", err))
+	}
+	return name, nil
+}
+
+func newProjectInviteToken() (raw, hash string, err error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", fmt.Errorf("generate random bytes: %w", err)
+	}
+	raw = base64.RawURLEncoding.EncodeToString(buf)
+	return raw, hashProjectInviteToken(raw), nil
+}
+
+func hashProjectInviteToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 func strPtr(s string) *string {

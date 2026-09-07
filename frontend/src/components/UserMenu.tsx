@@ -4,6 +4,7 @@ import {
   Building2,
   Check,
   ChevronRight,
+  FolderKanban,
   LogOut,
   Monitor,
   Moon,
@@ -16,6 +17,7 @@ import { Popover } from './ui/Popover'
 import { cn } from '../lib/cn'
 import { ApiError } from '../lib/apiClient'
 import { listMemberOrgs, type MemberOrg } from '../lib/organizationApi'
+import { listMyCollaborations, type ProjectCollaboratorSummary } from '../lib/projectsApi'
 import { useAuthStore } from '../stores/authStore'
 import { useThemeStore, type ThemeMode } from '../stores/themeStore'
 
@@ -41,6 +43,7 @@ export function UserMenu() {
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const switchOrg = useAuthStore((s) => s.switchOrg)
+  const switchProject = useAuthStore((s) => s.switchProject)
   const navigate = useNavigate()
   const mode = useThemeStore((s) => s.mode)
   const setMode = useThemeStore((s) => s.setMode)
@@ -77,6 +80,40 @@ export function UserMenu() {
       setOrgError(err instanceof ApiError ? err.problem.detail : 'Could not switch organizations.')
     } finally {
       setSwitching(null)
+    }
+  }
+
+  // project-collaborators follow-up — "Shared projects" submenu, the exact
+  // same nested-row/lazy-load pattern as the org-switcher above (including
+  // "always show the entry, an empty list just reads as an empty state" —
+  // same precedent the org-switcher's own doc comment already establishes).
+  const [projectSwitcherOpen, setProjectSwitcherOpen] = useState(false)
+  const [sharedProjects, setSharedProjects] = useState<ProjectCollaboratorSummary[]>([])
+  const [sharedProjectsLoaded, setSharedProjectsLoaded] = useState(false)
+  const [switchingProject, setSwitchingProject] = useState<string | null>(null)
+  const [projectError, setProjectError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!projectSwitcherOpen || sharedProjectsLoaded) return
+    listMyCollaborations()
+      .then((res) => setSharedProjects(res.data))
+      .catch(() => setProjectError('Could not load your shared projects.'))
+      .finally(() => setSharedProjectsLoaded(true))
+  }, [projectSwitcherOpen, sharedProjectsLoaded])
+
+  async function handleSwitchProject(projectId: string, close: () => void) {
+    setSwitchingProject(projectId)
+    setProjectError(null)
+    try {
+      await switchProject(projectId)
+      close()
+      navigate('/dashboard')
+    } catch (err) {
+      setProjectError(
+        err instanceof ApiError ? err.problem.detail : 'Could not switch to this project.',
+      )
+    } finally {
+      setSwitchingProject(null)
     }
   }
 
@@ -162,6 +199,67 @@ export function UserMenu() {
                         )}
                       </span>
                       {switching === org.org_id && (
+                        <span
+                          className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-border-default py-1">
+            <button
+              type="button"
+              onClick={() => setProjectSwitcherOpen((o) => !o)}
+              aria-expanded={projectSwitcherOpen}
+              className="flex w-full items-center justify-between gap-2.5 px-3 py-2 text-left text-body-sm text-text-primary hover:bg-bg-subtle"
+            >
+              <span className="flex items-center gap-2.5">
+                <FolderKanban className="h-4 w-4" aria-hidden="true" />
+                Shared projects
+              </span>
+              <ChevronRight
+                className={cn('h-4 w-4 transition-transform', projectSwitcherOpen && 'rotate-90')}
+                aria-hidden="true"
+              />
+            </button>
+            {projectSwitcherOpen && (
+              <div
+                role="menu"
+                aria-label="Shared projects"
+                className="ml-3 border-l border-border-default pl-2"
+              >
+                {!sharedProjectsLoaded ? (
+                  <p className="px-2 py-2 text-caption text-text-tertiary">Loading…</p>
+                ) : projectError ? (
+                  <p role="alert" className="px-2 py-2 text-caption text-danger">
+                    {projectError}
+                  </p>
+                ) : sharedProjects.length === 0 ? (
+                  <p className="px-2 py-2 text-caption text-text-tertiary">
+                    No projects have been shared with you yet.
+                  </p>
+                ) : (
+                  sharedProjects.map((p) => (
+                    <button
+                      key={p.project_id}
+                      type="button"
+                      role="menuitemradio"
+                      disabled={switchingProject !== null}
+                      onClick={() => void handleSwitchProject(p.project_id, close)}
+                      className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left text-body-sm text-text-primary hover:bg-bg-subtle disabled:opacity-60"
+                    >
+                      <span className="min-w-0 flex-1 truncate">
+                        {p.project_name}
+                        <span className="ml-1.5 text-caption text-text-tertiary">
+                          shared by {p.org_name}
+                        </span>
+                      </span>
+                      {switchingProject === p.project_id && (
                         <span
                           className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
                           aria-hidden="true"

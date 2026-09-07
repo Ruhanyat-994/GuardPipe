@@ -64,12 +64,15 @@ func (f *fakeIdentityService) CheckSuspension(context.Context, domain.Actor) err
 func (f *fakeIdentityService) IssueTokenPairForOrg(context.Context, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
 	return nil, nil
 }
+func (f *fakeIdentityService) IssueTokenPairForProject(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
+	return nil, nil
+}
 
 func newRouter(svc identity.Service) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.ErrorMapper())
 	v := validate.New()
-	h := handler.NewAuthHandler(svc, nil, nil, v, false, 7*24*time.Hour)
+	h := handler.NewAuthHandler(svc, nil, nil, nil, v, false, 7*24*time.Hour)
 
 	r.POST("/register", h.Register)
 	r.POST("/login", h.Login)
