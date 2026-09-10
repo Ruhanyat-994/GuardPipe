@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: guardpipe
+  labels:
+    # Every app pod here runs non-root with all capabilities dropped
+    # already (CLAUDE.md's stated posture) — "restricted" just makes the
+    # cluster itself reject anything that doesn't.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

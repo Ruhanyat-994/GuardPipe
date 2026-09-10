@@ -1,0 +1,49 @@
+output "vpc_id" {
+  description = "VPC ID — cluster/ places the EKS control plane and node group here."
+  value       = aws_vpc.main.id
+}
+
+output "public_subnet_ids" {
+  description = "All public subnet IDs (one per AZ) — EKS control plane spans all of these; node group placement (cluster/) picks a subset to concentrate workers in one AZ."
+  value       = aws_subnet.public[*].id
+}
+
+output "cluster_access_security_group_id" {
+  description = "Security group the EKS node group (cluster/) must join as an extra SG so RDS's ingress rule (which allows this group) actually applies to it."
+  value       = aws_security_group.cluster_access.id
+}
+
+output "rds_endpoint" {
+  description = "RDS endpoint hostname (no port) — combine with rds_port and the managed master-password secret to assemble GUARDPIPE_DATABASE_URL at deploy time."
+  value       = aws_db_instance.main.address
+}
+
+output "rds_port" {
+  value = aws_db_instance.main.port
+}
+
+output "rds_db_name" {
+  value = aws_db_instance.main.db_name
+}
+
+output "rds_master_user_secret_arn" {
+  description = "ARN of the RDS-managed Secrets Manager secret holding the actual master password — never a Terraform-managed value."
+  value       = aws_db_instance.main.master_user_secret[0].secret_arn
+}
+
+output "ecr_repository_urls" {
+  description = "Map of repo name -> full ECR repository URL, for deploy.yml's docker push/tag step."
+  value       = { for name, repo in aws_ecr_repository.images : name => repo.repository_url }
+}
+
+output "jwt_secret_arn" {
+  value = aws_secretsmanager_secret.jwt_secret.arn
+}
+
+output "encryption_key_secret_arn" {
+  value = aws_secretsmanager_secret.encryption_key.arn
+}
+
+output "gemini_api_key_secret_arn" {
+  value = aws_secretsmanager_secret.gemini_api_key.arn
+}
