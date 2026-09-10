@@ -1,0 +1,114 @@
+name: Deploy
+
+# Automatic on push to main (DEPLOYMENT.md §8) — the moment a PR merges,
+# exactly as asked. infra.yml (start/stop, plan) is a completely separate,
+# manual-only workflow — a code push here never touches Terraform.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  # Never cancel a rollout partway through — queue the next push instead of
+  # racing two `kubectl set image` calls against the same Deployments.
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC federation (DEPLOYMENT.md §6) — no static AWS keys anywhere in this repo
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      registry: ${{ steps.ecr-login.outputs.registry }}
+      # sha- prefix matches infra/terraform/persistent's ECR lifecycle policy
+      # (tagPrefixList = ["sha-"]) — both repos are image_tag_mutability =
+      # IMMUTABLE, so this is the only tag any given build ever gets; no
+      # ":latest" (this project already pins everything deliberately —
+      # CLAUDE.md's Gin/k8s.io reasoning — a floating tag here would be the
+      # one exception to that).
+      image_tag: sha-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr-login
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build and push guardpipe
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg VERSION="$IMAGE_TAG" \
+            --build-arg COMMIT_SHA="${{ github.sha }}" \
+            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$REGISTRY/guardpipe:$IMAGE_TAG" .
+          docker push "$REGISTRY/guardpipe:$IMAGE_TAG"
+
+      - name: Build and push guardpipe-web
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/guardpipe-web:$IMAGE_TAG" ./frontend
+          docker push "$REGISTRY/guardpipe-web:$IMAGE_TAG"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ${{ needs.build-and-push.outputs.registry }}
+      IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The one honest caveat (DEPLOYMENT.md §8): if the ephemeral cluster
+      # is torn down (infra.yml "stop") when a PR merges, there's nothing to
+      # roll the just-pushed image out onto. That's expected for an
+      # ephemeral cluster, not a bug — say so plainly instead of a bare red
+      # X from a raw kubectl connection error. The image still built and
+      # landed in ECR either way; bringing the cluster up (infra.yml
+      # "start") deploys the current guardpipe:sha-<HEAD> the moment it's
+      # ready, no re-run of this workflow needed.
+      - name: Update kubeconfig
+        run: |
+          if ! aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}" 2>/tmp/err; then
+            if grep -qi "ResourceNotFoundException\|not found" /tmp/err; then
+              echo "### Cluster is not running" >> "$GITHUB_STEP_SUMMARY"
+              echo "guardpipe:$IMAGE_TAG built and pushed to ECR successfully — nothing to deploy onto right now because the ephemeral EKS cluster is torn down (expected for an ephemeral cluster, not a failure). Run **infra.yml → start**, and it deploys this image on the way up. No need to re-run this workflow." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            cat /tmp/err >&2
+            exit 1
+          fi
+
+      - name: Deploy new image
+        run: |
+          if ! kubectl get deployment guardpipe-api -n "${{ vars.APP_NAMESPACE }}" >/dev/null 2>&1; then
+            echo "### GuardPipe manifests aren't applied yet" >> "$GITHUB_STEP_SUMMARY"
+            echo "guardpipe:$IMAGE_TAG built and pushed to ECR, but the guardpipe-api Deployment doesn't exist yet — this looks like the cluster's very first **infra.yml → start** hasn't run yet (that applies deploy/k8s/ for the first time). Run it once, and this image tag is what it deploys." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          kubectl set image deployment/guardpipe-api guardpipe-api="$REGISTRY/guardpipe:$IMAGE_TAG" -n "${{ vars.APP_NAMESPACE }}"
+          kubectl set image deployment/guardpipe-worker guardpipe-worker="$REGISTRY/guardpipe:$IMAGE_TAG" -n "${{ vars.APP_NAMESPACE }}"
+          kubectl set image deployment/guardpipe-web guardpipe-web="$REGISTRY/guardpipe-web:$IMAGE_TAG" -n "${{ vars.APP_NAMESPACE }}"
+          kubectl rollout status deployment/guardpipe-api -n "${{ vars.APP_NAMESPACE }}" --timeout=5m
+          kubectl rollout status deployment/guardpipe-worker -n "${{ vars.APP_NAMESPACE }}" --timeout=5m
+          kubectl rollout status deployment/guardpipe-web -n "${{ vars.APP_NAMESPACE }}" --timeout=5m
+          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "guardpipe:$IMAGE_TAG is live." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: guardpipe-api
+  namespace: guardpipe
+  annotations:
+    eks.amazonaws.com/role-arn: "${GUARDPIPE_APP_ROLE_ARN}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardpipe-api
+  namespace: guardpipe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guardpipe-api
+  template:
+    metadata:
+      labels:
+        app: guardpipe-api
+    spec:
+      serviceAccountName: guardpipe-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: guardpipe-api
+          image: "${ECR_GUARDPIPE_URL}:${IMAGE_TAG}"
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: guardpipe-config
+            - secretRef:
+                name: guardpipe-secrets
+          env:
+            - name: GUARDPIPE_ROLE
+              value: "api"
+            # Only guardpipe-api runs migrations (see 01-configmap.yaml's
+            # comment) — this explicit entry wins over the ConfigMap's
+            # GUARDPIPE_MIGRATE_ON_START=false from envFrom above.
+            - name: GUARDPIPE_MIGRATE_ON_START
+              value: "true"
+
+            # The distroless image has no shell, so GUARDPIPE_DATABASE_URL
+            # can't be assembled with a wrapper script — it's built with
+            # Kubernetes' own $(VAR) env-value expansion instead, which only
+            # works for vars declared earlier in this same list (envFrom
+            # alone doesn't make them expandable, hence redeclaring
+            # DB_HOST/DB_PORT/DB_NAME here even though envFrom already set
+            # them). libpq keyword/value form (`host=... password=...`),
+            # not a postgres:// URL: RDS's auto-generated master password
+            # is guaranteed to exclude '/', '"', '@' and spaces (its own
+            # documented character-set constraint), but not ':' — which the
+            # URL form's userinfo section would need percent-encoded (no
+            # shell/tool here to do that), while keyword/value form has no
+            # such delimiter collision to begin with.
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef: { name: guardpipe-config, key: DB_HOST }
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef: { name: guardpipe-config, key: DB_PORT }
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef: { name: guardpipe-config, key: DB_NAME }
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: guardpipe-secrets, key: DB_USERNAME }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: guardpipe-secrets, key: DB_PASSWORD }
+            - name: GUARDPIPE_DATABASE_URL
+              value: "host=$(DB_HOST) port=$(DB_PORT) dbname=$(DB_NAME) user=$(DB_USERNAME) password=$(DB_PASSWORD) sslmode=require"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: workspace
+              mountPath: /var/lib/guardpipe/workspace
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          # guardpipe healthcheck (CLAUDE.md: distroless has no curl/wget)
+          # GETs its own /readyz — only meaningful for a role that actually
+          # serves HTTP, which api does (worker doesn't — see 05-worker.yaml).
+          readinessProbe:
+            exec:
+              command: ["/app/guardpipe", "healthcheck"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/app/guardpipe", "healthcheck"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: guardpipe-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardpipe-api
+  namespace: guardpipe
+  annotations:
+    # Target-group-level override (ALB controller reads this from the
+    # Service, not just the Ingress) — api's health path differs from
+    # guardpipe-web's ("/", nginx's own default 200).
+    alb.ingress.kubernetes.io/healthcheck-path: /readyz
+spec:
+  selector:
+    app: guardpipe-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: guardpipe-api
+  namespace: guardpipe
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: guardpipe-api
+  # Pod-level autoscaling within the fixed 2-node capacity already
+  # provisioned (cluster/) — not the node-level autoscaling DEPLOYMENT.md §3
+  # deliberately leaves out (no Karpenter/Cluster Autoscaler). A small range
+  # matches a 2-node budget cluster, not a production fleet.
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

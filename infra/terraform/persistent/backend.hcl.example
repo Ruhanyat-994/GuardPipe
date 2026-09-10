@@ -1,0 +1,7 @@
+# Copy to backend.hcl (gitignored) and fill in the real values from
+# bootstrap/'s outputs (`terraform output` in infra/terraform/bootstrap/),
+# then: terraform init -backend-config=backend.hcl
+bucket         = "guardpipe-tfstate-XXXXXXXX"
+key            = "persistent/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "guardpipe-tfstate-lock"

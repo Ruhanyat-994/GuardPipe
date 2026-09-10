@@ -1,0 +1,90 @@
+# Static frontend (nginx serving the Vite build) — no GUARDPIPE_* env, no
+# secrets, no AWS calls: the browser's own API calls are same-origin relative
+# paths (frontend/.env.production, VITE_API_BASE_URL=/api/v1), resolved by
+# the ALB's own path routing (07-ingress.yaml), not by anything this
+# Deployment configures.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardpipe-web
+  namespace: guardpipe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guardpipe-web
+  template:
+    metadata:
+      labels:
+        app: guardpipe-web
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # nginx:alpine's built-in "nginx" user/group.
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: guardpipe-web
+          image: "${ECR_GUARDPIPE_WEB_URL}:${IMAGE_TAG}"
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              # The one capability this namespace's "restricted" Pod
+              # Security Standard still permits adding back — nginx's
+              # master process needs it to bind port 80 (<1024) without
+              # running as root (CLAUDE.md's non-root posture applies here
+              # too; this is the documented, minimal way to reconcile a
+              # privileged port with a non-root container, not an
+              # exception to that posture).
+              add: ["NET_BIND_SERVICE"]
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardpipe-web
+  namespace: guardpipe
+spec:
+  selector:
+    app: guardpipe-web
+  ports:
+    - port: 80
+      targetPort: 80
