@@ -1,0 +1,270 @@
+name: Infrastructure
+
+# Two very different triggers on purpose (DEPLOYMENT.md §8): a Terraform
+# change gets reviewed as a plan diff on every PR, completely separately from
+# the manual "bring the cluster up / tear it down" button — no code push
+# ever applies or destroys anything by itself.
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "start = terraform apply cluster/ + deploy the app; stop = terraform destroy cluster/ only (persistent/ is never touched by this workflow)"
+        required: true
+        type: choice
+        options:
+          - start
+          - stop
+
+concurrency:
+  # One start/stop (or plan) at a time against the same state — a second
+  # dispatch queued mid-apply would otherwise race the DynamoDB lock into a
+  # confusing failure instead of just waiting its turn.
+  group: infra-cluster
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC federation (DEPLOYMENT.md §6) — no static AWS keys anywhere in this repo
+  contents: read
+
+env:
+  TF_VERSION: "1.9.8"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  # Runs on every PR touching infra/terraform/ — plans BOTH layers (even
+  # though apply/destroy below only ever touches cluster/) so a change to
+  # persistent/ gets the same reviewed-diff treatment before anyone applies
+  # it by hand.
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        layer: [persistent, cluster]
+    defaults:
+      run:
+        working-directory: infra/terraform/${{ matrix.layer }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ matrix.layer }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_DYNAMODB_TABLE }}"
+
+      - name: terraform plan
+        run: |
+          if [ "${{ matrix.layer }}" = "cluster" ]; then
+            terraform plan -input=false -no-color \
+              -var="state_bucket=${{ vars.TF_STATE_BUCKET }}" \
+              -var="state_dynamodb_table=${{ vars.TF_STATE_DYNAMODB_TABLE }}" \
+              -var="state_region=${{ env.AWS_REGION }}" \
+              -var="budget_alert_email=${{ vars.BUDGET_ALERT_EMAIL }}"
+          else
+            terraform plan -input=false -no-color
+          fi
+
+  start:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'start'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform/cluster
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=cluster/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_DYNAMODB_TABLE }}"
+
+      - name: terraform apply
+        run: |
+          terraform apply -input=false -auto-approve \
+            -var="state_bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -var="state_dynamodb_table=${{ vars.TF_STATE_DYNAMODB_TABLE }}" \
+            -var="state_region=${{ env.AWS_REGION }}" \
+            -var="budget_alert_email=${{ vars.BUDGET_ALERT_EMAIL }}"
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Wait for node group
+        run: kubectl wait --for=condition=Ready nodes --all --timeout=5m
+
+      # Everything deploy/k8s/'s manifests need but can't know at authoring
+      # time (RDS endpoint, secret ARNs, IRSA role ARNs, ECR URLs) comes from
+      # this one apply's own state — cluster/outputs.tf pass-throughs mean a
+      # single `terraform output -json` covers persistent/'s values too, no
+      # second init/state lookup needed (DEPLOYMENT.md §5's remote_state
+      # design, put to use here).
+      - name: Export Terraform outputs
+        run: |
+          terraform output -json > /tmp/tf-outputs.json
+          {
+            echo "CLUSTER_NAME=${{ vars.EKS_CLUSTER_NAME }}"
+            echo "AWS_REGION=${{ env.AWS_REGION }}"
+            echo "RDS_HOST=$(jq -r .rds_endpoint.value /tmp/tf-outputs.json)"
+            echo "RDS_PORT=$(jq -r .rds_port.value /tmp/tf-outputs.json)"
+            echo "RDS_DB_NAME=$(jq -r .rds_db_name.value /tmp/tf-outputs.json)"
+            echo "RDS_MASTER_SECRET_ARN=$(jq -r .rds_master_user_secret_arn.value /tmp/tf-outputs.json)"
+            echo "JWT_SECRET_ARN=$(jq -r .jwt_secret_arn.value /tmp/tf-outputs.json)"
+            echo "ENCRYPTION_KEY_SECRET_ARN=$(jq -r .encryption_key_secret_arn.value /tmp/tf-outputs.json)"
+            echo "GEMINI_API_KEY_SECRET_ARN=$(jq -r .gemini_api_key_secret_arn.value /tmp/tf-outputs.json)"
+            echo "ALB_CONTROLLER_ROLE_ARN=$(jq -r .alb_controller_role_arn.value /tmp/tf-outputs.json)"
+            echo "GUARDPIPE_APP_ROLE_ARN=$(jq -r .guardpipe_app_role_arn.value /tmp/tf-outputs.json)"
+            echo "ECR_GUARDPIPE_URL=$(jq -r '.ecr_repository_urls.value.guardpipe' /tmp/tf-outputs.json)"
+            echo "ECR_GUARDPIPE_WEB_URL=$(jq -r '.ecr_repository_urls.value."guardpipe-web"' /tmp/tf-outputs.json)"
+          } >> "$GITHUB_ENV"
+
+      # Both ECR repos are image_tag_mutability = IMMUTABLE (persistent/
+      # main.tf) — deploy.yml never pushes a floating ":latest", every push
+      # to main tags its image sha-<commit>, so "the current image" is
+      # whichever sha-* tag was pushed most recently. There's no
+      # ":latest" to fall back to by design (this project pins everything
+      # deliberately — CLAUDE.md's Gin/k8s.io reasoning).
+      - name: Find the most recently pushed image tag
+        run: |
+          TAG=$(aws ecr describe-images --repository-name guardpipe --region "${{ env.AWS_REGION }}" \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text 2>/dev/null || true)
+          if [ -z "$TAG" ] || [ "$TAG" = "None" ]; then
+            echo "No image has ever been pushed to the guardpipe ECR repo — deploy.yml (push to main) hasn't run yet, so there's nothing for this cluster to run. Push to main first, then start the cluster." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      # In place, on the checked-out working copy only — never written back
+      # to the repo. The explicit variable list keeps this from touching any
+      # unrelated literal `$`/`${...}` text that isn't one of these
+      # placeholders.
+      - name: Substitute manifest placeholders
+        run: |
+          for f in $(grep -rlE '\$\{[A-Z_]+\}' deploy/k8s); do
+            envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_ARN $ENCRYPTION_KEY_SECRET_ARN $GEMINI_API_KEY_SECRET_ARN $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL' \
+              < "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+          done
+
+      # Ordered: cert-manager (the ALB controller's raw-manifest install
+      # needs its Certificate/Issuer CRDs already reconciling before it's
+      # applied — DEPLOYMENT.md's own install docs research, see
+      # aws-load-balancer-controller-v3.5.0-full.yaml's comment) → Secrets
+      # Store CSI driver + AWS provider → ALB controller → the app itself.
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f deploy/k8s/addons/cert-manager-v1.21.1.yaml
+          kubectl rollout status deployment/cert-manager -n cert-manager --timeout=3m
+          kubectl rollout status deployment/cert-manager-cainjector -n cert-manager --timeout=3m
+          kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=3m
+
+      - name: Install Secrets Store CSI driver
+        run: |
+          kubectl apply -f deploy/k8s/addons/secrets-store-csi-driver-v1.6.1/
+          kubectl apply -f deploy/k8s/addons/aws-secrets-provider-2.1.1.yaml
+          kubectl rollout status daemonset/csi-secrets-store -n kube-system --timeout=3m
+          kubectl rollout status daemonset/csi-secrets-store-provider-aws -n kube-system --timeout=3m
+
+      - name: Install AWS Load Balancer Controller
+        run: |
+          kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-ingclass.yaml
+          kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-full.yaml
+          kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=3m
+
+      - name: Apply GuardPipe manifests
+        # Not recursive (kubectl's default) — applies only the top-level
+        # 00-08 files, deploy/k8s/addons/ was already handled above.
+        run: kubectl apply -f deploy/k8s/
+
+      - name: Wait for app rollout
+        run: |
+          kubectl rollout status deployment/guardpipe-api -n ${{ vars.APP_NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/guardpipe-worker -n ${{ vars.APP_NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/guardpipe-web -n ${{ vars.APP_NAMESPACE }} --timeout=5m
+
+      # The ALB hostname doesn't exist until the Ingress above creates it —
+      # 01-configmap.yaml shipped with an obviously-fake placeholder for
+      # GUARDPIPE_BASE_URL/GUARDPIPE_CORS_ORIGINS for exactly this reason.
+      # Patch it to the real value and roll the two Deployments that read it
+      # (a ConfigMap change alone doesn't make a running pod re-read its
+      # env), so this closes the loop in the same job rather than needing a
+      # manual follow-up step.
+      - name: Patch BASE_URL/CORS_ORIGINS to the real ALB hostname
+        run: |
+          echo "Waiting for the ALB hostname to be assigned..."
+          for i in $(seq 1 30); do
+            HOST=$(kubectl get ingress guardpipe -n ${{ vars.APP_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -n "$HOST" ]; then break; fi
+            sleep 10
+          done
+          if [ -z "$HOST" ]; then
+            echo "ALB hostname not assigned after 5m — check \`kubectl get ingress -n ${{ vars.APP_NAMESPACE }}\` and the aws-load-balancer-controller logs manually." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          kubectl patch configmap guardpipe-config -n ${{ vars.APP_NAMESPACE }} --type merge \
+            -p "{\"data\":{\"GUARDPIPE_BASE_URL\":\"http://$HOST\",\"GUARDPIPE_CORS_ORIGINS\":\"http://$HOST\"}}"
+          kubectl rollout restart deployment/guardpipe-api deployment/guardpipe-worker -n ${{ vars.APP_NAMESPACE }}
+          kubectl rollout status deployment/guardpipe-api -n ${{ vars.APP_NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/guardpipe-worker -n ${{ vars.APP_NAMESPACE }} --timeout=5m
+          echo "### GuardPipe is live" >> "$GITHUB_STEP_SUMMARY"
+          echo "http://$HOST" >> "$GITHUB_STEP_SUMMARY"
+
+  stop:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'stop'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform/cluster
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=cluster/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_DYNAMODB_TABLE }}"
+
+      - name: terraform destroy
+        run: |
+          terraform destroy -input=false -auto-approve \
+            -var="state_bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -var="state_dynamodb_table=${{ vars.TF_STATE_DYNAMODB_TABLE }}" \
+            -var="state_region=${{ env.AWS_REGION }}" \
+            -var="budget_alert_email=${{ vars.BUDGET_ALERT_EMAIL }}"

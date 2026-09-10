@@ -41,3 +41,17 @@ guardpipe-jira-import.csv
 TEAM-TASK-SPLIT.md
 INVESTOR-BRIEF.md
 investor-brief-latex/
+DEPLOYMENT.md
+RUNBOOK.md
+DEPLOYMENT-NEXT-STEPS.md
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+backend.hcl
+!backend.hcl.example
+crash.log
+crash.*.log
