@@ -124,7 +124,9 @@ export function resolvePentestFlag(
   id: string,
   status: Exclude<FlagStatus, 'open'>,
 ): Promise<{ id: string; status: FlagStatus }> {
-  return apiClient.patch(`/admin/pentest-flags/${encodeURIComponent(id)}`, { status })
+  return apiClient.patch(`/admin/pentest-flags/${encodeURIComponent(id)}`, {
+    status,
+  })
 }
 
 // --- audit log ---
@@ -146,7 +148,9 @@ export interface AuditLogList {
   pagination: Pagination
 }
 
-export function listAuditLog(filters: { orgId?: string; action?: string } = {}): Promise<AuditLogList> {
+export function listAuditLog(
+  filters: { orgId?: string; action?: string } = {},
+): Promise<AuditLogList> {
   const params = new URLSearchParams()
   if (filters.orgId) params.set('org_id', filters.orgId)
   if (filters.action) params.set('action', filters.action)

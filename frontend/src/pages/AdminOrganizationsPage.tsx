@@ -34,8 +34,8 @@ export function AdminOrganizationsPage() {
     <main className="mx-auto max-w-5xl px-6 py-8">
       <h1 className="text-h1 text-text-primary">Organizations</h1>
       <p className="mb-6 text-body-sm text-text-secondary">
-        Every tenant on the platform — suspend an organization whose account is under
-        investigation, or reinstate one once it's resolved.
+        Every tenant on the platform — suspend an organization whose account is under investigation,
+        or reinstate one once it's resolved.
       </p>
 
       {error && (
