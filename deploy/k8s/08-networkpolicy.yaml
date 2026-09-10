@@ -1,0 +1,144 @@
+# Default-deny + explicit allows (DEPLOYMENT.md §4). Only takes effect
+# because cluster/main.tf's vpc-cni addon has enableNetworkPolicy=true —
+# the default EKS VPC CNI config enforces nothing at all, silently, without
+# that (see the comment there).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: guardpipe
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# DNS must be allowed explicitly even for policies that only care about
+# egress elsewhere — every other allow-rule below depends on a pod being
+# able to resolve a name first (the RDS endpoint, Secrets Manager's/Gemini's/
+# OSV's/GitHub's hostnames, redis's own Service DNS name).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: guardpipe
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# AWS APIs (Secrets Manager, STS for IRSA) plus Gemini/OSV/GitHub — all
+# plain HTTPS to hosts outside the cluster, so there's no in-cluster
+# pod/namespace selector to scope this to; only api/worker call any of them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-https-egress
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["guardpipe-api", "guardpipe-worker"]
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# RDS lives in the persistent VPC but outside the pod network, so this is
+# scoped by CIDR, not a namespace/pod selector — must match
+# infra/terraform/persistent/variables.tf's vpc_cidr if that default (10.0.0.0/16)
+# is ever changed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-egress
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["guardpipe-api", "guardpipe-worker"]
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/16
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["guardpipe-api", "guardpipe-worker"]
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-redis-egress
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["guardpipe-api", "guardpipe-worker"]
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# The ALB's target-group traffic arrives from ENIs outside the pod network
+# (DEPLOYMENT.md §3's target-type: ip) — there's no pod/namespace selector
+# to scope this to, same reasoning as allow-https-egress above.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-alb
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["guardpipe-api", "guardpipe-web"]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0

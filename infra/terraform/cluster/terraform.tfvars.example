@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+state_bucket          = "guardpipe-tfstate-XXXXXXXX" # from bootstrap/'s state_bucket_name output
+state_dynamodb_table  = "guardpipe-tfstate-lock"     # from bootstrap/'s state_lock_table_name output
+budget_alert_email    = "you@example.com"

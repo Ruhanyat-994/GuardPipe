@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: guardpipe-worker
+  namespace: guardpipe
+  annotations:
+    eks.amazonaws.com/role-arn: "${GUARDPIPE_APP_ROLE_ARN}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardpipe-worker
+  namespace: guardpipe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guardpipe-worker
+  template:
+    metadata:
+      labels:
+        app: guardpipe-worker
+    spec:
+      serviceAccountName: guardpipe-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: guardpipe-worker
+          image: "${ECR_GUARDPIPE_URL}:${IMAGE_TAG}"
+          envFrom:
+            - configMapRef:
+                name: guardpipe-config
+            - secretRef:
+                name: guardpipe-secrets
+          env:
+            - name: GUARDPIPE_ROLE
+              value: "worker"
+            # Same DSN-composition mechanism as 04-api.yaml — see its
+            # comment. GUARDPIPE_MIGRATE_ON_START is deliberately NOT
+            # overridden here, so it stays "false" from the ConfigMap: only
+            # guardpipe-api runs migrations, so two Deployments never race
+            # goose on the same rollout.
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef: { name: guardpipe-config, key: DB_HOST }
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef: { name: guardpipe-config, key: DB_PORT }
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef: { name: guardpipe-config, key: DB_NAME }
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: guardpipe-secrets, key: DB_USERNAME }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: guardpipe-secrets, key: DB_PASSWORD }
+            - name: GUARDPIPE_DATABASE_URL
+              value: "host=$(DB_HOST) port=$(DB_PORT) dbname=$(DB_NAME) user=$(DB_USERNAME) password=$(DB_PASSWORD) sslmode=require"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: workspace
+              mountPath: /var/lib/guardpipe/workspace
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          # No readiness/liveness probe: GUARDPIPE_ROLE=worker never binds
+          # an HTTP port (cmd/guardpipe/main.go returns from run() after
+          # starting the worker pool, before the router/listener code —
+          # `guardpipe healthcheck`'s GET to /readyz has nothing to hit
+          # here). Kubernetes' own crash-restart already covers "the
+          # process died"; there's no second HTTP surface to probe.
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: guardpipe-secrets

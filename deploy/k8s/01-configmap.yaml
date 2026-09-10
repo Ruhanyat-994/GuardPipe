@@ -1,0 +1,60 @@
+# Every non-secret GUARDPIPE_* env var (DEPLOYMENT.md §4). Real secrets
+# (JWT/encryption/Gemini keys, RDS credentials) come from
+# 02-secretproviderclass.yaml instead — never here.
+#
+# ${...} placeholders are substituted by infra.yml's "start" job (envsubst,
+# values pulled straight from Terraform outputs) before this is applied —
+# never edited by hand. GUARDPIPE_BASE_URL/GUARDPIPE_CORS_ORIGINS start as
+# an obviously-fake placeholder because the ALB hostname doesn't exist until
+# *after* this ConfigMap is first applied (the Ingress that creates it reads
+# this same manifest set) — infra.yml patches both to the real hostname and
+# rolls guardpipe-api/guardpipe-worker once the ALB is up, later in the same
+# job. See RUNBOOK.md for how to redo this by hand if it's ever needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardpipe-config
+  namespace: guardpipe
+data:
+  GUARDPIPE_ENV: "production"
+  GUARDPIPE_HTTP_PORT: "8080"
+  GUARDPIPE_LOG_LEVEL: "info"
+  GUARDPIPE_BASE_URL: "http://pending.invalid"
+  GUARDPIPE_CORS_ORIGINS: "http://pending.invalid"
+
+  # Not read directly by platform/config — these three exist only so
+  # 04-api.yaml/05-worker.yaml can compose GUARDPIPE_DATABASE_URL via
+  # Kubernetes' native $(VAR) env-value references (the runtime image has no
+  # shell to do it with a script). See the comment there for why the DSN
+  # uses libpq keyword/value form, not a postgres:// URL.
+  DB_HOST: "${RDS_HOST}"
+  DB_PORT: "${RDS_PORT}"
+  DB_NAME: "${RDS_DB_NAME}"
+
+  GUARDPIPE_DB_MAX_CONNS: "25"
+  GUARDPIPE_REDIS_URL: "redis://redis.guardpipe.svc.cluster.local:6379/0"
+  # Only guardpipe-api overrides this to "true" (its own env entry takes
+  # precedence over this ConfigMap) — running it on both Deployments would
+  # let two replicas race goose migrations on every rollout.
+  GUARDPIPE_MIGRATE_ON_START: "false"
+
+  GUARDPIPE_WORKSPACE_ROOT: "/var/lib/guardpipe/workspace"
+  GUARDPIPE_MAX_REPO_MB: "500"
+  GUARDPIPE_WORKER_COUNT: "4"
+
+  # Tier 1 (DEPLOYMENT.md §2): no Docker daemon in this cluster, so no
+  # sandbox — pentest is disabled outright rather than left to register and
+  # fail every job. containerscan/codescan aren't engines this binary even
+  # attempts without their own adapters wired (Phase 8/Phase 7 SonarQube not
+  # deployed here either) — nothing extra to disable for those.
+  GUARDPIPE_PENTEST_ENABLED: "false"
+
+  GUARDPIPE_AI_ENABLED: "true"
+  GUARDPIPE_GEMINI_MODEL_FAST: "gemini-2.5-flash"
+  # gemini-2.5-pro 404s on a free-tier key (.env.example's own note,
+  # BUILD_GUIDE.md Phase 13) — pointed at flash here too.
+  GUARDPIPE_GEMINI_MODEL_SMART: "gemini-2.5-flash"
+  GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN: "100000"
+
+  GUARDPIPE_GATE_WARN: "30"
+  GUARDPIPE_GATE_BLOCK: "70"
