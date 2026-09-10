@@ -3,6 +3,8 @@ package dto
 import (
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 )
@@ -470,4 +472,118 @@ func emptyIfNilStrings(s []string) []string {
 type FindingListResponse struct {
 	Data       []FindingListItemResponse `json:"data"`
 	Pagination Pagination                `json:"pagination"`
+}
+
+// --- scan schedules — BUILD_GUIDE.md Phase 15 (doc debt, see
+// dto/organization.go's own note) ---
+
+// ScanProfileRequest is the "how to run this scan" half of a schedule —
+// the same shape/validation as CreateScanRequest, reused rather than
+// duplicated with a different name.
+type ScanProfileRequest struct {
+	Type          string                `json:"type" validate:"required,oneof=full_supply_chain partial pentest_only"`
+	Engines       []string              `json:"engines" validate:"omitempty,dive,oneof=docreview codescan depscan containerscan k8sscan cicdscan pentest"`
+	Branch        string                `json:"branch"`
+	PentestConfig *PentestConfigRequest `json:"pentest_config,omitempty"`
+}
+
+func (r ScanProfileRequest) toDomain() orchestrator.ScanProfile {
+	engines := make([]domain.EngineID, len(r.Engines))
+	for i, e := range r.Engines {
+		engines[i] = domain.EngineID(e)
+	}
+	profile := orchestrator.ScanProfile{Type: domain.ScanType(r.Type), Engines: engines, Branch: r.Branch}
+	if r.PentestConfig != nil {
+		cfg := r.PentestConfig.toDomain()
+		profile.PentestConfig = &cfg
+	}
+	return profile
+}
+
+func fromScanProfile(p orchestrator.ScanProfile) ScanProfileRequest {
+	engines := make([]string, len(p.Engines))
+	for i, e := range p.Engines {
+		engines[i] = string(e)
+	}
+	return ScanProfileRequest{Type: string(p.Type), Engines: engines, Branch: p.Branch}
+}
+
+// CreateScheduleRequest matches `POST /projects/{id}/schedules`.
+type CreateScheduleRequest struct {
+	CronExpression string             `json:"cron_expression" validate:"required"`
+	Profile        ScanProfileRequest `json:"profile" validate:"required"`
+	AssignedTo     *string            `json:"assigned_to,omitempty"`
+}
+
+func (r CreateScheduleRequest) ToInput() (orchestrator.CreateScheduleInput, error) {
+	in := orchestrator.CreateScheduleInput{CronExpression: r.CronExpression, Profile: r.Profile.toDomain()}
+	if r.AssignedTo != nil && *r.AssignedTo != "" {
+		id, err := uuid.Parse(*r.AssignedTo)
+		if err != nil {
+			return in, err
+		}
+		in.AssignedTo = &id
+	}
+	return in, nil
+}
+
+// UpdateScheduleRequest matches `PATCH /schedules/{id}` — nil fields are
+// left unchanged. ClearAssignedTo (an explicit `"assigned_to": null` in the
+// body, distinguished from the field being omitted) removes an existing
+// assignee.
+type UpdateScheduleRequest struct {
+	CronExpression  *string `json:"cron_expression,omitempty"`
+	Enabled         *bool   `json:"enabled,omitempty"`
+	AssignedTo      *string `json:"assigned_to,omitempty"`
+	ClearAssignedTo bool    `json:"clear_assigned_to,omitempty"`
+}
+
+func (r UpdateScheduleRequest) ToInput() (orchestrator.UpdateScheduleInput, error) {
+	in := orchestrator.UpdateScheduleInput{CronExpression: r.CronExpression, Enabled: r.Enabled, ClearAssignedTo: r.ClearAssignedTo}
+	if r.AssignedTo != nil && *r.AssignedTo != "" {
+		id, err := uuid.Parse(*r.AssignedTo)
+		if err != nil {
+			return in, err
+		}
+		in.AssignedTo = &id
+	}
+	return in, nil
+}
+
+// ScanScheduleResponse matches `GET /projects/{id}/schedules` and
+// `GET/PATCH /schedules/{id}`.
+type ScanScheduleResponse struct {
+	ID             string             `json:"id"`
+	ProjectID      string             `json:"project_id"`
+	CronExpression string             `json:"cron_expression"`
+	Profile        ScanProfileRequest `json:"profile"`
+	AssignedTo     *string            `json:"assigned_to"`
+	CreatedBy      *string            `json:"created_by"`
+	Enabled        bool               `json:"enabled"`
+	NextRunAt      time.Time          `json:"next_run_at"`
+	LastRunAt      *time.Time         `json:"last_run_at"`
+	LastRunStatus  string             `json:"last_run_status"`
+	CreatedAt      time.Time          `json:"created_at"`
+}
+
+func FromScanSchedule(s orchestrator.ScanSchedule) ScanScheduleResponse {
+	resp := ScanScheduleResponse{
+		ID: s.ID.String(), ProjectID: s.ProjectID.String(), CronExpression: s.CronExpression,
+		Profile: fromScanProfile(s.Profile), Enabled: s.Enabled, NextRunAt: s.NextRunAt,
+		LastRunAt: s.LastRunAt, LastRunStatus: s.LastRunStatus, CreatedAt: s.CreatedAt,
+	}
+	if s.AssignedTo != nil {
+		v := s.AssignedTo.String()
+		resp.AssignedTo = &v
+	}
+	if s.CreatedBy != nil {
+		v := s.CreatedBy.String()
+		resp.CreatedBy = &v
+	}
+	return resp
+}
+
+// ScanScheduleListResponse matches `GET /projects/{id}/schedules`.
+type ScanScheduleListResponse struct {
+	Data []ScanScheduleResponse `json:"data"`
 }

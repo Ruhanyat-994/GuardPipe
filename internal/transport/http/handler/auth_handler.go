@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
 	"github.com/Ruhanyat-994/GuardPipe/internal/transport/http/dto"
@@ -40,6 +42,17 @@ const refreshCookiePath = "/api/v1/auth"
 type AuthHandler struct {
 	svc             identity.Service
 	operators       OperatorLookup
+	// orgSvc backs the one BUILD_GUIDE.md Phase 15 addition to this
+	// handler — SwitchOrg (`POST /auth/switch-org`) — kept here rather than
+	// on a separate OrganizationHandler because it needs the exact same
+	// refresh-cookie machinery (setRefreshCookie) Login/Refresh already
+	// have; may be nil in a test that never exercises SwitchOrg.
+	orgSvc organization.Service
+	// projectSvc backs the project-collaborators follow-up's own addition
+	// to this handler — SwitchProject (`POST /auth/switch-project/{id}`) —
+	// kept here for the exact same reason orgSvc is: it needs
+	// setRefreshCookie. May be nil in a test that never exercises it.
+	projectSvc      project.Service
 	validator       *validate.Validator
 	secureCookies   bool
 	refreshTokenTTL time.Duration
@@ -52,9 +65,10 @@ type AuthHandler struct {
 // (documentation/07-api-specification.md's cookie is written assuming an
 // HTTPS deployment; this parameter is the documented deviation for local
 // dev, see PROGRESS-LOG.md). operators is never nil in production
-// (cmd/guardpipe/main.go always wires modules/admin).
-func NewAuthHandler(svc identity.Service, operators OperatorLookup, validator *validate.Validator, secureCookies bool, refreshTokenTTL time.Duration) *AuthHandler {
-	return &AuthHandler{svc: svc, operators: operators, validator: validator, secureCookies: secureCookies, refreshTokenTTL: refreshTokenTTL}
+// (cmd/guardpipe/main.go always wires modules/admin); orgSvc likewise
+// (modules/organization, BUILD_GUIDE.md Phase 15).
+func NewAuthHandler(svc identity.Service, operators OperatorLookup, orgSvc organization.Service, projectSvc project.Service, validator *validate.Validator, secureCookies bool, refreshTokenTTL time.Duration) *AuthHandler {
+	return &AuthHandler{svc: svc, operators: operators, orgSvc: orgSvc, projectSvc: projectSvc, validator: validator, secureCookies: secureCookies, refreshTokenTTL: refreshTokenTTL}
 }
 
 // isOperator is a small helper so Login/Me don't each repeat the same
@@ -160,7 +174,73 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.FromUser(user, h.isOperator(c.Request.Context(), user.ID)))
+	c.JSON(http.StatusOK, dto.FromUserInOrg(user, actor.OrgID, actor.Role, actor.ProjectID, h.isOperator(c.Request.Context(), user.ID)))
+}
+
+// SwitchOrg is `POST /auth/switch-org` (BUILD_GUIDE.md Phase 15) — re-issues
+// a token pair scoped to a different organisation the caller already holds
+// a membership in (organization.Service.SwitchOrg does the actual
+// membership check); `403` for any org they don't.
+func (h *AuthHandler) SwitchOrg(c *gin.Context) {
+	var req dto.SwitchOrgRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.Validation("identity.invalid_body", "request body could not be parsed", nil))
+		return
+	}
+	if fieldErrs := h.validator.Struct(req); len(fieldErrs) > 0 {
+		c.Error(apperrors.Validation("identity.invalid_input", "one or more fields are invalid", toAppFieldErrors(fieldErrs)))
+		return
+	}
+	orgID, err := uuid.Parse(req.OrgID)
+	if err != nil {
+		c.Error(apperrors.Validation("identity.invalid_input", "org_id is not a valid UUID", nil))
+		return
+	}
+	actor, ok := middleware.ActorFromContext(c)
+	if !ok {
+		c.Error(apperrors.Internal(errors.New("SwitchOrg handler reached without an authenticated actor")))
+		return
+	}
+
+	result, err := h.orgSvc.SwitchOrg(c.Request.Context(), actor, orgID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	h.setRefreshCookie(c, result.RefreshToken)
+	c.JSON(http.StatusOK, dto.SwitchOrgResponse{
+		AccessToken: result.AccessToken, TokenType: "Bearer", ExpiresIn: result.ExpiresIn,
+	})
+}
+
+// SwitchProject is `POST /auth/switch-project/{id}` (project-collaborators
+// follow-up) — re-issues a token pair scoped to exactly one project the
+// caller holds an accepted collaborator grant on
+// (project.Service.SwitchProject does the actual grant check); `403` for
+// any project they don't.
+func (h *AuthHandler) SwitchProject(c *gin.Context) {
+	projectID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.Error(apperrors.Validation("identity.invalid_input", "id is not a valid UUID", nil))
+		return
+	}
+	actor, ok := middleware.ActorFromContext(c)
+	if !ok {
+		c.Error(apperrors.Internal(errors.New("SwitchProject handler reached without an authenticated actor")))
+		return
+	}
+
+	result, err := h.projectSvc.SwitchProject(c.Request.Context(), actor, projectID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	h.setRefreshCookie(c, result.RefreshToken)
+	c.JSON(http.StatusOK, dto.SwitchOrgResponse{
+		AccessToken: result.AccessToken, TokenType: "Bearer", ExpiresIn: result.ExpiresIn,
+	})
 }
 
 func (h *AuthHandler) setRefreshCookie(c *gin.Context, token string) {

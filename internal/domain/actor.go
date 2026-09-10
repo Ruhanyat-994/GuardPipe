@@ -35,4 +35,13 @@ type Actor struct {
 	UserID uuid.UUID
 	OrgID  uuid.UUID
 	Role   Role
+	// ProjectID is nil for every ordinary org-scoped actor. It is set only
+	// when the caller has switched into a single project shared with them
+	// as an external collaborator (POST /auth/switch-project/{id}) — such a
+	// session may act only on this one project (and whatever hangs off it —
+	// scans, findings, documents, targets, reports), never anything else in
+	// that project's organisation. Checked centrally in
+	// project.service.getOwnedProject; every other project/scan/finding/
+	// report authorisation check in the codebase funnels through it.
+	ProjectID *uuid.UUID
 }

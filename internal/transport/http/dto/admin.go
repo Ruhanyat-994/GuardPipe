@@ -109,14 +109,14 @@ type TargetInfoResponse struct {
 // PentestFlagResponse matches one row of `GET /admin/pentest-flags` and the
 // response of `POST`/`PATCH` against it.
 type PentestFlagResponse struct {
-	ID         string     `json:"id"`
-	Status     string     `json:"status"`
-	Source     string     `json:"source"`
-	Reason     string     `json:"reason"`
-	ReportedBy *string    `json:"reported_by"`
-	ResolvedBy *string    `json:"resolved_by"`
-	ResolvedAt *time.Time `json:"resolved_at"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID         string             `json:"id"`
+	Status     string             `json:"status"`
+	Source     string             `json:"source"`
+	Reason     string             `json:"reason"`
+	ReportedBy *string            `json:"reported_by"`
+	ResolvedBy *string            `json:"resolved_by"`
+	ResolvedAt *time.Time         `json:"resolved_at"`
+	CreatedAt  time.Time          `json:"created_at"`
 	Target     TargetInfoResponse `json:"target"`
 }
 
@@ -214,11 +214,11 @@ type EngineJobStatsResponse struct {
 // AiPanel unavailable-state convention.
 type SystemHealthResponse struct {
 	EngineStats              []EngineJobStatsResponse `json:"engine_stats"`
-	JobsInFlight              int                      `json:"jobs_in_flight"`
-	SandboxContainersRunning *int                      `json:"sandbox_containers_running"`
-	Gemini                   GeminiPoolStatusResponse  `json:"gemini"`
-	AICache                  AICacheStatusResponse     `json:"ai_cache"`
-	CheckedAt                time.Time                 `json:"checked_at"`
+	JobsInFlight             int                      `json:"jobs_in_flight"`
+	SandboxContainersRunning *int                     `json:"sandbox_containers_running"`
+	Gemini                   GeminiPoolStatusResponse `json:"gemini"`
+	AICache                  AICacheStatusResponse    `json:"ai_cache"`
+	CheckedAt                time.Time                `json:"checked_at"`
 }
 
 type GeminiPoolStatusResponse struct {
@@ -240,7 +240,7 @@ func FromSystemHealth(h admin.SystemHealth) SystemHealthResponse {
 	}
 	return SystemHealthResponse{
 		EngineStats:              stats,
-		JobsInFlight:              h.JobsInFlight,
+		JobsInFlight:             h.JobsInFlight,
 		SandboxContainersRunning: h.SandboxContainersRunning,
 		Gemini:                   GeminiPoolStatusResponse{Available: h.Gemini.Available, PoolSize: h.Gemini.PoolSize, CurrentIndex: h.Gemini.CurrentIndex},
 		AICache:                  AICacheStatusResponse{Available: h.AICache.Available, Hits: h.AICache.Hits, Misses: h.AICache.Misses},

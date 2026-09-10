@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
@@ -60,12 +61,18 @@ func (f *fakeIdentityService) Me(context.Context, domain.Actor) (*identity.User,
 	return f.meUser, f.meErr
 }
 func (f *fakeIdentityService) CheckSuspension(context.Context, domain.Actor) error { return nil }
+func (f *fakeIdentityService) IssueTokenPairForOrg(context.Context, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
+	return nil, nil
+}
+func (f *fakeIdentityService) IssueTokenPairForProject(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, domain.Role) (*identity.TokenPair, error) {
+	return nil, nil
+}
 
 func newRouter(svc identity.Service) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.ErrorMapper())
 	v := validate.New()
-	h := handler.NewAuthHandler(svc, nil, v, false, 7*24*time.Hour)
+	h := handler.NewAuthHandler(svc, nil, nil, nil, v, false, 7*24*time.Hour)
 
 	r.POST("/register", h.Register)
 	r.POST("/login", h.Login)

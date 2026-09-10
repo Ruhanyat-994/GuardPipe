@@ -12,10 +12,15 @@ import (
 )
 
 // accessTokenClaims carries exactly the fields documented in
-// documentation/05-module-specifications.md §3: "claims sub/org_id/role/jti/iat/exp".
+// documentation/05-module-specifications.md §3: "claims sub/org_id/role/jti/iat/exp",
+// plus the optional project_id scope (project-collaborators follow-up) —
+// omitted entirely for every ordinary token, present only for a session
+// switched into one shared project (see domain.Actor.ProjectID's own doc
+// comment).
 type accessTokenClaims struct {
-	OrgID string `json:"org_id"`
-	Role  string `json:"role"`
+	OrgID     string  `json:"org_id"`
+	Role      string  `json:"role"`
+	ProjectID *string `json:"project_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -35,8 +40,10 @@ func NewTokenIssuer(secret []byte, ttl time.Duration) *TokenIssuer {
 	return &TokenIssuer{secret: secret, ttl: ttl}
 }
 
-// Issue mints a new access token for the given identity.
-func (t *TokenIssuer) Issue(userID, orgID uuid.UUID, role domain.Role) (string, error) {
+// Issue mints a new access token for the given identity. projectID is nil
+// for every ordinary token; non-nil only for a session scoped to one shared
+// project (see accessTokenClaims' own doc comment).
+func (t *TokenIssuer) Issue(userID, orgID uuid.UUID, role domain.Role, projectID *uuid.UUID) (string, error) {
 	now := time.Now().UTC()
 	claims := accessTokenClaims{
 		OrgID: orgID.String(),
@@ -47,6 +54,10 @@ func (t *TokenIssuer) Issue(userID, orgID uuid.UUID, role domain.Role) (string, 
 			ExpiresAt: jwt.NewNumericDate(now.Add(t.ttl)),
 			ID:        id.New().String(),
 		},
+	}
+	if projectID != nil {
+		s := projectID.String()
+		claims.ProjectID = &s
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(t.secret)
@@ -86,10 +97,19 @@ func (t *TokenIssuer) Parse(tokenString string) (*Claims, error) {
 	if err != nil {
 		return nil, fmt.Errorf("identity: malformed org_id claim: %w", err)
 	}
+	var projectID *uuid.UUID
+	if claims.ProjectID != nil {
+		pID, err := uuid.Parse(*claims.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("identity: malformed project_id claim: %w", err)
+		}
+		projectID = &pID
+	}
 
 	return &Claims{
 		UserID:    userID,
 		OrgID:     orgID,
+		ProjectID: projectID,
 		Role:      domain.Role(claims.Role),
 		JTI:       claims.ID,
 		IssuedAt:  claims.IssuedAt.Time,

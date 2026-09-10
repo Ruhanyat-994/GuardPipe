@@ -42,6 +42,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
@@ -127,6 +128,19 @@ func run() error {
 
 	auditSvc := audit.NewService(repo.NewAuditRepo(db.Pool), log)
 
+	// membershipRepo is shared by identity's MembershipRoleReader,
+	// project's/orchestrator's MembershipChecker, and modules/organization
+	// itself below — one repo struct against organization_memberships
+	// satisfying every module's own narrow interface for it (BUILD_GUIDE.md
+	// Phase 15).
+	membershipRepo := repo.NewMembershipRepo(db.Pool)
+	// projectCollaboratorRepo is shared the same way membershipRepo is —
+	// identity's ProjectCollaboratorRoleReader (a plain repo read, wired
+	// before identity.Service exists) and project's
+	// ProjectCollaboratorRepository (project-collaborators follow-up) both
+	// against project_collaborators.
+	projectCollaboratorRepo := repo.NewProjectCollaboratorRepo(db.Pool)
+
 	identitySvc := identity.NewService(
 		repo.NewUserRepo(db.Pool),
 		repo.NewOrganizationRepo(db.Pool),
@@ -136,6 +150,8 @@ func run() error {
 		cfg.Security.AccessTokenTTL,
 		cfg.Security.RefreshTokenTTL,
 		cfg.Security.SessionAbsoluteTTL,
+		membershipRepo,
+		projectCollaboratorRepo,
 	)
 
 	githubClient := github.NewClient(cfg.External.GitHubAPIURL, nil)
@@ -147,7 +163,13 @@ func run() error {
 		repo.NewTargetRepo(db.Pool),
 		repo.NewAttestationRepo(db.Pool),
 		repo.NewDocumentRepo(db.Pool),
+		repo.NewProjectAssignmentRepo(db.Pool),
+		repo.NewProjectInviteRepo(db.Pool),
+		projectCollaboratorRepo,
+		membershipRepo,
 		repo.NewUserRepo(db.Pool),
+		repo.NewOrganizationRepo(db.Pool),
+		identitySvc,
 		vcsSvc,
 		net.DefaultResolver,
 		auditSvc,
@@ -303,6 +325,7 @@ func run() error {
 		repo.NewScanRepo(db.Pool), repo.NewScanJobRepo(db.Pool), repo.NewFindingRepo(db.Pool), repo.NewRiskAssessmentRepo(db.Pool),
 		projectSvc, jobQueue, registry, pentestCeiling,
 		liveProgress, cfg.Scanning.EngineTimeouts, defaultEngineTimeout, auditSvc,
+		repo.NewScanScheduleRepo(db.Pool), membershipRepo,
 	)
 
 	// scorer's thresholds come from the same GUARDPIPE_GATE_WARN/BLOCK config
@@ -342,8 +365,16 @@ func run() error {
 	if cfg.Core.Role != config.RoleAPI {
 		workerCtx, stopWorkers = context.WithCancel(context.Background())
 		go pool.Start(workerCtx)
-		defer stopWorkers()
 		log.Info("worker pool started", "size", cfg.Scanning.WorkerCount, "engines", registry.IDs())
+
+		// BUILD_GUIDE.md Phase 15's cron scan scheduler — the same role
+		// split as the worker pool above (never GUARDPIPE_ROLE=api), no new
+		// deployment shape.
+		scheduler := &orchestrator.Scheduler{Schedules: repo.NewScanScheduleRepo(db.Pool), Orchestrator: orchestratorSvc, Log: log}
+		go scheduler.Start(workerCtx)
+		log.Info("scan scheduler started")
+
+		defer stopWorkers()
 	}
 
 	if cfg.Core.Role == config.RoleWorker {
@@ -385,6 +416,19 @@ func run() error {
 		aiCacheHealthReader,
 	)
 
+	// modules/organization (BUILD_GUIDE.md Phase 15) — multi-member orgs,
+	// invites, switch-org. Depends on identitySvc for token reissuance
+	// (SwitchOrg) — see organization.Service's own doc comment on the
+	// dependency direction.
+	orgSvc := organization.NewService(
+		membershipRepo,
+		repo.NewInviteRepo(db.Pool),
+		repo.NewUserRepo(db.Pool),
+		repo.NewOrganizationRepo(db.Pool),
+		identitySvc,
+		auditSvc,
+	)
+
 	router := transporthttp.NewRouter(transporthttp.RouterConfig{
 		Logger:          log,
 		CORSOrigins:     cfg.Security.CORSOrigins,
@@ -393,6 +437,7 @@ func run() error {
 		AdvisorySvc:     advisorySvc,
 		OrchestratorSvc: orchestratorSvc,
 		AdminSvc:        adminSvc,
+		OrgSvc:          orgSvc,
 		Users:           repo.NewUserRepo(db.Pool),
 		AISvc:           aiSvc,
 		HealthDB:        db,

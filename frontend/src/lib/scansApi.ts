@@ -56,6 +56,17 @@ export interface PentestConfigInput {
   subdomain_enum?: boolean
 }
 
+// RiskAssessment matches `GET /scans/{id}`'s "risk" field
+// (modules/scoring, Phase 13) — null until the scan's last job finalizes.
+// Team Dashboard (BUILD_GUIDE.md Phase 15) is the first screen to actually
+// read `verdict`; every earlier dashboard still uses the client-side
+// provisional `computeRiskScore` (lib/riskScore.ts) instead — pre-existing
+// frontend debt, not something this pass takes on for those screens.
+export interface RiskAssessment {
+  score: number
+  verdict: 'pass' | 'warn' | 'block'
+}
+
 export interface Scan {
   id: string
   project_id: string
@@ -68,7 +79,7 @@ export interface Scan {
   started_at: string | null
   finished_at: string | null
   finding_counts: Record<string, number>
-  risk: unknown
+  risk: RiskAssessment | null
   jobs: Job[]
   // This scan's 1-based position among its own project's scans (oldest =
   // 1) — rendered as "Scan #N" in place of the raw UUID prefix.
@@ -288,4 +299,64 @@ export async function exportScan(scanId: string, format: ExportFormat): Promise<
   // after click() can race the browser's own download start in some
   // browsers, silently producing an empty/failed download.
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
+// --- scan schedules — BUILD_GUIDE.md Phase 15 ---
+
+/** Same shape as CreateScanInput minus the pentest_config's own request
+ * shape difference — reused as-is server-side (orchestrator.ScanProfile's
+ * own doc comment). */
+export interface ScanProfileInput {
+  type: ScanType
+  engines?: Engine[]
+  pentest_config?: PentestConfigInput
+}
+
+export interface ScanSchedule {
+  id: string
+  project_id: string
+  cron_expression: string
+  profile: ScanProfileInput
+  assigned_to: string | null
+  created_by: string | null
+  enabled: boolean
+  next_run_at: string
+  last_run_at: string | null
+  last_run_status: string
+  created_at: string
+}
+
+export interface CreateScheduleInput {
+  cron_expression: string
+  profile: ScanProfileInput
+  assigned_to?: string
+}
+
+export interface UpdateScheduleInput {
+  cron_expression?: string
+  enabled?: boolean
+  assigned_to?: string
+  clear_assigned_to?: boolean
+}
+
+export function createSchedule(
+  projectId: string,
+  input: CreateScheduleInput,
+): Promise<ScanSchedule> {
+  return apiClient.post<ScanSchedule>(`/projects/${projectId}/schedules`, input)
+}
+
+export function listSchedules(projectId: string): Promise<{ data: ScanSchedule[] }> {
+  return apiClient.get(`/projects/${projectId}/schedules`)
+}
+
+export function updateSchedule(
+  scheduleId: string,
+  input: UpdateScheduleInput,
+): Promise<ScanSchedule> {
+  return apiClient.patch<ScanSchedule>(`/schedules/${scheduleId}`, input)
+}
+
+export function deleteSchedule(scheduleId: string): Promise<void> {
+  return apiClient.delete(`/schedules/${scheduleId}`)
 }

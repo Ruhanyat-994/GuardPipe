@@ -11,6 +11,8 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/id"
 )
@@ -28,7 +30,25 @@ func NewOrganizationRepo(db Querier) *OrganizationRepo {
 var (
 	_ identity.OrganizationRepository = (*OrganizationRepo)(nil)
 	_ admin.OrganizationRepository    = (*OrganizationRepo)(nil)
+	_ organization.OrganizationReader = (*OrganizationRepo)(nil)
+	_ project.OrganizationNameLookup  = (*OrganizationRepo)(nil)
 )
+
+// GetName satisfies organization.OrganizationReader (BUILD_GUIDE.md
+// Phase 15) — the org-switcher's display name lookup, on the same struct
+// that already implements identity.OrganizationRepository and
+// admin.OrganizationRepository against this table.
+func (r *OrganizationRepo) GetName(ctx context.Context, orgID uuid.UUID) (string, error) {
+	const q = `SELECT name FROM organizations WHERE id = $1`
+	var name string
+	if err := r.db.QueryRow(ctx, q, orgID).Scan(&name); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", apperrors.NotFound("organization.not_found", "organization not found")
+		}
+		return "", fmt.Errorf("repo: get organization name: %w", err)
+	}
+	return name, nil
+}
 
 // Create makes a brand-new organisation and returns its id. Every
 // registration calls this once (internal/modules/identity/service.go) so
