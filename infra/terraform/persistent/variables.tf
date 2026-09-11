@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region everything in this deployment lives in."
   type        = string
-  default     = "us-east-1"
+  default     = "ap-northeast-1"
 }
 
 variable "project" {
@@ -70,9 +70,9 @@ variable "db_allocated_storage_gb" {
 }
 
 variable "db_engine_version" {
-  description = "PostgreSQL major.minor version — matches CLAUDE.md's \"PostgreSQL 16 is the system of record.\""
+  description = "PostgreSQL major.minor version — matches CLAUDE.md's \"PostgreSQL 16 is the system of record.\" 16.4 (this repo's original pin) has since been retired by AWS; confirmed 2026-09-12 via `aws rds describe-db-engine-versions` that 16.15 is current and orderable for db.t4g.micro in ap-northeast-1."
   type        = string
-  default     = "16.4"
+  default     = "16.15"
 }
 
 variable "ecr_repository_names" {

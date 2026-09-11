@@ -3,5 +3,5 @@
 # then: terraform init -backend-config=backend.hcl
 bucket         = "guardpipe-tfstate-XXXXXXXX"
 key            = "persistent/terraform.tfstate"
-region         = "us-east-1"
+region         = "ap-northeast-1"
 dynamodb_table = "guardpipe-tfstate-lock"

@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region everything in this deployment lives in."
   type        = string
-  default     = "us-east-1"
+  default     = "ap-northeast-1"
 }
 
 variable "project" {

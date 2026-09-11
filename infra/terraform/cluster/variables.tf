@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region — must match persistent/'s region."
   type        = string
-  default     = "us-east-1"
+  default     = "ap-northeast-1"
 }
 
 variable "project" {
@@ -31,17 +31,21 @@ variable "state_dynamodb_table" {
 variable "state_region" {
   description = "Region the Terraform state bucket/lock table live in."
   type        = string
-  default     = "us-east-1"
+  default     = "ap-northeast-1"
 }
 
 # Confirm this is still a currently-supported EKS version in the AWS Console
 # before the first real apply (AWS deprecates old versions on its own
 # schedule) — same "verify before relying on it" caution as persistent/'s
-# db_instance_class Free-Tier note.
+# db_instance_class Free-Tier note. 1.31 (this repo's original pin) left
+# standard support on 2025-11-26 — checked 2026-09-12 via
+# `aws eks describe-cluster-versions`, EKS would silently bill Extended
+# Support surcharges on top of the control-plane hourly rate for it now. 1.32
+# is the oldest version still inside standard support (until 2026-03-23).
 variable "cluster_version" {
   description = "Kubernetes version for the EKS control plane."
   type        = string
-  default     = "1.31"
+  default     = "1.32"
 }
 
 # Fixed node count, no autoscaler (DEPLOYMENT.md §3: "at this scale,
