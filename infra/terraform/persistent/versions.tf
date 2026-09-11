@@ -1,5 +1,5 @@
 # Applied once, essentially never destroyed (DEPLOYMENT.md §1a/§5): VPC,
-# RDS, ECR, Secrets Manager, the "cluster access" SG. cluster/ reads this
+# RDS, ECR, SSM Parameter Store secrets, the "cluster access" SG. cluster/ reads this
 # config's outputs via terraform_remote_state — never re-creates any of it.
 #
 # Backend is a *partial* S3 config on purpose: the bucket name bootstrap/

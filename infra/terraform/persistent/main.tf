@@ -223,25 +223,60 @@ resource "aws_ecr_lifecycle_policy" "images" {
 }
 
 ## ---------------------------------------------------------------------------
-## Secrets Manager — application secrets, created as empty shells
-## (DEPLOYMENT.md §6). Real values are populated once, by hand, after apply
-## (`aws secretsmanager put-secret-value`) — never written into this config
-## or Terraform state. GUARDPIPE_DATABASE_URL isn't one of these: it's
-## assembled at deploy time from aws_db_instance.main's endpoint plus the
-## RDS-managed master-password secret above.
+## SSM Parameter Store (Standard tier, SecureString) — application secrets.
+## Cheaper than Secrets Manager for these three: Standard-tier parameters
+## are $0/month storage and $0 per API call (vs. $0.40/secret/month + $0.05
+## per 10k calls each), and none of these three ever needed Secrets
+## Manager's native rotation — they're populated by hand once, same as
+## before. Encrypted with the AWS-managed `alias/aws/ssm` KMS key (free);
+## a customer-managed key would add a flat $1/month regardless of which
+## secret store it backs, so deliberately not used here.
+##
+## The RDS master password stays in Secrets Manager (below, via
+## manage_master_user_password) — that one can't move, since RDS's native
+## rotation is what actually manages it.
+##
+## Terraform's SSM parameter resource requires a `value` at creation time
+## (unlike Secrets Manager, which allows a container with no version at
+## all) — so `value` starts as an obvious placeholder and
+## `lifecycle.ignore_changes` stops every later `apply` from stomping the
+## real value back to it once it's set by hand
+## (`aws ssm put-parameter --overwrite`), never written into this config or
+## Terraform state.
 ## ---------------------------------------------------------------------------
 
-resource "aws_secretsmanager_secret" "jwt_secret" {
-  name        = "${var.project}/jwt-secret"
+resource "aws_ssm_parameter" "jwt_secret" {
+  name        = "/${var.project}/jwt-secret"
   description = "GUARDPIPE_JWT_SECRET — value populated by hand after apply, never by Terraform."
+  type        = "SecureString"
+  tier        = "Standard"
+  value       = "REPLACE_ME_MANUALLY_AFTER_APPLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
-resource "aws_secretsmanager_secret" "encryption_key" {
-  name        = "${var.project}/encryption-key"
+resource "aws_ssm_parameter" "encryption_key" {
+  name        = "/${var.project}/encryption-key"
   description = "GUARDPIPE_ENCRYPTION_KEY — value populated by hand after apply, never by Terraform."
+  type        = "SecureString"
+  tier        = "Standard"
+  value       = "REPLACE_ME_MANUALLY_AFTER_APPLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
-resource "aws_secretsmanager_secret" "gemini_api_key" {
-  name        = "${var.project}/gemini-api-key"
+resource "aws_ssm_parameter" "gemini_api_key" {
+  name        = "/${var.project}/gemini-api-key"
   description = "GUARDPIPE_GEMINI_API_KEY(S) — value populated by hand after apply, never by Terraform."
+  type        = "SecureString"
+  tier        = "Standard"
+  value       = "REPLACE_ME_MANUALLY_AFTER_APPLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }

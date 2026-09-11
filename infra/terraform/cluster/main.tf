@@ -261,16 +261,20 @@ resource "aws_iam_role_policy_attachment" "alb_controller" {
 }
 
 ## ---------------------------------------------------------------------------
-## IRSA — guardpipe-api / guardpipe-worker: least-privilege Secrets Manager
-## read access, scoped to the exact ARNs those two Deployments need
-## (DEPLOYMENT.md §6) — nothing broader, and not shared with the ALB
-## controller's own role above.
+## IRSA — guardpipe-api / guardpipe-worker: least-privilege read access,
+## scoped to the exact resources those two Deployments need (DEPLOYMENT.md
+## §6) — nothing broader, and not shared with the ALB controller's own role
+## above. Two different stores on purpose: the RDS-managed master password
+## is still Secrets Manager (native rotation, can't move); the three
+## application secrets (jwt/encryption/gemini) are SSM Parameter Store
+## SecureString, cheaper for values nothing ever rotates automatically —
+## see persistent/main.tf's comment above aws_ssm_parameter.jwt_secret.
 ## ---------------------------------------------------------------------------
 
 # Any of app_service_accounts (guardpipe-api, guardpipe-worker) may assume
-# this role — both need the same Secrets Manager reads, so one shared role
-# is the established pattern here (CLAUDE.md's "one repo struct, several
-# modules' interfaces" reasoning applied to IAM instead). Built via jsonencode
+# this role — both need the same secret reads, so one shared role is the
+# established pattern here (CLAUDE.md's "one repo struct, several modules'
+# interfaces" reasoning applied to IAM instead). Built via jsonencode
 # rather than aws_iam_policy_document because it needs one Statement entry
 # per service account name, generated with a for expression.
 resource "aws_iam_role" "guardpipe_app" {
@@ -295,15 +299,36 @@ resource "aws_iam_role" "guardpipe_app" {
   })
 }
 
+## kms:Decrypt on the AWS-managed alias/aws/ssm key is required for
+## GetParameter with decryption on a SecureString — even though the key's
+## own resource policy already trusts the account, the calling principal
+## still needs the IAM-side grant. Looked up rather than hand-pinned so it
+## keeps working if AWS ever rotates the key behind the alias.
+data "aws_kms_alias" "ssm" {
+  name = "alias/aws/ssm"
+}
+
 data "aws_iam_policy_document" "guardpipe_app_secrets" {
   statement {
-    actions = ["secretsmanager:GetSecretValue"]
+    sid       = "RdsManagedMasterPassword"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [data.terraform_remote_state.persistent.outputs.rds_master_user_secret_arn]
+  }
+
+  statement {
+    sid     = "AppParameters"
+    actions = ["ssm:GetParameter"]
     resources = [
-      data.terraform_remote_state.persistent.outputs.jwt_secret_arn,
-      data.terraform_remote_state.persistent.outputs.encryption_key_secret_arn,
-      data.terraform_remote_state.persistent.outputs.gemini_api_key_secret_arn,
-      data.terraform_remote_state.persistent.outputs.rds_master_user_secret_arn,
+      data.terraform_remote_state.persistent.outputs.jwt_secret_parameter_arn,
+      data.terraform_remote_state.persistent.outputs.encryption_key_parameter_arn,
+      data.terraform_remote_state.persistent.outputs.gemini_api_key_parameter_arn,
     ]
+  }
+
+  statement {
+    sid       = "DecryptAppParameters"
+    actions   = ["kms:Decrypt"]
+    resources = [data.aws_kms_alias.ssm.target_key_arn]
   }
 }
 

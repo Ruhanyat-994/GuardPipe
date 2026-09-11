@@ -97,7 +97,7 @@ variable "app_namespace" {
 }
 
 variable "app_service_accounts" {
-  description = "Service account names (in app_namespace) that need Secrets Manager read access — one shared IRSA role covers both, least privilege scoped to the exact secret ARNs in main.tf."
+  description = "Service account names (in app_namespace) that need read access to the app secrets (Secrets Manager for the RDS password, SSM Parameter Store for the rest) — one shared IRSA role covers both, least privilege scoped to the exact resources in main.tf."
   type        = list(string)
   default     = ["guardpipe-api", "guardpipe-worker"]
 }

@@ -36,14 +36,32 @@ output "ecr_repository_urls" {
   value       = { for name, repo in aws_ecr_repository.images : name => repo.repository_url }
 }
 
-output "jwt_secret_arn" {
-  value = aws_secretsmanager_secret.jwt_secret.arn
+## SSM Parameter Store: the CSI driver's SecretProviderClass wants the
+## parameter *name*, not an ARN (unlike Secrets Manager, whose objectName
+## also accepts a friendly name — the ssmparameter objectType only takes
+## the name) — the _arn outputs exist purely for cluster/'s IAM policy
+## resources, never used for the CSI substitution.
+
+output "jwt_secret_parameter_name" {
+  value = aws_ssm_parameter.jwt_secret.name
 }
 
-output "encryption_key_secret_arn" {
-  value = aws_secretsmanager_secret.encryption_key.arn
+output "jwt_secret_parameter_arn" {
+  value = aws_ssm_parameter.jwt_secret.arn
 }
 
-output "gemini_api_key_secret_arn" {
-  value = aws_secretsmanager_secret.gemini_api_key.arn
+output "encryption_key_parameter_name" {
+  value = aws_ssm_parameter.encryption_key.name
+}
+
+output "encryption_key_parameter_arn" {
+  value = aws_ssm_parameter.encryption_key.arn
+}
+
+output "gemini_api_key_parameter_name" {
+  value = aws_ssm_parameter.gemini_api_key.name
+}
+
+output "gemini_api_key_parameter_arn" {
+  value = aws_ssm_parameter.gemini_api_key.arn
 }

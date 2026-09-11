@@ -120,7 +120,8 @@ jobs:
         run: kubectl wait --for=condition=Ready nodes --all --timeout=5m
 
       # Everything deploy/k8s/'s manifests need but can't know at authoring
-      # time (RDS endpoint, secret ARNs, IRSA role ARNs, ECR URLs) comes from
+      # time (RDS endpoint, the RDS secret's ARN, the three app secrets'
+      # SSM parameter names, IRSA role ARNs, ECR URLs) comes from
       # this one apply's own state — cluster/outputs.tf pass-throughs mean a
       # single `terraform output -json` covers persistent/'s values too, no
       # second init/state lookup needed (DEPLOYMENT.md §5's remote_state
@@ -135,9 +136,9 @@ jobs:
             echo "RDS_PORT=$(jq -r .rds_port.value /tmp/tf-outputs.json)"
             echo "RDS_DB_NAME=$(jq -r .rds_db_name.value /tmp/tf-outputs.json)"
             echo "RDS_MASTER_SECRET_ARN=$(jq -r .rds_master_user_secret_arn.value /tmp/tf-outputs.json)"
-            echo "JWT_SECRET_ARN=$(jq -r .jwt_secret_arn.value /tmp/tf-outputs.json)"
-            echo "ENCRYPTION_KEY_SECRET_ARN=$(jq -r .encryption_key_secret_arn.value /tmp/tf-outputs.json)"
-            echo "GEMINI_API_KEY_SECRET_ARN=$(jq -r .gemini_api_key_secret_arn.value /tmp/tf-outputs.json)"
+            echo "JWT_SECRET_PARAM=$(jq -r .jwt_secret_parameter_name.value /tmp/tf-outputs.json)"
+            echo "ENCRYPTION_KEY_PARAM=$(jq -r .encryption_key_parameter_name.value /tmp/tf-outputs.json)"
+            echo "GEMINI_API_KEY_PARAM=$(jq -r .gemini_api_key_parameter_name.value /tmp/tf-outputs.json)"
             echo "ALB_CONTROLLER_ROLE_ARN=$(jq -r .alb_controller_role_arn.value /tmp/tf-outputs.json)"
             echo "GUARDPIPE_APP_ROLE_ARN=$(jq -r .guardpipe_app_role_arn.value /tmp/tf-outputs.json)"
             echo "ECR_GUARDPIPE_URL=$(jq -r '.ecr_repository_urls.value.guardpipe' /tmp/tf-outputs.json)"
@@ -167,7 +168,7 @@ jobs:
       - name: Substitute manifest placeholders
         run: |
           for f in $(grep -rlE '\$\{[A-Z_]+\}' deploy/k8s); do
-            envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_ARN $ENCRYPTION_KEY_SECRET_ARN $GEMINI_API_KEY_SECRET_ARN $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL' \
+            envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_PARAM $ENCRYPTION_KEY_PARAM $GEMINI_API_KEY_PARAM $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL' \
               < "$f" > "$f.tmp"
             mv "$f.tmp" "$f"
           done

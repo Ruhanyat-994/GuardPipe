@@ -47,16 +47,16 @@ output "rds_master_user_secret_arn" {
   value = data.terraform_remote_state.persistent.outputs.rds_master_user_secret_arn
 }
 
-output "jwt_secret_arn" {
-  value = data.terraform_remote_state.persistent.outputs.jwt_secret_arn
+output "jwt_secret_parameter_name" {
+  value = data.terraform_remote_state.persistent.outputs.jwt_secret_parameter_name
 }
 
-output "encryption_key_secret_arn" {
-  value = data.terraform_remote_state.persistent.outputs.encryption_key_secret_arn
+output "encryption_key_parameter_name" {
+  value = data.terraform_remote_state.persistent.outputs.encryption_key_parameter_name
 }
 
-output "gemini_api_key_secret_arn" {
-  value = data.terraform_remote_state.persistent.outputs.gemini_api_key_secret_arn
+output "gemini_api_key_parameter_name" {
+  value = data.terraform_remote_state.persistent.outputs.gemini_api_key_parameter_name
 }
 
 output "ecr_repository_urls" {
