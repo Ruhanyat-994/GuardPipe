@@ -78,7 +78,7 @@ variable "db_engine_version" {
 variable "ecr_repository_names" {
   description = "ECR repositories to create — one per image the existing Dockerfiles build."
   type        = list(string)
-  default     = ["guardpipe", "guardpipe-web"]
+  default     = ["guardpipe", "guardpipe-web", "guardpipe-pentest-sandbox"]
 }
 
 variable "ecr_image_retention_count" {
