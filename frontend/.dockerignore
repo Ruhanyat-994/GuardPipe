@@ -3,4 +3,13 @@ dist
 .git
 *.md
 .env
-.env.*
+.env.local
+# .env.production is NOT excluded here on purpose: it holds a non-secret
+# relative URL (VITE_API_BASE_URL=/api/v1), committed to git specifically so
+# `vite build` (invoked by frontend/Dockerfile's `npm run build`) can read
+# it. A blanket ".env.*" pattern here excluded it from the build context
+# entirely, so the build silently fell back to its hardcoded
+# http://localhost:8080/api/v1 default — confirmed live 2026-09-13,
+# breaking every API call from the deployed frontend (users saw a generic
+# "Something went wrong" on register/login, caused by the browser trying to
+# reach localhost:8080 on their own machine, not the real backend).
