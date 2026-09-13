@@ -3,6 +3,7 @@ package reporting_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -116,6 +117,14 @@ func sampleScanDetail() *orchestrator.ScanDetail {
 							"total_script_runs":     12.0,
 							"phases_completed":      []any{"recon", "service_id", "tls", "headers"},
 						},
+						"assets": []any{
+							map[string]any{"Value": "example.com", "Type": "host", "Validated": true},
+							map[string]any{"Value": "dev.example.com", "Type": "subdomain", "Validated": true},
+							map[string]any{"Value": "unresolvable.example.com", "Type": "subdomain", "Validated": false},
+						},
+						"validated_directories": []any{
+							map[string]any{"URL": "http://example.com/admin", "Host": "example.com", "Port": 80.0, "Source": "ffuf_disclosure"},
+						},
 					},
 				},
 				FindingCount: 0,
@@ -176,6 +185,12 @@ func TestAssembler_Build_AssemblesScanProjectAndCoverage(t *testing.T) {
 	}
 	if len(pentestJob.Coverage.OpenPorts) != 2 {
 		t.Errorf("Coverage.OpenPorts = %v, want 2 entries", pentestJob.Coverage.OpenPorts)
+	}
+	if want := []string{"dev.example.com"}; !slices.Equal(pentestJob.ValidatedSubdomains, want) {
+		t.Errorf("ValidatedSubdomains = %v, want %v (only the validated subdomain, not the root host asset or the unresolvable dropped one)", pentestJob.ValidatedSubdomains, want)
+	}
+	if want := []string{"http://example.com/admin"}; !slices.Equal(pentestJob.ValidatedDirectories, want) {
+		t.Errorf("ValidatedDirectories = %v, want %v", pentestJob.ValidatedDirectories, want)
 	}
 
 	// AI is nil in this test — the report must still be fully usable without it.
