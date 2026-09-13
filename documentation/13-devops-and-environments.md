@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.8 |
+| **Version** | 1.9 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-08-23 |
+| **Last updated** | 2026-09-14 |
 
 ### Revision history
 
@@ -22,6 +22,7 @@
 | 1.6 | 2026-08-22 | Team | §5.2 adds `GUARDPIPE_POSTGRES_DATA_DIR`/`GUARDPIPE_REDIS_DATA_DIR` — `postgres`/`redis` now bind-mount to a real host folder instead of an opaque named volume (repo-local default, overridable per machine); `redis` also gains `--appendonly yes` so local dev queue state survives a restart. Built, `docker-compose.yml` |
 | 1.7 | 2026-08-23 | Team | §5.5's `GUARDPIPE_PENTEST_ALLOWLIST` renamed to `GUARDPIPE_PENTEST_DENYLIST` and its polarity flipped: a hosted product can't pre-enumerate every customer's target domain, so any public, non-blocked-range host is now accepted by default and only explicitly denylisted hosts are rejected — the authorisation attestation (FR-PEN-001) plus the private/metadata range block plus this denylist are the actual safety boundary. See [02-srs.md](02-srs.md) FR-PRJ-007/FR-PEN-002 and [05-module-specifications.md](05-module-specifications.md) §4. **Needs its second reviewer** per this doc's own change-control status |
 | 1.8 | 2026-08-23 | Team | New buildable (not long-running — `profiles: [build-only]`) `pentest-sandbox` service added to `docker-compose.yml`, built from `internal/scripts/pentest/Dockerfile`: an alpine-based image (never distroless — needs a real shell) bundling naabu/nmap/httpx/whatweb/testssl.sh/curl/katana/gau/CeWL/ffuf/nuclei/iptables/su-exec. `GUARDPIPE_SANDBOX_IMAGE` default changed from the old placeholder to `guardpipe-pentest-sandbox:latest` (§5.5) — a plain locally-built tag, not a pinned digest like this file's other image references, since it's never pushed to any registry. Build it once with `docker compose build pentest-sandbox` before a pentest scan can actually run tools; the engine still registers and fails cleanly without it. |
+| 1.9 | 2026-09-14 | Team | §5.3 adds `GUARDPIPE_SECURE_COOKIES` — previously the refresh-token cookie's `Secure` flag was hardcoded to `GUARDPIPE_ENV == "production"`, which broke session persistence across a page reload on the first real EKS deployment (the ALB has no TLS listener yet, and browsers silently refuse to store a `Secure` cookie set over plain HTTP). Now independently overridable, defaulting to the same behavior as before for anyone who hasn't hit this. Built, `internal/platform/config`. |
 
 ---
 
@@ -148,6 +149,7 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_REFRESH_TOKEN_TTL` | `30m` | no | Session **idle** timeout — reset forward on every refresh, so only an abandoned session ever hits it (BUILD_GUIDE.md Phase 14) |
 | `GUARDPIPE_SESSION_ABSOLUTE_TTL` | `12h` | no | Session **absolute** timeout — measured from the original login, independent of activity (BUILD_GUIDE.md Phase 14) |
 | `GUARDPIPE_CORS_ORIGINS` | `http://localhost:5173` | no | Comma-separated allowlist |
+| `GUARDPIPE_SECURE_COOKIES` | `GUARDPIPE_ENV == "production"` | no | Sets the refresh-token cookie's `Secure` flag. Only turn this off in production for a deployment genuinely not behind TLS yet — browsers silently refuse to store a `Secure` cookie set over plain HTTP, which breaks session persistence across a page reload |
 
 ### 5.4 Scanning
 

@@ -477,7 +477,7 @@ func run() error {
 		Version:         version,
 		CommitSHA:       commitSHA,
 		BuildTime:       buildTime,
-		SecureCookies:   cfg.Core.Env == "production",
+		SecureCookies:   cfg.Security.SecureCookies,
 		RefreshTokenTTL: cfg.Security.RefreshTokenTTL,
 		AuthRateLimit:   cfg.Security.AuthRateLimit,
 		AuthRateWindow:  cfg.Security.AuthRateWindow,

@@ -265,6 +265,33 @@ func TestLoad_EngineTimeoutOverrideIsRespected(t *testing.T) {
 	}
 }
 
+func TestLoad_SecureCookiesDefaultsToEnvIsProduction(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GUARDPIPE_ENV", "production")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Security.SecureCookies {
+		t.Error("Security.SecureCookies = false, want true when GUARDPIPE_ENV=production and no override is set")
+	}
+}
+
+func TestLoad_SecureCookiesOverrideIsRespected(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GUARDPIPE_ENV", "production")
+	t.Setenv("GUARDPIPE_SECURE_COOKIES", "false")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Security.SecureCookies {
+		t.Error("Security.SecureCookies = true, want false — an explicit GUARDPIPE_SECURE_COOKIES=false must override the production default (e.g. a deployment behind a bare HTTP ALB with no TLS yet)")
+	}
+}
+
 func TestLoad_InvalidDurationFailsFast(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("GUARDPIPE_ACCESS_TOKEN_TTL", "not-a-duration")

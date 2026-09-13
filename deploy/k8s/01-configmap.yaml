@@ -21,6 +21,13 @@ data:
   GUARDPIPE_LOG_LEVEL: "info"
   GUARDPIPE_BASE_URL: "http://pending.invalid"
   GUARDPIPE_CORS_ORIGINS: "http://pending.invalid"
+  # Temporary: this deployment has no domain/ACM cert yet, so the ALB serves
+  # plain HTTP. A Secure-flagged refresh-token cookie is silently refused by
+  # browsers over an insecure connection, which broke session persistence
+  # across a page reload — confirmed live 2026-09-14. Flip this back to
+  # "true" (or remove it, since Env=="production" is the default again) the
+  # moment real HTTPS is in front of the app.
+  GUARDPIPE_SECURE_COOKIES: "false"
 
   # Not read directly by platform/config — these three exist only so
   # 04-api.yaml/05-worker.yaml can compose GUARDPIPE_DATABASE_URL via
