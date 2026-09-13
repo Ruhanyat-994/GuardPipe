@@ -253,6 +253,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     actions = [
       "ec2:DescribeAvailabilityZones",
       "ec2:DescribeVpcs",
+      "ec2:DescribeVpcAttribute",
       "ec2:DescribeInternetGateways",
       "ec2:DescribeSubnets",
       "ec2:DescribeRouteTables",
@@ -260,6 +261,11 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "rds:DescribeDBInstances",
       "rds:DescribeDBSubnetGroups",
       "ecr:GetLifecyclePolicy",
+      # SSM's DescribeParameters (used for a parameter's own metadata refresh,
+      # separately from GetParameter's value read below) doesn't support
+      # resource-level ARNs at all — AWS rejects any non-"*" resource on this
+      # action, confirmed live 2026-09-13.
+      "ssm:DescribeParameters",
     ]
     resources = ["*"]
   }
