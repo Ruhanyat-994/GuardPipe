@@ -33,6 +33,16 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 # workflow_dispatch (infra.yml's manual apply/destroy) is run by a human
 # from the GitHub UI on whichever branch they pick — almost always main —
 # so it's covered by the same ref:refs/heads/main pattern, not a third one.
+#
+# Wildcards after the owner/repo names, not exact matches: confirmed live
+# via CloudTrail (2026-09-13, after the first real deploy.yml run failed
+# with "Not authorized to perform sts:AssumeRoleWithWebIdentity" despite
+# this trust policy looking correct) that GitHub's actual `sub` claim is
+# "repo:Ruhanyat-994@110297704/GuardPipe@1315479864:ref:refs/heads/main" —
+# GitHub appends each org/repo's own immutable numeric ID after `@`, not
+# just the plain "owner/repo" name docs/examples usually show. `${var.github_repo}`
+# (still just "owner/repo") gets its `/` turned into `@*/` so the wildcard
+# lands in the right place for either half.
 data "aws_iam_policy_document" "github_actions_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -49,8 +59,8 @@ data "aws_iam_policy_document" "github_actions_assume_role" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:${var.github_repo}:ref:refs/heads/main",
-        "repo:${var.github_repo}:pull_request",
+        "repo:${replace(var.github_repo, "/", "@*/")}@*:ref:refs/heads/main",
+        "repo:${replace(var.github_repo, "/", "@*/")}@*:pull_request",
       ]
     }
   }
