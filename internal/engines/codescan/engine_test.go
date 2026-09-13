@@ -53,7 +53,7 @@ type fakeScanner struct {
 	calls  int
 }
 
-func (f *fakeScanner) Analyze(context.Context, string, string) (string, error) {
+func (f *fakeScanner) Analyze(context.Context, domain.ScanInput, string) (string, error) {
 	f.calls++
 	return f.taskID, f.err
 }

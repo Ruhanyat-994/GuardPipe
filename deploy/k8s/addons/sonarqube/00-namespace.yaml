@@ -1,0 +1,27 @@
+# Separate namespace on purpose, not `guardpipe` — SonarQube is supporting
+# infrastructure (like cert-manager/the ALB controller/the Secrets Store CSI
+# driver, all in kube-system), not part of the app itself, and critically:
+# the `guardpipe` namespace enforces the Kubernetes "restricted" Pod
+# Security Standard (deploy/k8s/00-namespace.yaml), which the sysctl
+# DaemonSet in this same directory cannot run under — it needs a privileged
+# init container to set vm.max_map_count, which "restricted" forbids
+# outright. No Pod Security Standard label here at all, i.e. the cluster
+# default ("privileged" — no restriction), matching kube-system's own
+# posture for cluster-level infrastructure.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sonarqube
+---
+# gp3, not the EKS default gp2 — smaller/cheaper per-GB and the AWS-
+# recommended default for new EBS CSI driver deployments. Only PVC in this
+# cluster so far (SonarQube's own data/extensions/logs, 02-statefulset.yaml)
+# — nothing else here needs persistent block storage.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3

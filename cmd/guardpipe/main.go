@@ -22,6 +22,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/dockerx"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/gemini"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8scodescanscanner"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8spentestsandbox"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/pentestsandbox"
@@ -80,6 +81,18 @@ type pentestSandboxUnavailable struct{}
 
 func (pentestSandboxUnavailable) Run(context.Context, pentest.RunSpec) (pentest.RawResult, error) {
 	return pentest.RawResult{}, fmt.Errorf("pentest: no GUARDPIPE_SANDBOX_IMAGE configured — run `docker compose build pentest-sandbox` and set it")
+}
+
+// dockerCodescanScanner adapts adapters/sonarqube.Scanner's own stable
+// public signature (Analyze(ctx, workspaceDir, projectKey)) to codescan's
+// widened Scanner interface (Analyze(ctx, domain.ScanInput, projectKey)) —
+// reads in.WorkspaceDir, the Docker path's already-cloned local checkout.
+// Keeps adapters/sonarqube's own tested public API untouched; only this
+// one-line shim knows about domain.ScanInput at all.
+type dockerCodescanScanner struct{ inner *sonarqube.Scanner }
+
+func (d dockerCodescanScanner) Analyze(ctx context.Context, in domain.ScanInput, projectKey string) (string, error) {
+	return d.inner.Analyze(ctx, in.WorkspaceDir, projectKey)
 }
 
 func main() {
@@ -229,13 +242,49 @@ func run() error {
 	defer func() { _ = dockerClient.Close() }()
 
 	sonarqubeClient := sonarqube.NewClient(cfg.External.SonarQubeAPIURL, cfg.External.SonarQubeToken, nil)
-	sonarqubeScanner := sonarqube.NewScanner(dockerClient, sonarqube.ScannerConfig{
-		Network:       cfg.Scanning.DockerNetwork,
-		HostURL:       cfg.External.SonarQubeAPIURL,
-		Token:         cfg.External.SonarQubeToken,
-		Volume:        cfg.Scanning.WorkspaceVolume,
-		WorkspaceRoot: cfg.Scanning.WorkspaceRoot,
-	})
+	// codescan.Scanner — two backends, same cfg.Scanning.SandboxBackend
+	// knob pentest.Runner already picks with (config.go's own doc comment
+	// on Scanning.SandboxBackend has the full picture; the two engines
+	// always agree on which backend a deployment uses). "docker": the
+	// existing adapters/sonarqube.Scanner, wrapped in a tiny shim
+	// satisfying codescan's widened Scanner interface (that package's own
+	// public Analyze(ctx, workspaceDir, projectKey) signature stays
+	// untouched — only engine.go's *local* interface changed). "kubernetes":
+	// adapters/k8scodescanscanner, a one-shot Job per analysis instead of a
+	// Docker sidecar container — same reasoning as adapters/k8spentestsandbox
+	// (no Docker socket reachable from guardpipe-worker on the EKS
+	// deployment at all).
+	var codescanScanner codescan.Scanner
+	switch cfg.Scanning.SandboxBackend {
+	case "kubernetes":
+		restConfig, err := k8srest.InClusterConfig()
+		if err != nil {
+			return fmt.Errorf("codescan scanner: load in-cluster kubernetes config: %w", err)
+		}
+		clientset, err := k8sclient.NewForConfig(restConfig)
+		if err != nil {
+			return fmt.Errorf("codescan scanner: build kubernetes client: %w", err)
+		}
+		k8sScanner := k8scodescanscanner.New(clientset, cfg.Scanning.K8sSandboxNS, k8scodescanscanner.Config{
+			HostURL: cfg.External.SonarQubeAPIURL,
+			Token:   cfg.External.SonarQubeToken,
+			Timeout: cfg.External.SonarQubeAnalysisTimeout,
+		}, cfg.Scanning.SandboxMax)
+		if n, sweepErr := k8sScanner.SweepOrphans(context.Background()); sweepErr != nil {
+			log.Error("codescan scanner: sweep orphaned jobs at startup", "error", sweepErr)
+		} else if n > 0 {
+			log.Info("codescan scanner: removed orphaned jobs from a previous run", "count", n)
+		}
+		codescanScanner = k8sScanner
+	default:
+		codescanScanner = dockerCodescanScanner{sonarqube.NewScanner(dockerClient, sonarqube.ScannerConfig{
+			Network:       cfg.Scanning.DockerNetwork,
+			HostURL:       cfg.External.SonarQubeAPIURL,
+			Token:         cfg.External.SonarQubeToken,
+			Volume:        cfg.Scanning.WorkspaceVolume,
+			WorkspaceRoot: cfg.Scanning.WorkspaceRoot,
+		})}
+	}
 
 	trivyScanner := trivy.NewScanner(dockerClient, trivy.ScannerConfig{
 		Image:         cfg.Scanning.TrivyImage,
@@ -253,7 +302,7 @@ func run() error {
 	// enumerable at compile time the way depscan.Rules is, so neither engine
 	// has a static ruleRegistry.Register(...) call above; both register each
 	// rule at runtime instead (their own engine.go).
-	registry.Register(codescan.New(sonarqubeClient, sonarqubeScanner, advisorySvc, cfg.External.SonarQubeAnalysisTimeout))
+	registry.Register(codescan.New(sonarqubeClient, codescanScanner, advisorySvc, cfg.External.SonarQubeAnalysisTimeout))
 	registry.Register(containerscan.New(trivyScanner, dockerClient, advisorySvc))
 	// k8sscan (Phase 9) needs no dependencies — every rule is a pure
 	// function of the manifests/Helm charts found in the workspace, unlike

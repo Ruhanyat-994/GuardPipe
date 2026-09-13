@@ -65,3 +65,11 @@ output "gemini_api_key_parameter_name" {
 output "gemini_api_key_parameter_arn" {
   value = aws_ssm_parameter.gemini_api_key.arn
 }
+
+output "sonarqube_token_parameter_name" {
+  value = aws_ssm_parameter.sonarqube_token.name
+}
+
+output "sonarqube_token_parameter_arn" {
+  value = aws_ssm_parameter.sonarqube_token.arn
+}

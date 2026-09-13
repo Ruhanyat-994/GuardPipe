@@ -148,6 +148,7 @@ jobs:
             echo "JWT_SECRET_PARAM=$(jq -r .jwt_secret_parameter_name.value /tmp/tf-outputs.json)"
             echo "ENCRYPTION_KEY_PARAM=$(jq -r .encryption_key_parameter_name.value /tmp/tf-outputs.json)"
             echo "GEMINI_API_KEY_PARAM=$(jq -r .gemini_api_key_parameter_name.value /tmp/tf-outputs.json)"
+            echo "SONARQUBE_TOKEN_PARAM=$(jq -r .sonarqube_token_parameter_name.value /tmp/tf-outputs.json)"
             echo "ALB_CONTROLLER_ROLE_ARN=$(jq -r .alb_controller_role_arn.value /tmp/tf-outputs.json)"
             echo "GUARDPIPE_APP_ROLE_ARN=$(jq -r .guardpipe_app_role_arn.value /tmp/tf-outputs.json)"
             echo "ECR_GUARDPIPE_URL=$(jq -r '.ecr_repository_urls.value.guardpipe' /tmp/tf-outputs.json)"
@@ -187,7 +188,7 @@ jobs:
         working-directory: .
         run: |
           for f in $(grep -rlE '\$\{[A-Z_]+\}' deploy/k8s); do
-            envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_PARAM $ENCRYPTION_KEY_PARAM $GEMINI_API_KEY_PARAM $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL $ECR_PENTEST_SANDBOX_URL $VPC_ID' \
+            envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_PARAM $ENCRYPTION_KEY_PARAM $GEMINI_API_KEY_PARAM $SONARQUBE_TOKEN_PARAM $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL $ECR_PENTEST_SANDBOX_URL $VPC_ID' \
               < "$f" > "$f.tmp"
             mv "$f.tmp" "$f"
           done
@@ -212,6 +213,21 @@ jobs:
           kubectl apply -f deploy/k8s/addons/aws-secrets-provider-2.1.1.yaml
           kubectl rollout status daemonset/csi-secrets-store -n kube-system --timeout=3m
           kubectl rollout status daemonset/csi-secrets-store-provider-aws -n kube-system --timeout=3m
+
+      # Non-fatal wait, deliberately: SonarQube's Elasticsearch-backed first
+      # boot is genuinely slow (DB schema migration + index bootstrap), and
+      # unlike cert-manager/the CSI driver/the ALB controller, nothing later
+      # in this job hard-depends on it being Ready yet — codescan just keeps
+      # failing cleanly until it is, the same "engine registers, fails
+      # cleanly without its backend" pattern already established elsewhere.
+      # A slow or still-settling SonarQube must never block the app's own
+      # rollout below.
+      - name: Install SonarQube
+        working-directory: .
+        run: |
+          kubectl apply -f deploy/k8s/addons/sonarqube/
+          kubectl rollout status statefulset/sonarqube -n sonarqube --timeout=5m || \
+            echo "SonarQube not Ready within 5m — check \`kubectl get pods -n sonarqube\`/\`kubectl logs\` manually; this does not block the rest of this job." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install AWS Load Balancer Controller
         working-directory: .
