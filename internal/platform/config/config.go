@@ -88,6 +88,13 @@ type Security struct {
 	// testing without touching the documented production default.
 	AuthRateLimit  int
 	AuthRateWindow time.Duration
+
+	// SecureCookies gates the refresh-token cookie's Secure flag
+	// (transport/http/router.go's AuthHandler wiring) — defaults to
+	// Core.Env == "production" but is independently overridable via
+	// GUARDPIPE_SECURE_COOKIES, since "production" doesn't always mean
+	// "TLS is terminated in front of this deployment yet."
+	SecureCookies bool
 }
 
 // Scanning — §5.4.
@@ -225,9 +232,17 @@ var engineTimeoutEnvSuffix = map[domain.EngineID]string{
 func Load() (*Config, error) {
 	p := &problems{}
 
+	// Read once, used both for Core.Env itself and as SecureCookies'
+	// default below — "production" no longer automatically implies "TLS is
+	// terminated in front of this deployment" (a production EKS deployment
+	// can be sitting behind a bare HTTP ALB before a domain/ACM cert exists
+	// for it), so the two are separate knobs now, not one conflated with
+	// the other.
+	env := getString("GUARDPIPE_ENV", "development")
+
 	cfg := &Config{
 		Core: Core{
-			Env:      getString("GUARDPIPE_ENV", "development"),
+			Env:      env,
 			Role:     Role(getString("GUARDPIPE_ROLE", string(RoleAll))),
 			HTTPPort: getString("GUARDPIPE_HTTP_PORT", "8080"),
 			LogLevel: getString("GUARDPIPE_LOG_LEVEL", "info"),
@@ -247,6 +262,17 @@ func Load() (*Config, error) {
 			CORSOrigins:        getCSV("GUARDPIPE_CORS_ORIGINS", []string{"http://localhost:5173"}),
 			AuthRateLimit:      getInt("GUARDPIPE_AUTH_RATE_LIMIT", 5, p),
 			AuthRateWindow:     getDuration("GUARDPIPE_AUTH_RATE_WINDOW", time.Minute, p),
+			// Defaults to env=="production" (previous behavior, unchanged
+			// for anyone who hasn't hit this), but overridable independently
+			// now — a deployment can be "production" while still sitting
+			// behind plain HTTP (no domain/ACM cert yet). The refresh-token
+			// cookie's Secure flag reads this, not Core.Env directly
+			// (router.go). Browsers silently refuse to store a Secure
+			// cookie set over an insecure connection, which is what broke
+			// session persistence across a page reload on the first EKS
+			// deployment (confirmed live 2026-09-14) — GUARDPIPE_ENV was
+			// "production" but the ALB has no TLS listener yet.
+			SecureCookies: getBool("GUARDPIPE_SECURE_COOKIES", env == "production", p),
 		},
 		Scanning: Scanning{
 			WorkerCount:      getInt("GUARDPIPE_WORKER_COUNT", 4, p),
