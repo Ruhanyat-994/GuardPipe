@@ -116,8 +116,17 @@ jobs:
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
+      # aws eks wait (not `kubectl wait --for=condition=Ready nodes`) on
+      # purpose: `nodes` is a cluster-scoped Kubernetes resource, and no EKS
+      # access policy short of AmazonEKSClusterAdminPolicy grants list/watch
+      # on cluster-scoped resources — AmazonEKSViewPolicy mirrors Kubernetes'
+      # built-in `view` ClusterRole, which deliberately excludes them even
+      # when bound at cluster scope. This waiter only needs the
+      # eks:DescribeNodegroup IAM permission the CI role already has, no
+      # Kubernetes RBAC at all — confirmed against real AWS 2026-09-13 after
+      # two failed attempts to fix this by broadening the EKS access policy.
       - name: Wait for node group
-        run: kubectl wait --for=condition=Ready nodes --all --timeout=5m
+        run: aws eks wait nodegroup-active --cluster-name ${{ vars.EKS_CLUSTER_NAME }} --nodegroup-name ${{ vars.EKS_CLUSTER_NAME }}-nodes --region ${{ env.AWS_REGION }}
 
       # Everything deploy/k8s/'s manifests need but can't know at authoring
       # time (RDS endpoint, the RDS secret's ARN, the three app secrets'
