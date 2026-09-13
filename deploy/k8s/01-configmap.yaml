@@ -49,12 +49,18 @@ data:
   GUARDPIPE_MAX_REPO_MB: "500"
   GUARDPIPE_WORKER_COUNT: "4"
 
-  # Tier 1 (DEPLOYMENT.md §2): no Docker daemon in this cluster, so no
-  # sandbox — pentest is disabled outright rather than left to register and
-  # fail every job. containerscan/codescan aren't engines this binary even
-  # attempts without their own adapters wired (Phase 8/Phase 7 SonarQube not
-  # deployed here either) — nothing extra to disable for those.
-  GUARDPIPE_PENTEST_ENABLED: "false"
+  # Real tool execution via the Kubernetes Jobs API
+  # (adapters/k8spentestsandbox), not the Docker-socket path
+  # (adapters/sandbox + adapters/pentestsandbox) — this cluster has no
+  # Docker daemon reachable from guardpipe-worker at all. See
+  # internal/scripts/pentest/Dockerfile and deploy/k8s/09-pentest-sandbox-
+  # rbac.yaml for the rest of this backend's pieces. containerscan/codescan
+  # aren't engines this binary even attempts without their own adapters
+  # wired (Phase 8/Phase 7 SonarQube not deployed here either) — nothing
+  # extra to enable for those.
+  GUARDPIPE_PENTEST_ENABLED: "true"
+  GUARDPIPE_SANDBOX_BACKEND: "kubernetes"
+  GUARDPIPE_K8S_SANDBOX_IMAGE: "${ECR_PENTEST_SANDBOX_URL}:${IMAGE_TAG}"
 
   GUARDPIPE_AI_ENABLED: "true"
   GUARDPIPE_GEMINI_MODEL_FAST: "gemini-2.5-flash"

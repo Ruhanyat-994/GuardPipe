@@ -198,6 +198,53 @@ func TestLoad_InvalidRoleFailsFast(t *testing.T) {
 	}
 }
 
+func TestLoad_InvalidSandboxBackendFailsFast(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GUARDPIPE_SANDBOX_BACKEND", "docker-compose-but-fancier")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("Load() error = nil, want an error for an invalid GUARDPIPE_SANDBOX_BACKEND")
+	}
+}
+
+func TestLoad_KubernetesSandboxBackendRequiresImage(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GUARDPIPE_SANDBOX_BACKEND", "kubernetes")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("Load() error = nil, want an error — GUARDPIPE_K8S_SANDBOX_IMAGE is required when the backend is \"kubernetes\"")
+	}
+}
+
+func TestLoad_KubernetesSandboxBackendWithImageSucceeds(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GUARDPIPE_SANDBOX_BACKEND", "kubernetes")
+	t.Setenv("GUARDPIPE_K8S_SANDBOX_IMAGE", "238841126654.dkr.ecr.ap-northeast-1.amazonaws.com/guardpipe-pentest-sandbox:sha-test")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if cfg.Scanning.SandboxBackend != "kubernetes" {
+		t.Errorf("Scanning.SandboxBackend = %q, want \"kubernetes\"", cfg.Scanning.SandboxBackend)
+	}
+	if cfg.Scanning.K8sSandboxNS != "guardpipe" {
+		t.Errorf("Scanning.K8sSandboxNS = %q, want the default \"guardpipe\"", cfg.Scanning.K8sSandboxNS)
+	}
+}
+
+func TestLoad_SandboxBackendDefaultsToDocker(t *testing.T) {
+	setRequiredEnv(t)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Scanning.SandboxBackend != "docker" {
+		t.Errorf("Scanning.SandboxBackend = %q, want the default \"docker\"", cfg.Scanning.SandboxBackend)
+	}
+}
+
 func TestLoad_CORSOriginsSplitsOnComma(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("GUARDPIPE_CORS_ORIGINS", "https://a.example.com, https://b.example.com")

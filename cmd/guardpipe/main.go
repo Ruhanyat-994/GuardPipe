@@ -22,6 +22,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/dockerx"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/gemini"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8spentestsandbox"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/pentestsandbox"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
@@ -54,6 +55,9 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/store"
 	"github.com/Ruhanyat-994/GuardPipe/internal/store/repo"
 	transporthttp "github.com/Ruhanyat-994/GuardPipe/internal/transport/http"
+
+	k8sclient "k8s.io/client-go/kubernetes"
+	k8srest "k8s.io/client-go/rest"
 )
 
 var (
@@ -286,25 +290,55 @@ func run() error {
 	// engine itself decides how to fail, not whether it exists.
 	registry.Register(docreview.New(aiSvc))
 
-	// pentest (Phase 12 Pass 2) — pentestsandbox.Runner wraps adapters/sandbox
-	// with the pentest sandbox image (internal/scripts/pentest/Dockerfile),
-	// firewalling each container's own egress down to the pinned target IP
-	// (adapters/sandbox.NetworkTargetOnly). Falls back to
-	// pentestSandboxUnavailable only when no image is configured, so a
-	// dev machine that hasn't built the sandbox image yet still starts.
+	// pentest (Phase 12 Pass 2) — two possible backends, picked by
+	// cfg.Scanning.SandboxBackend (config.go's own doc comment on
+	// Scanning.SandboxBackend has the full picture):
+	//   "docker" (default): pentestsandbox.Runner wraps adapters/sandbox
+	//     with the pentest sandbox image, firewalling each container's own
+	//     egress down to the pinned target IP (adapters/sandbox.
+	//     NetworkTargetOnly) — local dev/Compose, a real Docker socket.
+	//   "kubernetes": adapters/k8spentestsandbox runs each script as a
+	//     one-shot Job via the in-cluster API instead, isolated by a
+	//     per-job NetworkPolicy rather than in-container iptables — the EKS
+	//     deployment, which has no Docker socket reachable from this
+	//     process at all.
+	// Falls back to pentestSandboxUnavailable if the selected backend's own
+	// image isn't configured, so a dev machine that hasn't built the
+	// sandbox image yet still starts.
 	var pentestRunner pentest.Runner = pentestSandboxUnavailable{}
-	if cfg.Scanning.SandboxImage != "" {
-		sb := sandbox.New(dockerClient)
-		if n, sweepErr := sb.SweepOrphans(context.Background()); sweepErr != nil {
-			log.Error("pentest sandbox: sweep orphaned containers at startup", "error", sweepErr)
-		} else if n > 0 {
-			log.Info("pentest sandbox: removed orphaned containers from a previous run", "count", n)
+	switch cfg.Scanning.SandboxBackend {
+	case "kubernetes":
+		if cfg.Scanning.K8sSandboxImage != "" {
+			restConfig, err := k8srest.InClusterConfig()
+			if err != nil {
+				return fmt.Errorf("pentest sandbox: load in-cluster kubernetes config: %w", err)
+			}
+			clientset, err := k8sclient.NewForConfig(restConfig)
+			if err != nil {
+				return fmt.Errorf("pentest sandbox: build kubernetes client: %w", err)
+			}
+			realRunner := k8spentestsandbox.New(clientset, cfg.Scanning.K8sSandboxNS, cfg.Scanning.K8sSandboxImage, cfg.Scanning.SandboxMax)
+			if n, sweepErr := realRunner.SweepOrphans(context.Background()); sweepErr != nil {
+				log.Error("pentest sandbox: sweep orphaned jobs at startup", "error", sweepErr)
+			} else if n > 0 {
+				log.Info("pentest sandbox: removed orphaned jobs from a previous run", "count", n)
+			}
+			pentestRunner = realRunner
 		}
-		realRunner, err := pentestsandbox.New(sb, cfg.Scanning.SandboxImage, cfg.Scanning.WorkspaceVolume, cfg.Scanning.WorkspaceRoot)
-		if err != nil {
-			return fmt.Errorf("initialise pentest sandbox runner: %w", err)
+	default:
+		if cfg.Scanning.SandboxImage != "" {
+			sb := sandbox.New(dockerClient)
+			if n, sweepErr := sb.SweepOrphans(context.Background()); sweepErr != nil {
+				log.Error("pentest sandbox: sweep orphaned containers at startup", "error", sweepErr)
+			} else if n > 0 {
+				log.Info("pentest sandbox: removed orphaned containers from a previous run", "count", n)
+			}
+			realRunner, err := pentestsandbox.New(sb, cfg.Scanning.SandboxImage, cfg.Scanning.WorkspaceVolume, cfg.Scanning.WorkspaceRoot)
+			if err != nil {
+				return fmt.Errorf("initialise pentest sandbox runner: %w", err)
+			}
+			pentestRunner = realRunner
 		}
-		pentestRunner = realRunner
 	}
 	registry.Register(pentest.New(pentestRunner, net.DefaultResolver, cfg.Pentest.AllowPrivateTargets, cfg.Pentest.Denylist, advisorySvc))
 

@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.9 |
+| **Version** | 1.10 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
 | **Last updated** | 2026-09-14 |
@@ -23,6 +23,7 @@
 | 1.7 | 2026-08-23 | Team | §5.5's `GUARDPIPE_PENTEST_ALLOWLIST` renamed to `GUARDPIPE_PENTEST_DENYLIST` and its polarity flipped: a hosted product can't pre-enumerate every customer's target domain, so any public, non-blocked-range host is now accepted by default and only explicitly denylisted hosts are rejected — the authorisation attestation (FR-PEN-001) plus the private/metadata range block plus this denylist are the actual safety boundary. See [02-srs.md](02-srs.md) FR-PRJ-007/FR-PEN-002 and [05-module-specifications.md](05-module-specifications.md) §4. **Needs its second reviewer** per this doc's own change-control status |
 | 1.8 | 2026-08-23 | Team | New buildable (not long-running — `profiles: [build-only]`) `pentest-sandbox` service added to `docker-compose.yml`, built from `internal/scripts/pentest/Dockerfile`: an alpine-based image (never distroless — needs a real shell) bundling naabu/nmap/httpx/whatweb/testssl.sh/curl/katana/gau/CeWL/ffuf/nuclei/iptables/su-exec. `GUARDPIPE_SANDBOX_IMAGE` default changed from the old placeholder to `guardpipe-pentest-sandbox:latest` (§5.5) — a plain locally-built tag, not a pinned digest like this file's other image references, since it's never pushed to any registry. Build it once with `docker compose build pentest-sandbox` before a pentest scan can actually run tools; the engine still registers and fails cleanly without it. |
 | 1.9 | 2026-09-14 | Team | §5.3 adds `GUARDPIPE_SECURE_COOKIES` — previously the refresh-token cookie's `Secure` flag was hardcoded to `GUARDPIPE_ENV == "production"`, which broke session persistence across a page reload on the first real EKS deployment (the ALB has no TLS listener yet, and browsers silently refuse to store a `Secure` cookie set over plain HTTP). Now independently overridable, defaulting to the same behavior as before for anyone who hasn't hit this. Built, `internal/platform/config`. |
+| 1.10 | 2026-09-14 | Team | §5.4 adds a second pentest sandbox backend: `GUARDPIPE_SANDBOX_BACKEND` (`docker` default, `kubernetes` new), `GUARDPIPE_K8S_SANDBOX_IMAGE`, `GUARDPIPE_K8S_SANDBOX_NAMESPACE`. The EKS deployment has no Docker socket reachable from `guardpipe-worker` at all (pentest was disabled outright there until now — see `documentation/12-security-and-threat-model.md`'s sandboxing posture for why a shared host Docker socket was rejected instead); the `kubernetes` backend (`internal/adapters/k8spentestsandbox`) runs each tool invocation as a one-shot `batch/v1.Job`, isolated by a per-job `NetworkPolicy` rather than the Docker path's in-container `iptables` self-firewall — lets every sandbox pod run fully non-root with every capability dropped from the start, no root-then-drop dance needed. Built. |
 
 ---
 
@@ -158,8 +159,11 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_WORKER_COUNT` | `4` | no | Concurrent jobs |
 | `GUARDPIPE_WORKSPACE_ROOT` | `/var/lib/guardpipe/workspace` | no | Ephemeral checkouts |
 | `GUARDPIPE_MAX_REPO_MB` | `500` | no | Clone size cap |
-| `GUARDPIPE_SANDBOX_MAX` | `2` | no | Concurrent sandbox containers |
-| `GUARDPIPE_SANDBOX_IMAGE` | pinned digest | no | Sandbox runner image |
+| `GUARDPIPE_SANDBOX_MAX` | `2` | no | Concurrent sandbox containers/Job pods — enforced by both backends now (previously loaded but unused) |
+| `GUARDPIPE_SANDBOX_IMAGE` | pinned digest | no | Sandbox runner image — the `"docker"` backend's own, via `adapters/sandbox`/`adapters/pentestsandbox` |
+| `GUARDPIPE_SANDBOX_BACKEND` | `docker` | no | `docker` (a real Docker socket, local dev/Compose) or `kubernetes` (one-shot Jobs via the in-cluster API, `adapters/k8spentestsandbox` — the EKS deployment, which has no Docker socket at all) |
+| `GUARDPIPE_K8S_SANDBOX_IMAGE` | — | only if backend is `kubernetes` | The `guardpipe-pentest-sandbox` ECR image `deploy.yml` builds/pushes — a separate build from `GUARDPIPE_SANDBOX_IMAGE` (`internal/scripts/pentest/Dockerfile` bakes scripts/wordlists in at build time for this backend, since Job pods have no shared filesystem with `guardpipe-worker` to mount them from) |
+| `GUARDPIPE_K8S_SANDBOX_NAMESPACE` | `guardpipe` | no | Namespace the `kubernetes` backend creates its Jobs/ConfigMaps/NetworkPolicies in |
 | `GUARDPIPE_DOCKER_HOST` | `unix:///var/run/docker.sock` | no | |
 | `GUARDPIPE_DOCKER_NETWORK` | `guardpipe-net` | no | Compose network a sibling container joins to reach another service by name — codescan's sonar-scanner container (Phase 7, ADR-0011) reaching `sonarqube`; matches `docker-compose.yml`'s `networks.default.name` |
 | `GUARDPIPE_TRIVY_IMAGE` | pinned tag, `aquasec/trivy` | no | containerscan's Trivy CLI image (Phase 8, ADR-0012) — sibling container via `adapters/dockerx`, same pattern as codescan's `sonar-scanner`; no `GUARDPIPE_DOCKER_NETWORK` join needed unless the vulnerability-database registry is proxied internally |
