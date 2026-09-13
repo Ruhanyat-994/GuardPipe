@@ -175,6 +175,14 @@ jobs:
       # unrelated literal `$`/`${...}` text that isn't one of these
       # placeholders.
       - name: Substitute manifest placeholders
+        # This job's own defaults.run.working-directory is infra/terraform/
+        # cluster (for the terraform steps above) — every step below that
+        # touches deploy/k8s/ needs its own override back to the repo root,
+        # or it resolves that path relative to infra/terraform/cluster
+        # instead and fails with "does not exist". Confirmed live
+        # 2026-09-13: this was never exercised until a run finally got past
+        # every earlier failure and reached this step for the first time.
+        working-directory: .
         run: |
           for f in $(grep -rlE '\$\{[A-Z_]+\}' deploy/k8s); do
             envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_PARAM $ENCRYPTION_KEY_PARAM $GEMINI_API_KEY_PARAM $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL' \
@@ -188,6 +196,7 @@ jobs:
       # aws-load-balancer-controller-v3.5.0-full.yaml's comment) → Secrets
       # Store CSI driver + AWS provider → ALB controller → the app itself.
       - name: Install cert-manager
+        working-directory: .
         run: |
           kubectl apply -f deploy/k8s/addons/cert-manager-v1.21.1.yaml
           kubectl rollout status deployment/cert-manager -n cert-manager --timeout=3m
@@ -195,6 +204,7 @@ jobs:
           kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=3m
 
       - name: Install Secrets Store CSI driver
+        working-directory: .
         run: |
           kubectl apply -f deploy/k8s/addons/secrets-store-csi-driver-v1.6.1/
           kubectl apply -f deploy/k8s/addons/aws-secrets-provider-2.1.1.yaml
@@ -202,6 +212,7 @@ jobs:
           kubectl rollout status daemonset/csi-secrets-store-provider-aws -n kube-system --timeout=3m
 
       - name: Install AWS Load Balancer Controller
+        working-directory: .
         run: |
           kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-ingclass.yaml
           kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-full.yaml
@@ -210,6 +221,7 @@ jobs:
       - name: Apply GuardPipe manifests
         # Not recursive (kubectl's default) — applies only the top-level
         # 00-08 files, deploy/k8s/addons/ was already handled above.
+        working-directory: .
         run: kubectl apply -f deploy/k8s/
 
       - name: Wait for app rollout
