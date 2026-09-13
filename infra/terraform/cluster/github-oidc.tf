@@ -151,9 +151,11 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     sid = "ManageProjectIamRolesAndPolicies"
     actions = [
       "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:TagRole", "iam:UntagRole",
+      "iam:ListRoleTags", "iam:ListRolePolicies", "iam:ListInstanceProfilesForRole",
       "iam:PassRole",
       "iam:CreatePolicy", "iam:DeletePolicy", "iam:GetPolicy", "iam:GetPolicyVersion",
       "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:ListPolicyVersions",
+      "iam:ListPolicyTags", "iam:TagPolicy", "iam:UntagPolicy",
       "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies",
       "iam:UpdateAssumeRolePolicy",
     ]
@@ -220,12 +222,12 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   # these actions.
   statement {
     sid       = "ManageBudget"
-    actions   = ["budgets:ViewBudget", "budgets:ModifyBudget"]
+    actions   = ["budgets:ViewBudget", "budgets:ModifyBudget", "budgets:ListTagsForResource", "budgets:TagResource", "budgets:UntagResource"]
     resources = ["*"]
   }
   statement {
     sid       = "ReadKmsAlias"
-    actions   = ["kms:ListAliases"]
+    actions   = ["kms:ListAliases", "kms:DescribeKey"]
     resources = ["*"]
   }
 }
@@ -246,11 +248,17 @@ data "aws_caller_identity" "current" {}
 ## Kubernetes-side access for the same role (EKS access entries — main.tf's
 ## access_config sets authentication_mode = "API" specifically so this is
 ## the one and only way anything gets cluster access, no aws-auth ConfigMap
-## to separately keep in sync). Scoped to the AmazonEKSEditPolicy
-## (create/update/delete workloads, no RBAC/secret-reading beyond what
-## `kubectl set image`/`kubectl rollout` need) and to just the guardpipe
-## namespace — not cluster-admin, matching this file's own least-privilege
-## posture for IRSA above.
+## to separately keep in sync). Two associations, not one — not cluster-admin
+## either way:
+##   - AmazonEKSEditPolicy, scoped to just the guardpipe namespace — the
+##     actual create/update/delete workloads deploy.yml/infra.yml need.
+##   - AmazonEKSViewPolicy, cluster-wide (read-only) — confirmed live
+##     necessary, not a guess: infra.yml's own `kubectl wait --for=condition=
+##     Ready nodes --all` failed with a 403 under the namespace-scoped edit
+##     policy alone, because `nodes` is a cluster-scoped resource type, not a
+##     namespaced one — no namespace-scoped policy can ever grant read access
+##     to it, regardless of which policy. Read-only cluster-wide is still far
+##     narrower than cluster-admin.
 ## ---------------------------------------------------------------------------
 
 resource "aws_eks_access_entry" "github_actions" {
@@ -258,7 +266,7 @@ resource "aws_eks_access_entry" "github_actions" {
   principal_arn = aws_iam_role.github_actions.arn
 }
 
-resource "aws_eks_access_policy_association" "github_actions" {
+resource "aws_eks_access_policy_association" "github_actions_edit" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = aws_iam_role.github_actions.arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
@@ -266,6 +274,18 @@ resource "aws_eks_access_policy_association" "github_actions" {
   access_scope {
     type       = "namespace"
     namespaces = [var.app_namespace]
+  }
+
+  depends_on = [aws_eks_access_entry.github_actions]
+}
+
+resource "aws_eks_access_policy_association" "github_actions_view" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.github_actions.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+
+  access_scope {
+    type = "cluster"
   }
 
   depends_on = [aws_eks_access_entry.github_actions]
