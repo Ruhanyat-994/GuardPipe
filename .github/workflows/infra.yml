@@ -152,6 +152,7 @@ jobs:
             echo "GUARDPIPE_APP_ROLE_ARN=$(jq -r .guardpipe_app_role_arn.value /tmp/tf-outputs.json)"
             echo "ECR_GUARDPIPE_URL=$(jq -r '.ecr_repository_urls.value.guardpipe' /tmp/tf-outputs.json)"
             echo "ECR_GUARDPIPE_WEB_URL=$(jq -r '.ecr_repository_urls.value."guardpipe-web"' /tmp/tf-outputs.json)"
+            echo "ECR_PENTEST_SANDBOX_URL=$(jq -r '.ecr_repository_urls.value."guardpipe-pentest-sandbox"' /tmp/tf-outputs.json)"
             echo "VPC_ID=$(jq -r .vpc_id.value /tmp/tf-outputs.json)"
           } >> "$GITHUB_ENV"
 
@@ -186,7 +187,7 @@ jobs:
         working-directory: .
         run: |
           for f in $(grep -rlE '\$\{[A-Z_]+\}' deploy/k8s); do
-            envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_PARAM $ENCRYPTION_KEY_PARAM $GEMINI_API_KEY_PARAM $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL $VPC_ID' \
+            envsubst '$CLUSTER_NAME $AWS_REGION $IMAGE_TAG $RDS_HOST $RDS_PORT $RDS_DB_NAME $RDS_MASTER_SECRET_ARN $JWT_SECRET_PARAM $ENCRYPTION_KEY_PARAM $GEMINI_API_KEY_PARAM $ALB_CONTROLLER_ROLE_ARN $GUARDPIPE_APP_ROLE_ARN $ECR_GUARDPIPE_URL $ECR_GUARDPIPE_WEB_URL $ECR_PENTEST_SANDBOX_URL $VPC_ID' \
               < "$f" > "$f.tmp"
             mv "$f.tmp" "$f"
           done

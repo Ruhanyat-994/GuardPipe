@@ -109,6 +109,22 @@ type Scanning struct {
 	WorkspaceVolume string // Named Docker volume backing WorkspaceRoot, as seen by the daemon — see docker-compose.yml's volumes.workspace.name; a sibling container (e.g. codescan's sonar-scanner) must mount it by this name, since WorkspaceRoot is a path inside *this* container's mount namespace, not the daemon host's
 	EngineTimeouts  map[domain.EngineID]time.Duration
 
+	// SandboxBackend picks which pentest.Runner implementation
+	// cmd/guardpipe/main.go wires up: "docker" (default — adapters/sandbox +
+	// adapters/pentestsandbox, a Docker socket, local dev/Compose) or
+	// "kubernetes" (adapters/k8spentestsandbox, one-shot Jobs via the
+	// in-cluster API, no Docker socket needed — the EKS deployment, which
+	// has none). SandboxImage still means the Docker path's image in either
+	// case; K8sSandboxImage is the "kubernetes" backend's own image
+	// (internal/scripts/pentest/Dockerfile, pushed to the
+	// guardpipe-pentest-sandbox ECR repo by deploy.yml), a separate build —
+	// see that Dockerfile's own comment on why it bakes scripts in rather
+	// than relying on a runtime-mounted volume the way the Docker path's
+	// ScriptMount does.
+	SandboxBackend  string
+	K8sSandboxImage string
+	K8sSandboxNS    string
+
 	// Trivy — containerscan (Phase 8, ADR-0012). No API URL/token here
 	// unlike SonarQube's External fields — Trivy is a local CLI invocation,
 	// not a service with an endpoint to authenticate against.
@@ -287,6 +303,9 @@ func Load() (*Config, error) {
 			TrivyImage:       getString("GUARDPIPE_TRIVY_IMAGE", ""),
 			TrivyDBUpdate:    getBool("GUARDPIPE_TRIVY_DB_UPDATE", true, p),
 			TrivyCacheVolume: getString("GUARDPIPE_TRIVY_CACHE_VOLUME", "guardpipe-trivy-cache"),
+			SandboxBackend:   getString("GUARDPIPE_SANDBOX_BACKEND", "docker"),
+			K8sSandboxImage:  getString("GUARDPIPE_K8S_SANDBOX_IMAGE", ""),
+			K8sSandboxNS:     getString("GUARDPIPE_K8S_SANDBOX_NAMESPACE", "guardpipe"),
 		},
 		Pentest: Pentest{
 			Enabled:             getBool("GUARDPIPE_PENTEST_ENABLED", true, p),
@@ -324,6 +343,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.Core.Role != RoleAll && cfg.Core.Role != RoleAPI && cfg.Core.Role != RoleWorker {
 		p.add("GUARDPIPE_ROLE must be one of \"all\", \"api\", \"worker\", got %q", string(cfg.Core.Role))
+	}
+	if cfg.Scanning.SandboxBackend != "docker" && cfg.Scanning.SandboxBackend != "kubernetes" {
+		p.add("GUARDPIPE_SANDBOX_BACKEND must be \"docker\" or \"kubernetes\", got %q", cfg.Scanning.SandboxBackend)
+	}
+	if cfg.Scanning.SandboxBackend == "kubernetes" && cfg.Scanning.K8sSandboxImage == "" {
+		p.add("GUARDPIPE_K8S_SANDBOX_IMAGE is required when GUARDPIPE_SANDBOX_BACKEND is \"kubernetes\"")
 	}
 
 	if len(p.messages) > 0 {
