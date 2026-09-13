@@ -214,10 +214,10 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 						// than waiting to rediscover it live.
 						Env: []corev1.EnvVar{{Name: "HOME", Value: "/tmp"}},
 						Command: []string{
-							"git", "clone", "--depth", "1", "--branch", ref, cloneURL, "/workspace/src",
+							"git", "clone", "--depth", "1", "--branch", ref, cloneURL, "/usr/src",
 						},
 						VolumeMounts: []corev1.VolumeMount{
-							{Name: "workspace", MountPath: "/workspace"},
+							{Name: "workspace", MountPath: "/usr/src"},
 							{Name: "tmp", MountPath: "/tmp"},
 						},
 					}},
@@ -260,7 +260,20 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 							// chain (which varies across JVM vendors and
 							// whether the running UID has a passwd entry).
 							"-Dsonar.userHome=/tmp/.sonar",
-							"-Dsonar.sources=/workspace/src",
+							// /usr/src, not /workspace/src: the scanner image's
+							// own default sonar.projectBaseDir is /usr/src
+							// (adapters/sonarqube/scanner.go's Docker path
+							// mounts its checkout there for the same reason,
+							// see that file's own comment). Confirmed live
+							// 2026-09-13: mounting the clone at /workspace/src
+							// while projectBaseDir stayed at its /usr/src
+							// default made the scanner report a clean SUCCESS
+							// with 0 files analysed — sonar.sources outside
+							// projectBaseDir is silently ignored, not an
+							// error, so this one took an extra round of
+							// verification against SonarQube's own API (task
+							// measures/ncloc) to even notice.
+							"-Dsonar.sources=/usr/src",
 							// Shallow clone (--depth 1 above) has no blame
 							// history for SonarQube's SCM-based features to
 							// read — same reasoning adapters/sonarqube/
@@ -276,7 +289,7 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 							"-Dsonar.exclusions=**/node_modules/**,**/.git/**,**/vendor/**,**/dist/**,**/build/**,**/.venv/**,**/__pycache__/**",
 						},
 						VolumeMounts: []corev1.VolumeMount{
-							{Name: "workspace", MountPath: "/workspace"},
+							{Name: "workspace", MountPath: "/usr/src"},
 							{Name: "tmp", MountPath: "/tmp"},
 						},
 						Resources: corev1.ResourceRequirements{
