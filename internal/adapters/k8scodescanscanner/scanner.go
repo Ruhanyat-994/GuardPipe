@@ -228,6 +228,17 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 						Env: []corev1.EnvVar{
 							{Name: "SONAR_HOST_URL", Value: s.cfg.HostURL},
 							{Name: "SONAR_TOKEN", Value: s.cfg.Token},
+							// The image bakes in HOME=/opt/sonar-scanner (its
+							// own install dir, not writable under
+							// ReadOnlyRootFilesystem and not covered by
+							// either mounted emptyDir) — same class of bug
+							// already hit twice this session for other
+							// tools (pentestsandbox.Runner's own HOME entry;
+							// the "clone" init container above). Confirmed
+							// live 2026-09-13: without this, the scanner
+							// crashes instantly trying to create
+							// /opt/sonar-scanner/.sonar/cache.
+							{Name: "HOME", Value: "/tmp"},
 						},
 						// Args, not Command: Kubernetes' Command overrides the
 						// image's own ENTRYPOINT (the sonar-scanner binary
@@ -242,6 +253,13 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 						Args: []string{
 							"-Dsonar.projectKey=" + projectKey,
 							"-Dsonar.working.directory=/tmp/scannerwork",
+							// Belt-and-suspenders alongside the HOME env var
+							// above: this scanner-specific flag pins its
+							// cache/config dir directly, rather than relying
+							// on the JVM's own user.home<-HOME resolution
+							// chain (which varies across JVM vendors and
+							// whether the running UID has a passwd entry).
+							"-Dsonar.userHome=/tmp/.sonar",
 							"-Dsonar.sources=/workspace/src",
 							// Shallow clone (--depth 1 above) has no blame
 							// history for SonarQube's SCM-based features to
