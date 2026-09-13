@@ -268,7 +268,23 @@ func run() error {
 		k8sScanner := k8scodescanscanner.New(clientset, cfg.Scanning.K8sSandboxNS, k8scodescanscanner.Config{
 			HostURL: cfg.External.SonarQubeAPIURL,
 			Token:   cfg.External.SonarQubeToken,
-			Timeout: cfg.External.SonarQubeAnalysisTimeout,
+			// Deliberately NOT cfg.External.SonarQubeAnalysisTimeout: that
+			// value bounds engine.go's own pollTask loop (the async
+			// /api/ce/task poll, which happens AFTER this Job already
+			// finished and submitted) — a different phase with a different
+			// bottleneck. Reusing it here artificially truncated the Job's
+			// own run (clone + sonar-scanner-cli) to 5 minutes, which isn't
+			// enough on a cold cache: confirmed live 2026-09-13, every Job
+			// run shows wasEngineCacheHit=false/wasJreCacheHit=MISS in its
+			// own scannerContext (no persistent volume backs /tmp/.sonar,
+			// so each Job re-downloads the JRE + scanner engine from
+			// scratch) — "context deadline exceeded" at ~5 minutes on a real
+			// 37-file Go repo, despite the CE task itself finishing in
+			// ~2s once actually submitted. Leaving this zero defers to the
+			// adapter's own default (10 minutes, matching
+			// domain.EngineCodeScan's engine-level ceiling in config.go) —
+			// the outer ctx from that ceiling still bounds the total
+			// regardless, so this can't run longer than the engine allows.
 		}, cfg.Scanning.SandboxMax)
 		if n, sweepErr := k8sScanner.SweepOrphans(context.Background()); sweepErr != nil {
 			log.Error("codescan scanner: sweep orphaned jobs at startup", "error", sweepErr)
