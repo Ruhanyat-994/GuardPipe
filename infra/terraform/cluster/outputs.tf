@@ -64,6 +64,10 @@ output "gemini_api_key_parameter_name" {
   value = data.terraform_remote_state.persistent.outputs.gemini_api_key_parameter_name
 }
 
+output "sonarqube_token_parameter_name" {
+  value = data.terraform_remote_state.persistent.outputs.sonarqube_token_parameter_name
+}
+
 output "ecr_repository_urls" {
   value = data.terraform_remote_state.persistent.outputs.ecr_repository_urls
 }

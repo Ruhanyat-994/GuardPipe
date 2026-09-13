@@ -1,0 +1,63 @@
+# Grants guardpipe-worker's existing ServiceAccount (05-worker.yaml) the
+# Kubernetes-API access this cluster's Kubernetes-native sandbox backends
+# need to run one-shot Jobs — plain Kubernetes RBAC, a completely different
+# axis from the IRSA/IAM access that same ServiceAccount already has for
+# SSM (eks.amazonaws.com/role-arn annotation on the ServiceAccount itself);
+# the two coexist without conflict. No new ServiceAccount: this only binds
+# a Role to the one that already exists.
+#
+# Shared by both adapters/k8spentestsandbox and adapters/k8scodescanscanner
+# (not two near-identical Roles — same ServiceAccount, same verbs, same
+# resource types either one needs) — renamed from this file's original
+# pentest-only name (guardpipe-pentest-sandbox) once codescan needed the
+# same access shape too.
+#
+# Scoped to exactly what each backend's Run()/Analyze() does per
+# invocation: create/watch/read/delete its own Jobs and their Pods' logs,
+# and create/delete the per-job ConfigMap (pentest's dynamic wordlist/URL-
+# list content) / NetworkPolicy (egress isolation, pentest only — codescan's
+# Job needs unrestricted egress to actually clone+push analysis results, so
+# it relies on the namespace's existing allow-https-egress policy,
+# 08-networkpolicy.yaml, instead of creating its own per-job one).
+# Namespace-scoped (guardpipe only) — never cluster-wide.
+#
+# No `secrets` verb: codescan's K8s backend supports public repos only for
+# now (no decrypted credential reaches an engine today — a materially
+# bigger, separate change to plumb one through from modules/project's
+# credential store). Add create/delete on secrets here when that's built,
+# for the short-lived per-job clone-credential Secret it would need.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: guardpipe-k8s-sandbox
+  namespace: guardpipe
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: guardpipe-k8s-sandbox
+  namespace: guardpipe
+subjects:
+  - kind: ServiceAccount
+    name: guardpipe-worker
+    namespace: guardpipe
+roleRef:
+  kind: Role
+  name: guardpipe-k8s-sandbox
+  apiGroup: rbac.authorization.k8s.io

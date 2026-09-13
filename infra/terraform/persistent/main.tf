@@ -280,3 +280,22 @@ resource "aws_ssm_parameter" "gemini_api_key" {
     ignore_changes = [value]
   }
 }
+
+resource "aws_ssm_parameter" "sonarqube_token" {
+  # GUARDPIPE_SONARQUBE_TOKEN — codescan (ADR-0011)'s own API credential,
+  # generated once in SonarQube's own UI on first boot
+  # (deploy/k8s/addons/sonarqube/), not by Terraform. Unlike SonarQube's own
+  # DB password (a plain Kubernetes Secret in the sonarqube namespace, never
+  # read by the app), this one IS read by guardpipe-api/-worker, so it goes
+  # through the same SSM + Secrets Store CSI driver pipeline as
+  # jwt-secret/encryption-key/gemini-api-key above.
+  name        = "/${var.project}/sonarqube-token"
+  description = "GUARDPIPE_SONARQUBE_TOKEN — value populated by hand after apply, never by Terraform."
+  type        = "SecureString"
+  tier        = "Standard"
+  value       = "REPLACE_ME_MANUALLY_AFTER_APPLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}

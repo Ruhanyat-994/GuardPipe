@@ -30,9 +30,17 @@ type SonarQubeClient interface {
 	GetRule(ctx context.Context, ruleKey string) (sonarqube.RuleInfo, error)
 }
 
-// Scanner is the subset of adapters/sonarqube.Scanner this package needs.
+// Scanner triggers a SonarQube analysis and returns the background task ID
+// it was submitted under. Two real implementations, picked in
+// cmd/guardpipe/main.go by cfg.Scanning.SandboxBackend: adapters/sonarqube
+// (a Docker sidecar, reading in.WorkspaceDir — an already-cloned local
+// checkout) and adapters/k8scodescanscanner (a Kubernetes Job that clones
+// in.Repository itself, since a Job pod has no shared filesystem with
+// guardpipe-worker to read WorkspaceDir from). The whole domain.ScanInput
+// is passed, not just one field, so each implementation reads whichever
+// part it actually needs — see either adapter's own Analyze doc comment.
 type Scanner interface {
-	Analyze(ctx context.Context, workspaceDir, projectKey string) (taskID string, err error)
+	Analyze(ctx context.Context, in domain.ScanInput, projectKey string) (taskID string, err error)
 }
 
 // RuleRegistrar is the subset of modules/advisory.Service this package
@@ -125,7 +133,7 @@ func (e *Engine) Applicable(_ context.Context, in domain.ScanInput) (bool, strin
 func (e *Engine) Run(ctx context.Context, in domain.ScanInput, emit func(domain.Finding)) (domain.EngineResult, error) {
 	projectKey := "guardpipe-" + in.ProjectID.String()
 
-	taskID, err := e.scanner.Analyze(ctx, in.WorkspaceDir, projectKey)
+	taskID, err := e.scanner.Analyze(ctx, in, projectKey)
 	if err != nil {
 		return domain.EngineResult{}, fmt.Errorf("codescan: run sonar-scanner: %w", err)
 	}

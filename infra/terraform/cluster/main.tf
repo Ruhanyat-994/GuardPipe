@@ -392,6 +392,7 @@ data "aws_iam_policy_document" "guardpipe_app_secrets" {
       data.terraform_remote_state.persistent.outputs.jwt_secret_parameter_arn,
       data.terraform_remote_state.persistent.outputs.encryption_key_parameter_arn,
       data.terraform_remote_state.persistent.outputs.gemini_api_key_parameter_arn,
+      data.terraform_remote_state.persistent.outputs.sonarqube_token_parameter_arn,
     ]
   }
 
