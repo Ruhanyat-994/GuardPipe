@@ -91,6 +91,24 @@ type JobSummary struct {
 	SkipReason   string           `json:"skip_reason,omitempty"`
 	FindingCount int              `json:"finding_count"`
 	Coverage     *PentestCoverage `json:"coverage,omitempty"`
+
+	// ValidatedSubdomains/ValidatedDirectories give a basic pentest report
+	// the concrete "what did enumeration actually confirm exists" lists a
+	// finding-only view doesn't — a subdomain only appears here once
+	// AssetValidation has re-resolved it (dropped otherwise, the same
+	// "validated, not just guessed" standard the private/loopback/metadata
+	// check already applies to the root target), and a directory only
+	// appears once a disclosure/admin-path ffuf run got a real 200 response
+	// for it (ffuf's own status filter already excludes 403/404 near-misses
+	// — a raw wordlist guess that returned nothing is never listed). Neither
+	// implies a vulnerability on its own; each may also separately appear in
+	// Findings above when it happens to match a specific security-relevant
+	// rule (e.g. an exposed .git/.env/backup file, or a name matching a
+	// sensitive-subdomain pattern) — these two lists are the broader,
+	// unfiltered enumeration result, not a second copy of Findings. Pentest
+	// jobs only; nil for every other engine.
+	ValidatedSubdomains  []string `json:"validated_subdomains,omitempty"`
+	ValidatedDirectories []string `json:"validated_directories,omitempty"`
 }
 
 // PentestCoverage mirrors internal/engines/pentest.Coverage field-for-field

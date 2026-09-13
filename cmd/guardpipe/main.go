@@ -36,6 +36,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/docreview"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/k8sscan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/engines/pentest"
+	"github.com/Ruhanyat-994/GuardPipe/internal/engines/pentest/evidence"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
@@ -43,6 +44,8 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
+	modulepentest "github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
+	pentestrepo "github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest/repo"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
@@ -336,6 +339,34 @@ func run() error {
 	scorerConfig.Thresholds = scoring.Thresholds{Warn: cfg.Gate.Warn, Block: cfg.Gate.Block}
 	scorer := scoring.NewScorer(scorerConfig)
 
+	// modules/pentest (Pentest v2) — the correlated-findings/attack-surface/
+	// evidence read model layered on top of the generic findings every
+	// engine, pentest included, already produces (see that package's own
+	// doc comment). Wired into both the worker pool (IngestScanResult, right
+	// after a pentest job succeeds) and the router (its own read-only
+	// /api/pentest/* surface) below.
+	pentestSvc := modulepentest.NewService(modulepentest.Deps{
+		Scans:          pentestrepo.NewScanRepo(db.Pool),
+		Assets:         pentestrepo.NewAssetRepo(db.Pool),
+		Services:       pentestrepo.NewServiceRepo(db.Pool),
+		Endpoints:      pentestrepo.NewEndpointRepo(db.Pool),
+		ToolRuns:       pentestrepo.NewToolRunRepo(db.Pool),
+		Findings:       pentestrepo.NewFindingRepo(db.Pool),
+		Evidence:       pentestrepo.NewEvidenceRepo(db.Pool),
+		AttackSurface:  pentestrepo.NewAttackSurfaceRepo(db.Pool),
+		Reports:        pentestrepo.NewReportRepo(db.Pool),
+		AuditLogs:      pentestrepo.NewAuditLogRepo(db.Pool),
+		Authorizations: pentestrepo.NewAuthorizationRepo(db.Pool),
+		// Rooted at the exact same directory engines/pentest/stages.NewEvidence
+		// writes evidence payloads to (evidence.DefaultBaseDir's own doc
+		// comment) — one shared root, so a report/evidence object key written
+		// by a worker process is always readable back by an API process
+		// sharing the same filesystem (true for GUARDPIPE_ROLE=all/local
+		// Docker Compose; a split api/worker deployment needs a shared volume
+		// here, the same requirement WorkspaceRoot already carries).
+		Blobs: evidence.NewFileBlobStore(evidence.DefaultBaseDir()),
+	})
+
 	pool := &orchestrator.Pool{
 		Size:            cfg.Scanning.WorkerCount,
 		Queue:           orchestrator.NewJobQueueClaimer(jobQueue.Claim, jobQueue.Ack),
@@ -355,6 +386,7 @@ func run() error {
 		Findings:        repo.NewFindingRepo(db.Pool),
 		RiskAssessments: repo.NewRiskAssessmentRepo(db.Pool),
 		Scorer:          scorer,
+		Pentest:         pentestSvc,
 	}
 
 	// GUARDPIPE_ROLE=api never runs the worker pool; GUARDPIPE_ROLE=all
@@ -438,6 +470,7 @@ func run() error {
 		OrchestratorSvc: orchestratorSvc,
 		AdminSvc:        adminSvc,
 		OrgSvc:          orgSvc,
+		PentestSvc:      pentestSvc,
 		Users:           repo.NewUserRepo(db.Pool),
 		AISvc:           aiSvc,
 		HealthDB:        db,

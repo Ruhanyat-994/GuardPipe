@@ -17,6 +17,7 @@ import (
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
@@ -55,6 +56,19 @@ type DocumentProvider interface {
 // CloneInfoProvider/DocumentProvider above.
 type TargetProvider interface {
 	GetAttestedTarget(ctx context.Context, projectID uuid.UUID) (*project.Target, error)
+}
+
+// PentestIngester is the subset of modules/pentest.Service the worker needs
+// to persist a completed pentest run's richer attack-surface/correlation/
+// evidence read model (engines/pentest.Engine.Run's own doc comment names
+// exactly which Stats keys feed this) — the "future integration point"
+// modules/pentest.Service.IngestScanResult's own doc comment describes.
+// Nil-checked and skipped exactly like Scorer/RiskAssessments above: a Pool
+// that doesn't wire it (every existing test) simply never persists this
+// richer model, and the generic domain.Finding rows every engine already
+// produces are completely unaffected either way.
+type PentestIngester interface {
+	IngestScanResult(ctx context.Context, in pentest.ScanResultInput) (*pentest.ScanSummary, error)
 }
 
 // pinnedIPStrings converts project.Target's netip.Addr slice (pgx/v5's own
@@ -125,6 +139,9 @@ type Pool struct {
 	Findings        FindingRepository
 	RiskAssessments RiskAssessmentRepository
 	Scorer          *scoring.Scorer
+	// Pentest is nil-checked and skipped like Scorer above — see
+	// PentestIngester's own doc comment for what wiring it on adds.
+	Pentest PentestIngester
 	// Progress is the live store an engine's ScanInput.ReportProgress
 	// writes to (nil is fine — a nil store just means ReportProgress calls
 	// are silently dropped, same as never calling it). Service.GetProgress
@@ -384,6 +401,19 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 	// coverage note for why that was a real gap, not just cosmetic).
 	stats := map[string]any{"rules_evaluated": result.RulesEvaluated, "files_scanned": result.FilesScanned}
 	maps.Copy(stats, result.Stats)
+
+	// Best-effort, same as MarkStarted above: this richer read model is
+	// supplementary to the generic domain.Finding rows p.persist below
+	// already writes for every engine, pentest included, so a failure here
+	// must never turn an otherwise-successful scan into a failed one.
+	if job.Engine == domain.EnginePentest && p.Pentest != nil {
+		if input, err := pentest.ScanResultInputFromStats(scan.ID, scan.ProjectID, result.Stats); err != nil {
+			p.Log.Error("orchestrator: build pentest scan result input failed", "job_id", jobID, "scan_id", scan.ID, "error", err)
+		} else if _, err := p.Pentest.IngestScanResult(ctx, input); err != nil {
+			p.Log.Error("orchestrator: ingest pentest scan result failed", "job_id", jobID, "scan_id", scan.ID, "error", err)
+		}
+	}
+
 	p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusSucceeded, Stats: stats, Findings: findings})
 }
 

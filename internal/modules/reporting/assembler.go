@@ -154,6 +154,8 @@ func (a *Assembler) Build(ctx context.Context, actor domain.Actor, scanID uuid.U
 			if host := stringStat(j.Stats, "target_host"); host != "" {
 				data.PentestTargetHost = host
 			}
+			js.ValidatedSubdomains = decodeValidatedSubdomains(j.Stats)
+			js.ValidatedDirectories = decodeValidatedDirectories(j.Stats)
 		}
 		data.Jobs = append(data.Jobs, js)
 	}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Ban } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Ban, ShieldAlert } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, CardDescription } from '../components/ui/Card'
 import { EngineFindingsSection } from '../components/project/EngineFindingsSection'
@@ -199,22 +199,38 @@ export function ScanDetailPage() {
           // to read every rule_id to tell them apart.
           <div className="flex flex-col gap-3">
             {scan.jobs.map((job) => (
-              <EngineFindingsSection
-                key={job.id}
-                engine={job.engine}
-                status={job.status}
-                findingCount={job.finding_count}
-                findings={findings.filter((f) => f.engine === job.engine)}
-                scanId={scan.id}
-                repository={project?.repository ?? null}
-                gitRef={
-                  scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null
-                }
-                errorReason={job.error_reason}
-                skipReason={job.skip_reason}
-                stats={job.stats}
-                defaultExpanded={scan.jobs.length === 1}
-              />
+              <div key={job.id} className="flex flex-col gap-2">
+                <EngineFindingsSection
+                  engine={job.engine}
+                  status={job.status}
+                  findingCount={job.finding_count}
+                  findings={findings.filter((f) => f.engine === job.engine)}
+                  scanId={scan.id}
+                  repository={project?.repository ?? null}
+                  gitRef={
+                    scan.commit_sha ?? scan.branch ?? project?.repository?.default_branch ?? null
+                  }
+                  errorReason={job.error_reason}
+                  skipReason={job.skip_reason}
+                  stats={job.stats}
+                  defaultExpanded={scan.jobs.length === 1}
+                />
+                {/* Pentest v2's own correlated attack-surface/findings/
+                    reports/authorization view (internal/modules/pentest) —
+                    a richer, deduplicated read model layered on top of the
+                    generic per-check findings the section above already
+                    shows, not a replacement for it. */}
+                {job.engine === 'pentest' && job.status === 'succeeded' && (
+                  <Link
+                    to={`/scans/${scan.id}/pentest`}
+                    className="inline-flex w-fit items-center gap-1.5 self-end text-caption font-medium text-accent hover:underline"
+                  >
+                    <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                    View correlated pentest report
+                    <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                  </Link>
+                )}
+              </div>
             ))}
           </div>
         )}
