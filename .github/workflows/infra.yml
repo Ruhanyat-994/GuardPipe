@@ -223,6 +223,26 @@ jobs:
           kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-full.yaml
           kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-ingclass.yaml
           kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=3m
+          # `rollout status` above only proves the pod passed its readiness
+          # probe, not that its admission-webhook TLS server on :9443 is
+          # actually accepting connections yet — the two lag by several
+          # seconds. Applying GuardPipe manifests immediately after failed
+          # live 2026-09-13 with "dial tcp ...:9443: connect: connection
+          # refused" / "no endpoints available for service
+          # aws-load-balancer-webhook-service" on every Service/Ingress
+          # object (the ALB controller's mutating/validating webhooks cover
+          # both). Wait for the webhook Service to actually have a ready
+          # endpoint before moving on.
+          echo "Waiting for the ALB controller's webhook endpoint to be ready..."
+          for i in $(seq 1 24); do
+            EP=$(kubectl get endpoints aws-load-balancer-webhook-service -n kube-system -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)
+            if [ -n "$EP" ]; then break; fi
+            sleep 5
+          done
+          if [ -z "$EP" ]; then
+            echo "aws-load-balancer-webhook-service never got a ready endpoint after 2m — check the aws-load-balancer-controller pod logs manually." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Apply GuardPipe manifests
         # Not recursive (kubectl's default) — applies only the top-level
