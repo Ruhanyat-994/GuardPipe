@@ -14,6 +14,7 @@ import { ProjectFindingsPage } from './pages/ProjectFindingsPage'
 import { GlobalScansPage } from './pages/GlobalScansPage'
 import { GlobalFindingsPage } from './pages/GlobalFindingsPage'
 import { ScanDetailPage } from './pages/ScanDetailPage'
+import { PentestScanPage } from './pages/PentestScanPage'
 import { ProjectSettingsPage } from './pages/ProjectSettingsPage'
 import { GuidesIndexPage } from './pages/GuidesIndexPage'
 import { GuideDetailPage } from './pages/GuideDetailPage'
@@ -127,6 +128,11 @@ function App() {
             alone is enough to look it up (documentation/07-api-specification.md
             §5); reached from ProjectScansPage's "Run Scan" trigger. */}
         <Route path="/scans/:id" element={<ScanDetailPage />} />
+        {/* Pentest v2's own correlated attack-surface/findings/reports/
+            authorization view (internal/modules/pentest) — reached from
+            ScanDetailPage's pentest engine section, not a tab of
+            ScanDetailPage itself since it has its own tab set. */}
+        <Route path="/scans/:id/pentest" element={<PentestScanPage />} />
 
         {/* The global sidebar destinations — Scans lets you pick any
             existing project and run it directly, plus the scan history
