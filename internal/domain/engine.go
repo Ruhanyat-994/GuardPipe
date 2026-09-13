@@ -43,6 +43,15 @@ type RepositoryRef struct {
 	Name      string
 	Branch    string
 	CommitSHA string
+	// CloneURL is the same URL orchestrator.Pool.prepareWorkspace's own
+	// clone step already used (modules/project.Service.GetCloneInfo) — set
+	// only by the ScanInput construction site that has it, currently just
+	// engines that need to clone the repository themselves rather than
+	// read the orchestrator's own already-cloned ScanInput.WorkspaceDir
+	// (adapters/k8scodescanscanner, which has no shared filesystem with
+	// guardpipe-worker to read that checkout from). Never assume this is
+	// set — it wasn't, anywhere, before that adapter needed it.
+	CloneURL string
 }
 
 // PentestTarget identifies the authorised, already-validated network target

@@ -21,9 +21,12 @@
 // engine today (domain.ScanInput carries no PAT), and plumbing one through
 // from modules/project's credential store would be a materially bigger,
 // separate change — a real, accepted limitation, not a silent gap. A
-// private repository's RepositoryRef still gets a clone URL built the same
-// way; the clone simply fails with a normal git-auth error, surfaced as
-// this engine's own job error like any other codescan failure.
+// private repository's RepositoryRef.CloneURL is populated the same way a
+// public one's is (orchestrator.Pool's own worker.go, straight from
+// modules/project.Service.GetCloneInfo — the same URL the orchestrator's
+// own clone into ScanInput.WorkspaceDir already used); the Job's clone
+// simply fails with a normal git-auth error, surfaced as this engine's own
+// job error like any other codescan failure.
 package k8scodescanscanner
 
 import (
@@ -120,13 +123,15 @@ func (s *Scanner) Analyze(ctx context.Context, in domain.ScanInput, projectKey s
 	runID := "codescan-" + id.New().String()
 	labels := map[string]string{runLabelKey: runID}
 
+	if in.Repository.CloneURL == "" {
+		return "", fmt.Errorf("k8scodescanscanner: ScanInput.Repository.CloneURL is empty — nothing to clone")
+	}
 	ref := in.Repository.CommitSHA
 	if ref == "" {
 		ref = in.Repository.Branch
 	}
-	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", in.Repository.Owner, in.Repository.Name)
 
-	jobName, err := s.createJob(runCtx, runID, labels, cloneURL, ref, projectKey)
+	jobName, err := s.createJob(runCtx, runID, labels, in.Repository.CloneURL, ref, projectKey)
 	if err != nil {
 		return "", fmt.Errorf("k8scodescanscanner: create job: %w", err)
 	}
