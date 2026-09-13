@@ -53,7 +53,7 @@ func newCompletingClientset(t *testing.T, phase corev1.PodPhase, exitCode int32)
 
 func scanInput() domain.ScanInput {
 	return domain.ScanInput{
-		Repository: &domain.RepositoryRef{Owner: "golang", Name: "example", Branch: "master"},
+		Repository: &domain.RepositoryRef{CloneURL: "https://github.com/golang/example.git", Branch: "master"},
 	}
 }
 
@@ -101,6 +101,20 @@ func TestAnalyze_NilRepositoryFailsFastWithoutCreatingAJob(t *testing.T) {
 	jobs, _ := client.BatchV1().Jobs(namespace).List(context.Background(), metav1.ListOptions{})
 	if len(jobs.Items) != 0 {
 		t.Errorf("Jobs created for a nil Repository = %d, want 0", len(jobs.Items))
+	}
+}
+
+func TestAnalyze_EmptyCloneURLFailsFastWithoutCreatingAJob(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	s := k8scodescanscanner.New(client, namespace, k8scodescanscanner.Config{Timeout: 5 * time.Second}, 1)
+
+	in := domain.ScanInput{Repository: &domain.RepositoryRef{Branch: "master"}} // CloneURL left empty
+	if _, err := s.Analyze(context.Background(), in, "guardpipe-test"); err == nil {
+		t.Error("Analyze() error = nil, want an error when Repository.CloneURL is empty")
+	}
+	jobs, _ := client.BatchV1().Jobs(namespace).List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 0 {
+		t.Errorf("Jobs created for an empty CloneURL = %d, want 0", len(jobs.Items))
 	}
 }
 

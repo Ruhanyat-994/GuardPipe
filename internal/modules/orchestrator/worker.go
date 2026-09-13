@@ -324,6 +324,23 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		}
 		releaseWorkspace = release
 		scanInput = domain.ScanInput{ScanID: scan.ID, JobID: jobID, ProjectID: scan.ProjectID, WorkspaceDir: workspaceDir}
+		// Repository is separate from WorkspaceDir on purpose: most engines
+		// read the already-cloned checkout at WorkspaceDir, but
+		// adapters/k8scodescanscanner clones the repository itself inside
+		// a Job pod that has no shared filesystem with this process to read
+		// WorkspaceDir from — it needs the clone URL/branch directly. A
+		// second GetCloneInfo call, not threaded through workspaces.acquire's
+		// cached prepare() (that closure only returns the dir string, shared
+		// across every job for this scan.ID — changing its signature to also
+		// carry repoURL/branch would ripple through workspace.go's own cache
+		// storage for no real benefit): this is a cheap DB lookup, not a
+		// per-tool-invocation cost, and errors here are non-fatal — the
+		// clone into WorkspaceDir already succeeded, so it's worth every
+		// other engine still getting to run even if this second, redundant
+		// lookup somehow fails.
+		if repoURL, branch, _, err := p.Projects.GetCloneInfo(ctx, scan.ProjectID); err == nil {
+			scanInput.Repository = &domain.RepositoryRef{CloneURL: repoURL, Branch: branch}
+		}
 
 		// Uploaded documents are project-scoped data, not part of the git
 		// checkout prepareWorkspace already cloned — only docreview needs
