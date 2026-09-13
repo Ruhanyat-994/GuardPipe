@@ -15,6 +15,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/validate"
@@ -49,6 +50,10 @@ type RouterConfig struct {
 	// OrgSvc is BUILD_GUIDE.md Phase 15's multi-member org identity slice —
 	// never nil in production (cmd/guardpipe/main.go always wires it).
 	OrgSvc organization.Service
+	// PentestSvc is Pentest v2's own read-only service (correlated findings,
+	// attack surface, evidence, reports, authorization) — never nil in
+	// production (cmd/guardpipe/main.go always wires it).
+	PentestSvc *pentest.Service
 	// Users backs the export report's accountability watermark (who
 	// requested this scan) — reporting.UserReader, satisfied directly by
 	// *store/repo.UserRepo.
@@ -251,6 +256,28 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		scans.POST("/:id/cancel", middleware.RBAC(memberAndAbove...), scanH.Cancel)
 		scans.GET("/:id/findings", middleware.RBAC(viewerAndAbove...), scanH.ListFindings)
 		scans.GET("/:id/export", middleware.RBAC(viewerAndAbove...), scanH.Export)
+	}
+
+	// Pentest v2's own read-only API surface (architecture dossier §08) —
+	// the deduplicated/correlated findings, attack-surface inventory,
+	// evidence, generated-report metadata, and authorization record a
+	// pentest scan produces, layered on top of the generic scan/findings
+	// endpoints above (which every engine, pentest included, still also
+	// populates). Read-only: viewer role is enough for all of it, same as
+	// the generic scan endpoints.
+	pentestH := handler.NewPentestHandler(cfg.OrchestratorSvc, cfg.PentestSvc)
+	pentestScans := api.Group("/pentest/scans", requireAuth, requireNotSuspended, middleware.RBAC(viewerAndAbove...))
+	{
+		pentestScans.GET("/:id", pentestH.GetScan)
+		pentestScans.GET("/:id/attack-surface", pentestH.GetAttackSurface)
+		pentestScans.GET("/:id/findings", pentestH.ListFindings)
+		pentestScans.GET("/:id/findings/:findingId", pentestH.GetFinding)
+		pentestScans.GET("/:id/findings/:findingId/evidence", pentestH.ListEvidenceForFinding)
+		pentestScans.GET("/:id/findings/:findingId/evidence/:evidenceId/download", pentestH.DownloadEvidence)
+		pentestScans.GET("/:id/reports", pentestH.ListReports)
+		pentestScans.GET("/:id/reports/:type", pentestH.GetReport)
+		pentestScans.GET("/:id/reports/:type/download", pentestH.DownloadReport)
+		pentestScans.GET("/:id/authorization", pentestH.GetAuthorization)
 	}
 
 	// requireOperator (BUILD_GUIDE.md Phase 14) gates every `/admin/*`
