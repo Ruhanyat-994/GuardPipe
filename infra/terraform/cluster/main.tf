@@ -328,8 +328,14 @@ data "aws_iam_policy_document" "guardpipe_app_secrets" {
   }
 
   statement {
-    sid     = "AppParameters"
-    actions = ["ssm:GetParameter"]
+    sid = "AppParameters"
+    # The Secrets Store CSI driver's AWS provider calls the batch
+    # ssm:GetParameters (plural), not ssm:GetParameter — a different IAM
+    # action entirely, confirmed live 2026-09-13 via the provider's own pod
+    # logs ("AccessDeniedException ... ssm:GetParameters ... no identity-
+    # based policy allows"), which left guardpipe-api/-worker stuck in
+    # ContainerCreating on every rollout.
+    actions = ["ssm:GetParameter", "ssm:GetParameters"]
     resources = [
       data.terraform_remote_state.persistent.outputs.jwt_secret_parameter_arn,
       data.terraform_remote_state.persistent.outputs.encryption_key_parameter_arn,
