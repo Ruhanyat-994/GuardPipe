@@ -186,3 +186,32 @@ spec:
       ports:
         - protocol: TCP
           port: 9000
+---
+# adapters/sonarqube.Client's own HTTP calls (GetTask/SearchIssues/
+# SearchHotspots/GetRule) are made directly from engines/codescan.Engine,
+# which runs inside guardpipe-worker's own process — not from a Job pod — so
+# allow-codescan-job-egress above (scoped to guardpipe.io/codescan-run Job
+# pods only) doesn't cover this traffic. Confirmed live 2026-09-14: the
+# sonar-scanner Job itself completed and exited successfully, but the
+# engine's post-scan GetTask poll from guardpipe-worker then hung against
+# default-deny-all until its own timeout ("dial tcp ...:9000: i/o timeout").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-to-sonarqube-egress
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["guardpipe-api", "guardpipe-worker"]
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sonarqube
+      ports:
+        - protocol: TCP
+          port: 9000
