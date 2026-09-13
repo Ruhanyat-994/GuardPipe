@@ -213,9 +213,15 @@ jobs:
 
       - name: Install AWS Load Balancer Controller
         working-directory: .
+        # -full.yaml first, not -ingclass.yaml: -ingclass.yaml's
+        # IngressClassParams objects are instances of a CRD that -full.yaml
+        # itself defines — applying ingclass first failed live 2026-09-13
+        # with "no matches for kind IngressClassParams ... ensure CRDs are
+        # installed first", the controller's own CRD-ordering requirement,
+        # not a GuardPipe-authored one.
         run: |
-          kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-ingclass.yaml
           kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-full.yaml
+          kubectl apply -f deploy/k8s/addons/aws-load-balancer-controller-v3.5.0-ingclass.yaml
           kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=3m
 
       - name: Apply GuardPipe manifests
