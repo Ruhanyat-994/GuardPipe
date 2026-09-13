@@ -229,7 +229,17 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 							{Name: "SONAR_HOST_URL", Value: s.cfg.HostURL},
 							{Name: "SONAR_TOKEN", Value: s.cfg.Token},
 						},
-						Command: []string{
+						// Args, not Command: Kubernetes' Command overrides the
+						// image's own ENTRYPOINT (the sonar-scanner binary
+						// itself), the opposite of Docker's Cmd — which
+						// adapters/sonarqube/scanner.go's Config.Cmd (the
+						// working Docker path) relies on being appended to
+						// that ENTRYPOINT, standard Docker semantics.
+						// Confirmed live 2026-09-13: using Command here made
+						// the container try to exec "-Dsonar.projectKey=..."
+						// as a program name — "scanner exited 128" with no
+						// log output at all, since the JVM never started.
+						Args: []string{
 							"-Dsonar.projectKey=" + projectKey,
 							"-Dsonar.working.directory=/tmp/scannerwork",
 							"-Dsonar.sources=/workspace/src",
