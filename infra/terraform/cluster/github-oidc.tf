@@ -83,7 +83,14 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   }
 
   statement {
-    sid = "EcrPush"
+    # "EcrPush", but also the read-only actions infra.yml needs beyond
+    # pushing: DescribeImages ("find the most recently pushed tag" for the
+    # cluster's first deploy) and DescribeRepositories (persistent/'s own
+    # terraform plan refreshing state for aws_ecr_repository.images) — both
+    # missing originally because only deploy.yml's push path was accounted
+    # for; confirmed missing live 2026-09-13 by both a failing infra.yml run
+    # and a failing PR-triggered `plan (persistent)` check.
+    sid = "EcrPushAndRead"
     actions = [
       "ecr:BatchCheckLayerAvailability",
       "ecr:GetDownloadUrlForLayer",
@@ -92,6 +99,9 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "ecr:InitiateLayerUpload",
       "ecr:UploadLayerPart",
       "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:DescribeRepositories",
+      "ecr:ListTagsForResource",
     ]
     resources = [
       for name in ["guardpipe", "guardpipe-web"] :
@@ -229,6 +239,38 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     sid       = "ReadKmsAlias"
     actions   = ["kms:ListAliases", "kms:DescribeKey"]
     resources = ["*"]
+  }
+
+  # Read-only refresh permissions for the persistent/ layer's own PR-triggered
+  # `terraform plan` (infra.yml's plan job matrixes over both layers on every
+  # PR touching infra/terraform/**, even though only cluster/ is ever applied
+  # by this role — see DEPLOYMENT.md §8/§9). persistent/ is applied by hand,
+  # never by CI, so this is read-only, no Create/Update/Delete. Confirmed
+  # missing live 2026-09-13 — a real PR's `plan (persistent)` check failed on
+  # every one of these actions.
+  statement {
+    sid = "ReadPersistentLayerForPlan"
+    actions = [
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeVpcs",
+      "ec2:DescribeInternetGateways",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeRouteTables",
+      "ec2:DescribeSecurityGroups",
+      "rds:DescribeDBInstances",
+      "rds:DescribeDBSubnetGroups",
+      "ecr:GetLifecyclePolicy",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    sid     = "ReadPersistentLayerSsmParams"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      data.terraform_remote_state.persistent.outputs.jwt_secret_parameter_arn,
+      data.terraform_remote_state.persistent.outputs.encryption_key_parameter_arn,
+      data.terraform_remote_state.persistent.outputs.gemini_api_key_parameter_arn,
+    ]
   }
 }
 
