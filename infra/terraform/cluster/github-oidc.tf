@@ -260,6 +260,11 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "ec2:DescribeSecurityGroups",
       "rds:DescribeDBInstances",
       "rds:DescribeDBSubnetGroups",
+      # RDS's ListTagsForResource, unlike most Describe calls, doesn't reject
+      # a "*" resource the way ssm:DescribeParameters does — kept here rather
+      # than resource-scoped since it covers both aws_db_instance.main and
+      # aws_db_subnet_group.main's tag refreshes without needing two ARNs.
+      "rds:ListTagsForResource",
       "ecr:GetLifecyclePolicy",
       # SSM's DescribeParameters (used for a parameter's own metadata refresh,
       # separately from GetParameter's value read below) doesn't support
@@ -271,7 +276,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   }
   statement {
     sid     = "ReadPersistentLayerSsmParams"
-    actions = ["ssm:GetParameter"]
+    actions = ["ssm:GetParameter", "ssm:ListTagsForResource"]
     resources = [
       data.terraform_remote_state.persistent.outputs.jwt_secret_parameter_arn,
       data.terraform_remote_state.persistent.outputs.encryption_key_parameter_arn,
