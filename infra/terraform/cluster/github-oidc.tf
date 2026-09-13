@@ -108,6 +108,126 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     actions   = ["eks:DescribeCluster"]
     resources = [aws_eks_cluster.main.arn]
   }
+
+  # Everything below this line is for infra.yml's start/stop jobs, which run
+  # a real `terraform apply`/`destroy` against this whole cluster/ config —
+  # a materially bigger ask than DEPLOYMENT.md §6's original "ECR push,
+  # eks:DescribeCluster, apply the k8s manifests" scoping anticipated.
+  # Confirmed live (2026-09-13): the first real infra.yml run failed at
+  # `terraform init` itself with a 403 reading the S3 state object, because
+  # this role had none of what follows. Scoped to exactly the resource
+  # *types* cluster/'s own Terraform manages, by name prefix wherever the
+  # service supports it (IAM roles/policies under guardpipe-*, this one EKS
+  # cluster and its sub-resources) — `*` only for the handful of AWS APIs
+  # that genuinely have no resource-level ARN support for these actions
+  # (EC2 launch templates, Budgets, listing KMS aliases).
+
+  # Terraform's own remote state (S3 + DynamoDB lock) — cluster/ reads
+  # persistent/'s state too (terraform_remote_state), so both keys, not just
+  # cluster/'s own.
+  statement {
+    sid       = "TerraformStateBucket"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${var.state_bucket}"]
+  }
+  statement {
+    sid     = "TerraformStateObjects"
+    actions = ["s3:GetObject", "s3:PutObject"]
+    resources = [
+      "arn:aws:s3:::${var.state_bucket}/cluster/terraform.tfstate",
+      "arn:aws:s3:::${var.state_bucket}/persistent/terraform.tfstate",
+    ]
+  }
+  statement {
+    sid       = "TerraformStateLock"
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+    resources = ["arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${var.state_dynamodb_table}"]
+  }
+
+  # IAM roles/policies this config manages — every one of them is named
+  # "${var.project}-*" (main.tf/github-oidc.tf), so a name-prefixed ARN
+  # covers all of them without a broader `iam:*` grant.
+  statement {
+    sid = "ManageProjectIamRolesAndPolicies"
+    actions = [
+      "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:TagRole", "iam:UntagRole",
+      "iam:PassRole",
+      "iam:CreatePolicy", "iam:DeletePolicy", "iam:GetPolicy", "iam:GetPolicyVersion",
+      "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:ListPolicyVersions",
+      "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies",
+      "iam:UpdateAssumeRolePolicy",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project}-*",
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/${var.project}-*",
+    ]
+  }
+  # AWS-managed policies this config attaches (AmazonEKSClusterPolicy etc.)
+  # — not project-prefixed, so scoped by their own fixed ARN space instead.
+  statement {
+    sid       = "AttachAwsManagedPolicies"
+    actions   = ["iam:AttachRolePolicy", "iam:DetachRolePolicy"]
+    resources = ["arn:aws:iam::aws:policy/*"]
+  }
+  # OIDC providers (EKS's own + GitHub's) — no name-prefix support on this
+  # resource type's ARN, scoped to the account's OIDC provider space instead
+  # of iam:* broadly.
+  statement {
+    sid = "ManageOidcProviders"
+    actions = [
+      "iam:CreateOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider",
+      "iam:GetOpenIDConnectProvider", "iam:TagOpenIDConnectProvider", "iam:UntagOpenIDConnectProvider",
+      "iam:UpdateOpenIDConnectProviderThumbprint",
+    ]
+    resources = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/*"]
+  }
+
+  # The EKS cluster itself, its node group, addons, and access entries.
+  statement {
+    sid = "ManageEksCluster"
+    actions = [
+      "eks:CreateCluster", "eks:DeleteCluster", "eks:UpdateClusterConfig", "eks:UpdateClusterVersion",
+      "eks:TagResource", "eks:UntagResource", "eks:ListTagsForResource",
+      "eks:CreateNodegroup", "eks:DeleteNodegroup", "eks:DescribeNodegroup", "eks:UpdateNodegroupConfig", "eks:UpdateNodegroupVersion",
+      "eks:CreateAddon", "eks:DeleteAddon", "eks:DescribeAddon", "eks:UpdateAddon",
+      "eks:CreateAccessEntry", "eks:DeleteAccessEntry", "eks:DescribeAccessEntry", "eks:UpdateAccessEntry",
+      "eks:AssociateAccessPolicy", "eks:DisassociateAccessPolicy", "eks:ListAssociatedAccessPolicies",
+    ]
+    resources = [
+      aws_eks_cluster.main.arn,
+      "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:nodegroup/${var.cluster_name}/*",
+      "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:addon/${var.cluster_name}/*",
+      "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:access-entry/${var.cluster_name}/*",
+    ]
+  }
+
+  # EC2 launch template + describe calls the node group's launch template
+  # needs — the EC2 API doesn't support resource-level ARN conditions for
+  # Create/Describe on this resource type, so this is genuinely `*`, not a
+  # scoping shortcut.
+  statement {
+    sid = "ManageNodeLaunchTemplate"
+    actions = [
+      "ec2:CreateLaunchTemplate", "ec2:DeleteLaunchTemplate", "ec2:CreateLaunchTemplateVersion",
+      "ec2:DescribeLaunchTemplates", "ec2:DescribeLaunchTemplateVersions", "ec2:ModifyLaunchTemplate",
+      "ec2:CreateTags", "ec2:DescribeTags",
+    ]
+    resources = ["*"]
+  }
+
+  # Budgets and the SSM-key-alias lookup (guardpipe_app_secrets' data
+  # "aws_kms_alias" "ssm") — neither API supports resource-level ARNs for
+  # these actions.
+  statement {
+    sid       = "ManageBudget"
+    actions   = ["budgets:ViewBudget", "budgets:ModifyBudget"]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "ReadKmsAlias"
+    actions   = ["kms:ListAliases"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "github_actions" {
