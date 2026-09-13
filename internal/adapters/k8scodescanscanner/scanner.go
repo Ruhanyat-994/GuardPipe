@@ -63,8 +63,17 @@ const (
 const runLabelKey = "guardpipe.io/codescan-run"
 const runAsNobody int64 = 65534
 
+// defaultMemoryMB: confirmed live 2026-09-13, 1024 was not enough — the
+// scanner container's own stdout (exit 137, SIGKILL/OOM) showed the JVM
+// starting an embedded Node.js runtime for JS/TS analysis ("Memory
+// configuration: ... Node.js (560 MB)") even against a Go-only checkout,
+// since the scanner engine's JS/TS sensor bootstraps unconditionally once
+// loaded. That alone left no real room for the JVM's own heap inside a
+// 1024Mi cgroup limit. This cluster's shared t3.medium nodes have enough
+// spare allocatable memory outside the node already running SonarQube's
+// own StatefulSet (see AWS-VERIFICATION.md) to give this Job real room.
 const (
-	defaultMemoryMB = 1024
+	defaultMemoryMB = 2048
 	defaultCPUs     = 1.0
 	pollInterval    = 3 * time.Second
 	defaultTimeout  = 10 * time.Minute
