@@ -43,6 +43,18 @@ resource "aws_eks_cluster" "main" {
     endpoint_private_access = false
   }
 
+  # API-only (not the legacy aws-auth ConfigMap, and not the hybrid
+  # API_AND_CONFIG_MAP default): every principal this config grants cluster
+  # access to (github-oidc.tf's CI role) is wired via aws_eks_access_entry/
+  # aws_eks_access_policy_association below, so there's no aws-auth
+  # ConfigMap entry anywhere to keep in sync with it — one source of truth
+  # for "who can reach this cluster and with what permissions," matching
+  # DEPLOYMENT.md §6's "least privilege, nothing broader" IRSA reasoning
+  # extended to cluster access itself.
+  access_config {
+    authentication_mode = "API"
+  }
+
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
 
   tags = {

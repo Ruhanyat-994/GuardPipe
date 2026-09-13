@@ -112,6 +112,12 @@ variable "budget_limit_usd" {
   default     = 25
 }
 
+variable "github_repo" {
+  description = "GitHub \"owner/repo\" this cluster's CI role trusts (github-oidc.tf) — must match exactly, it's the whole security boundary for who can assume the role."
+  type        = string
+  default     = "Ruhanyat-994/GuardPipe"
+}
+
 variable "budget_alert_email" {
   description = "Email address the $25 AWS Budgets alert notifies."
   type        = string

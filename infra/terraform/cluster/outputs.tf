@@ -24,6 +24,11 @@ output "oidc_provider_arn" {
   value = aws_iam_openid_connect_provider.eks.arn
 }
 
+output "github_actions_role_arn" {
+  description = "Set this as the GitHub repo Variable AWS_OIDC_ROLE_ARN (DEPLOYMENT-NEXT-STEPS.md Part 9) — deploy.yml/infra.yml assume this role via OIDC, no static AWS keys."
+  value       = aws_iam_role.github_actions.arn
+}
+
 ## ---------------------------------------------------------------------------
 ## Pass-throughs of persistent/'s own outputs — so infra.yml's "start" job
 ## can get everything deploy/k8s/'s manifests need to be substituted
