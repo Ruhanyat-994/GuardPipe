@@ -65,6 +65,20 @@ jobs:
           docker build -t "$REGISTRY/guardpipe-web:$IMAGE_TAG" ./frontend
           docker push "$REGISTRY/guardpipe-web:$IMAGE_TAG"
 
+      # Build context is the repo root, not internal/scripts/pentest/ — same
+      # as docker-compose.yml's own pentest-sandbox service — because the
+      # Dockerfile COPYs internal/scripts/pentest/*.sh directly into the
+      # image now (adapters/k8spentestsandbox's Job pods have no shared
+      # filesystem with guardpipe-worker to mount those from at runtime the
+      # way the Docker Compose path's ScriptMount volume does).
+      - name: Build and push guardpipe-pentest-sandbox
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          docker build -f internal/scripts/pentest/Dockerfile -t "$REGISTRY/guardpipe-pentest-sandbox:$IMAGE_TAG" .
+          docker push "$REGISTRY/guardpipe-pentest-sandbox:$IMAGE_TAG"
+
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest

@@ -104,7 +104,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "ecr:ListTagsForResource",
     ]
     resources = [
-      for name in ["guardpipe", "guardpipe-web"] :
+      for name in ["guardpipe", "guardpipe-web", "guardpipe-pentest-sandbox"] :
       "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/${name}"
     ]
   }
