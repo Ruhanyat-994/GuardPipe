@@ -68,6 +68,20 @@ output "ecr_repository_urls" {
   value = data.terraform_remote_state.persistent.outputs.ecr_repository_urls
 }
 
+output "vpc_id" {
+  # Fed to the ALB controller as --aws-vpc-id (deploy/k8s/addons/aws-load-
+  # balancer-controller-v3.5.0-full.yaml) so it never needs to discover the
+  # VPC via EC2 instance metadata — that lookup fails from a pod's network
+  # namespace under the account's default IMDS hop limit of 1 (an extra
+  # network hop pod traffic takes versus host-network traffic), confirmed
+  # live 2026-09-13: "failed to fetch VPC ID from instance metadata ...
+  # context deadline exceeded", crash-looping the controller. Passing the
+  # VPC ID explicitly sidesteps IMDS entirely rather than reconfiguring the
+  # node launch template's metadata_options, which would need replacing
+  # already-running node instances.
+  value = data.terraform_remote_state.persistent.outputs.vpc_id
+}
+
 # The ALB's own hostname isn't an output here — it doesn't exist until the
 # Ingress (deploy/k8s/07-ingress.yaml) is applied against this cluster, which
 # happens after this apply, not as part of it (DEPLOYMENT.md §1a: infra.yml's

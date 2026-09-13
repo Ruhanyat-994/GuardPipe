@@ -1774,6 +1774,16 @@ spec:
       - args:
         - --cluster-name=${CLUSTER_NAME}
         - --ingress-class=alb
+        # Explicit, not IMDS-discovered: the controller's default VPC-ID
+        # lookup goes through EC2 instance metadata, which fails from a
+        # pod's network namespace under this account's default IMDS hop
+        # limit of 1 (an extra hop versus host-network traffic) — confirmed
+        # live 2026-09-13, crash-looping the controller with "failed to
+        # fetch VPC ID from instance metadata ... context deadline
+        # exceeded". ${VPC_ID} comes from cluster/outputs.tf's pass-through
+        # of persistent/'s own VPC, substituted the same way every other
+        # placeholder in this file is.
+        - --aws-vpc-id=${VPC_ID}
         image: public.ecr.aws/eks/aws-load-balancer-controller:v3.5.0
         livenessProbe:
           failureThreshold: 2
