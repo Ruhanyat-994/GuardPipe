@@ -273,6 +273,58 @@ resource "aws_iam_role_policy_attachment" "alb_controller" {
 }
 
 ## ---------------------------------------------------------------------------
+## EBS CSI driver — needed for SonarQube's own PersistentVolumeClaim
+## (deploy/k8s/addons/sonarqube/), the first thing in this cluster that
+## needs persistent block storage; everything else so far is either
+## stateless or backed by RDS. AWS's own managed AmazonEBSCSIDriverPolicy,
+## not a hand-written one — this is a first-party AWS addon, not a
+## community controller like the ALB one above.
+## ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "ebs_csi_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url_no_scheme}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url_no_scheme}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  name               = "${var.project}-ebs-csi"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name             = aws_eks_cluster.main.name
+  addon_name               = "aws-ebs-csi-driver"
+  service_account_role_arn = aws_iam_role.ebs_csi.arn
+  # Real dependency, not just declared order: the addon's controller pods
+  # need a node to schedule onto, and (like every other addon here) the
+  # node group must exist first.
+  depends_on = [aws_eks_node_group.main]
+
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+}
+
+## ---------------------------------------------------------------------------
 ## IRSA — guardpipe-api / guardpipe-worker: least-privilege read access,
 ## scoped to the exact resources those two Deployments need (DEPLOYMENT.md
 ## §6) — nothing broader, and not shared with the ALB controller's own role

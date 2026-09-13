@@ -53,18 +53,22 @@ variable "cluster_version" {
 # compute"). min = max = desired disables any scaling *action*; nothing
 # outside a manual `terraform apply` changes this number.
 variable "node_desired_size" {
+  # 2 -> 3 (2026-09-14): SonarQube (deploy/k8s/addons/sonarqube/) needs real
+  # memory (it runs Elasticsearch internally, realistically 3-4GB) — close
+  # to a whole t3.medium on its own. One more node gives it room without
+  # starving the app's own pods on the original two.
   type    = number
-  default = 2
+  default = 3
 }
 
 variable "node_min_size" {
   type    = number
-  default = 2
+  default = 3
 }
 
 variable "node_max_size" {
   type    = number
-  default = 2
+  default = 3
 }
 
 variable "node_instance_types" {
