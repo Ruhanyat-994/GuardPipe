@@ -248,17 +248,28 @@ data "aws_caller_identity" "current" {}
 ## Kubernetes-side access for the same role (EKS access entries — main.tf's
 ## access_config sets authentication_mode = "API" specifically so this is
 ## the one and only way anything gets cluster access, no aws-auth ConfigMap
-## to separately keep in sync). Two associations, not one — not cluster-admin
-## either way:
-##   - AmazonEKSEditPolicy, scoped to just the guardpipe namespace — the
-##     actual create/update/delete workloads deploy.yml/infra.yml need.
-##   - AmazonEKSViewPolicy, cluster-wide (read-only) — confirmed live
-##     necessary, not a guess: infra.yml's own `kubectl wait --for=condition=
-##     Ready nodes --all` failed with a 403 under the namespace-scoped edit
-##     policy alone, because `nodes` is a cluster-scoped resource type, not a
-##     namespaced one — no namespace-scoped policy can ever grant read access
-##     to it, regardless of which policy. Read-only cluster-wide is still far
-##     narrower than cluster-admin.
+## to separately keep in sync).
+##
+## AmazonEKSClusterAdminPolicy, cluster-wide — not the narrower split this
+## started as. Tried AmazonEKSEditPolicy (namespace-scoped to guardpipe) +
+## AmazonEKSViewPolicy (cluster-wide, read-only) first; both failed against
+## real AWS, for two different reasons, each confirmed live rather than
+## guessed:
+##   1. `nodes` is a cluster-scoped resource type — no namespace-scoped
+##      policy can ever grant access to it, regardless of which policy.
+##      infra.yml no longer needs this specifically (its node-group wait now
+##      uses `aws eks wait nodegroup-active`, an IAM-only check — see the
+##      comment on that step), but the underlying limitation is general.
+##   2. AmazonEKSViewPolicy mirrors Kubernetes' built-in `view` ClusterRole,
+##      which is read-only and — separately from (1) — this workflow needs
+##      to *write* cluster-scoped objects too: cert-manager/the Secrets
+##      Store CSI driver/the ALB controller each install CRDs and
+##      ClusterRoles, into cert-manager/kube-system, not just the guardpipe
+##      namespace. No combination short of cluster-admin covers that.
+## This role can already create/destroy the entire cluster and every IAM
+## resource around it via Terraform (see the permissions policy above) —
+## Kubernetes cluster-admin on top of that is not a meaningfully larger
+## blast radius, just the same trust boundary expressed in the other API.
 ## ---------------------------------------------------------------------------
 
 resource "aws_eks_access_entry" "github_actions" {
@@ -266,23 +277,10 @@ resource "aws_eks_access_entry" "github_actions" {
   principal_arn = aws_iam_role.github_actions.arn
 }
 
-resource "aws_eks_access_policy_association" "github_actions_edit" {
+resource "aws_eks_access_policy_association" "github_actions_admin" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = aws_iam_role.github_actions.arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
-
-  access_scope {
-    type       = "namespace"
-    namespaces = [var.app_namespace]
-  }
-
-  depends_on = [aws_eks_access_entry.github_actions]
-}
-
-resource "aws_eks_access_policy_association" "github_actions_view" {
-  cluster_name  = aws_eks_cluster.main.name
-  principal_arn = aws_iam_role.github_actions.arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
 
   access_scope {
     type = "cluster"
