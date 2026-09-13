@@ -248,7 +248,25 @@ jobs:
         # Not recursive (kubectl's default) — applies only the top-level
         # 00-08 files, deploy/k8s/addons/ was already handled above.
         working-directory: .
-        run: kubectl apply -f deploy/k8s/
+        # Retried, not single-shot: the ALB controller's webhook endpoint
+        # check above (this step's previous step) isn't a reliable gate on
+        # its own — confirmed live 2026-09-13, twice, that an endpoint can
+        # briefly appear (or the pod still be settling on first request) and
+        # then the very next kubectl apply call still gets "connection
+        # refused" / "no endpoints available". kubectl apply is idempotent
+        # (resources already created come back "unchanged"), so retrying the
+        # whole command is safe and tolerates the webhook flapping for
+        # whatever reason without needing to diagnose that reason exactly.
+        run: |
+          for i in $(seq 1 6); do
+            if kubectl apply -f deploy/k8s/; then
+              exit 0
+            fi
+            echo "kubectl apply failed (likely the ALB controller's webhook still settling) — retrying in 15s..."
+            sleep 15
+          done
+          echo "kubectl apply -f deploy/k8s/ failed after 6 attempts (90s of retries) — check the aws-load-balancer-controller pod's own status/logs manually." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Wait for app rollout
         run: |
