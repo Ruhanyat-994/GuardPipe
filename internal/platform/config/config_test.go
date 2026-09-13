@@ -224,7 +224,10 @@ func TestLoad_EngineTimeoutDefaultsMatchDocumentedValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	// documentation/04-backend-architecture.md §6.3 (rev 1.1).
+	// documentation/04-backend-architecture.md §6.3 (rev 1.2 — pentest raised
+	// from 15 to 45 minutes by BUILD_GUIDE.md's "Pentest Quality Upgrade"
+	// pass, alongside Deep tier's own PhaseBudget ceiling growing to 10
+	// minutes per script call).
 	wantMinutes := map[string]int{
 		"docreview":     5,
 		"codescan":      10,
@@ -232,7 +235,7 @@ func TestLoad_EngineTimeoutDefaultsMatchDocumentedValues(t *testing.T) {
 		"containerscan": 15,
 		"k8sscan":       2,
 		"cicdscan":      3,
-		"pentest":       15,
+		"pentest":       45,
 	}
 	if len(cfg.Scanning.EngineTimeouts) != len(wantMinutes) {
 		t.Fatalf("got %d engine timeouts, want %d", len(cfg.Scanning.EngineTimeouts), len(wantMinutes))

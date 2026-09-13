@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Backend Architecture |
 | **Project** | GuardPipe |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Status** | Draft |
 | **Applies to** | Go 1.23+, Gin, PostgreSQL 16, Redis 7 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-28 |
+| **Last updated** | 2026-09-13 |
 
 ### Revision history
 
@@ -16,6 +16,7 @@
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial backend architecture |
 | 1.1 | 2026-08-28 | Team | §6.3: raised codescan/containerscan default timeouts (5→10 min, 8→15 min) after real self-scan timeouts; documented the two underlying fixes (codescan sonar.exclusions, containerscan Trivy cache volume) |
+| 1.2 | 2026-09-13 | Team | §6.3: raised pentest's default timeout 15→45 min (the "Pentest Quality Upgrade" pass — Deep tier's own PhaseBudget ceiling grew to 10 min per script call, and a Deep scan makes many such calls) |
 
 > This document describes **how the Go backend is structured**. It is descriptive, not a scaffolding script — no folders are created by this document. Sprint 0 creates the structure described here.
 
@@ -353,7 +354,7 @@ flowchart LR
 | `containerscan` | 15 min |
 | `k8sscan` | 2 min |
 | `cicdscan` | 3 min |
-| `pentest` | 15 min |
+| `pentest` | 45 min |
 
 codescan/containerscan were raised from an original 5/8 min after real self-scans of this repository timed out against them — both wrap a real external tool (SonarQube's async compute engine; a real `docker build` plus two Trivy invocations), and 5/8 min stopped being enough once the codebase grew past Phase 7/8's original size. See `internal/platform/config/config.go`'s `defaultEngineTimeouts` doc comment for the full account, including two real bugs found and fixed alongside the timeout bump: codescan had no `sonar.exclusions`, so it was indexing `frontend/node_modules` (236MB/17k+ files) on every run, and containerscan re-downloaded Trivy's full vulnerability database from scratch every run for lack of a persistent cache volume.
 

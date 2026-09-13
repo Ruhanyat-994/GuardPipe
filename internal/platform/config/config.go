@@ -195,7 +195,15 @@ var defaultEngineTimeouts = map[domain.EngineID]time.Duration{
 	domain.EngineContainerScan: 15 * time.Minute,
 	domain.EngineK8sScan:       2 * time.Minute,
 	domain.EngineCICDScan:      3 * time.Minute,
-	domain.EnginePentest:       15 * time.Minute,
+	// Raised from 15 to 45 minutes (BUILD_GUIDE.md's "Pentest Quality
+	// Upgrade" pass): Deep tier's own PhaseBudget ceiling alone grew to 10
+	// minutes per individual script call (domain.PentestPresetDeepConfig),
+	// and a Deep scan makes many such calls across several HTTP ports and
+	// pipeline stages (a full-range nmap sweep, --script vuln, a 5,000-entry
+	// ffuf pass, testssl.sh's full battery, a validated-endpoint nuclei
+	// sweep) — the old 15-minute ceiling could cut off a real Deep scan
+	// mid-run even when every individual tool call was behaving normally.
+	domain.EnginePentest: 45 * time.Minute,
 }
 
 // engineTimeoutEnvSuffix names the GUARDPIPE_ENGINE_TIMEOUT_<SUFFIX>
