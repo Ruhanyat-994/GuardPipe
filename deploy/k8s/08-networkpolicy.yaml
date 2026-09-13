@@ -142,3 +142,47 @@ spec:
     - from:
         - ipBlock:
             cidr: 0.0.0.0/0
+---
+# adapters/k8scodescanscanner's own Job pods — a different identity shape
+# from every policy above (a fresh, per-job "guardpipe.io/codescan-run"
+# label value each run, matched here via `Exists` so this one static policy
+# covers every codescan Job regardless of its specific run ID, rather than
+# that adapter creating a matching per-job NetworkPolicy the way
+# adapters/k8spentestsandbox does for its own Jobs — codescan's Jobs need
+# broad egress to actually clone an arbitrary public repository, unlike
+# pentest's target-IP-only isolation, so there's no narrower rule a per-job
+# policy would even buy here). Confirmed live 2026-09-14: without this, a
+# codescan Job's git clone just hung against default-deny-all until the
+# Job's own deadline killed it — allow-https-egress above looked like it
+# should already cover this and didn't, because its podSelector only
+# matches app=guardpipe-api/-worker, never these Job pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-codescan-job-egress
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchExpressions:
+      - key: guardpipe.io/codescan-run
+        operator: Exists
+  policyTypes: ["Egress"]
+  egress:
+    # The git clone (github.com or any other public HTTPS remote).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # sonar-scanner-cli itself, reaching SonarQube's own Service in its
+    # separate namespace (deploy/k8s/addons/sonarqube/) — cross-namespace
+    # traffic is blocked by default-deny-all the same as anything else
+    # without an explicit allow.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sonarqube
+      ports:
+        - protocol: TCP
+          port: 9000
