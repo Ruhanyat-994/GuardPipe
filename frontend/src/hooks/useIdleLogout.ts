@@ -13,7 +13,14 @@ import { useAuthStore } from '../stores/authStore'
  */
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000
 const CHECK_INTERVAL_MS = 30_000
-const ACTIVITY_EVENTS = ['mousedown', 'mousemove', 'keydown', 'wheel', 'touchstart', 'scroll'] as const
+const ACTIVITY_EVENTS = [
+  'mousedown',
+  'mousemove',
+  'keydown',
+  'wheel',
+  'touchstart',
+  'scroll',
+] as const
 
 export function useIdleLogout(): void {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
