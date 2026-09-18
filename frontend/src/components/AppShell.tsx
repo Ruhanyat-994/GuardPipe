@@ -23,6 +23,7 @@ import { UserMenu } from './UserMenu'
 import { Button } from './ui/Button'
 import { getProject } from '../lib/projectsApi'
 import { useAuthStore } from '../stores/authStore'
+import { useIdleLogout } from '../hooks/useIdleLogout'
 
 /**
  * The authenticated app's persistent chrome — dark `TopBar` + light
@@ -46,6 +47,8 @@ const NAV_ITEMS = [
 ] as const
 
 export function AppShell({ children }: { children: ReactNode }) {
+  useIdleLogout()
+
   const [collapsed, setCollapsed] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
