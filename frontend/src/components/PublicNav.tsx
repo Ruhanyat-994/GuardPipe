@@ -1,52 +1,109 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { ChevronRight } from 'lucide-react'
 import { Logo } from './Logo'
+import { cn } from '../lib/cn'
 import { useAuthStore } from '../stores/authStore'
 
+const LINKS = [
+  { to: '/#engines', label: 'Engines' },
+  { to: '/pricing', label: 'Pricing' },
+  { to: '/guides', label: 'Guides' },
+  { to: '/blog', label: 'Blog' },
+]
+
 /**
- * Floating pill nav, direction adapted from tridentsecurity.io
- * (documentation/09-ui-ux-design-system.md §5.9) — shared by Landing,
- * Guides, and Blog. Three-column layout: logo left, primary links centred
- * in the pill, the call-to-action pinned right.
+ * Public-site navigation (Landing, Pricing, Guides, Blog).
+ *
+ * `variant="hero"` (the landing page): fixed, transparent with white text
+ * over the dark hero, then collapses into a floating white pill once the
+ * page scrolls — the same move the reference site makes. Every other page
+ * uses the pill from the start (`variant="pill"`, the default).
  */
-export function PublicNav() {
+export function PublicNav({ variant = 'pill' }: { variant?: 'hero' | 'pill' }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const [scrolled, setScrolled] = useState(false)
+
+  useEffect(() => {
+    if (variant !== 'hero') return
+    const onScroll = () => setScrolled(window.scrollY > 40)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [variant])
+
+  const onDark = variant === 'hero' && !scrolled
+  const ctaTo = isAuthenticated ? '/projects' : '/register'
 
   return (
-    <header className="sticky top-4 z-10 mx-auto flex w-full max-w-3xl items-center justify-between rounded-full border border-border-default bg-bg-surface/90 px-6 py-3 shadow-md backdrop-blur relative">
-      <Link to="/" className="flex items-center gap-2 text-h3 font-semibold text-text-primary">
-        <Logo className="h-6 w-auto" />
-        GuardPipe
-      </Link>
-
-      <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-6 text-body-sm font-semibold sm:flex">
-        <Link to="/guides" className="text-text-secondary hover:text-text-primary">
-          Guides
-        </Link>
-        <Link to="/blog" className="text-text-secondary hover:text-text-primary">
-          Blog
-        </Link>
-        {!isAuthenticated && (
-          <Link to="/login" className="text-text-secondary hover:text-text-primary">
-            Sign in
-          </Link>
-        )}
-      </nav>
-
-      {isAuthenticated ? (
-        <Link
-          to="/projects"
-          className="rounded-md bg-accent px-3 py-1.5 text-body-sm font-medium text-text-inverse hover:opacity-90"
-        >
-          Dashboard
-        </Link>
-      ) : (
-        <Link
-          to="/register"
-          className="rounded-md bg-accent px-3 py-1.5 text-body-sm font-medium text-text-inverse hover:opacity-90"
-        >
-          Get started
-        </Link>
+    <div
+      className={cn(
+        'z-40 flex w-full justify-center px-4',
+        variant === 'hero' ? 'fixed inset-x-0 top-3' : 'sticky top-3',
       )}
-    </header>
+    >
+      <header
+        className={cn(
+          'flex w-full items-center justify-between transition-all',
+          onDark
+            ? 'max-w-5xl px-2 py-3 text-white'
+            : 'max-w-3xl rounded-full border border-black/5 bg-white/95 py-2 pr-2 pl-5 text-neutral-900 shadow-[0_8px_30px_rgba(0,0,0,0.12)] backdrop-blur',
+        )}
+        style={{ transitionDuration: '350ms' }}
+      >
+        <Link to="/" className="flex items-center gap-2 text-[15px] font-semibold tracking-tight">
+          <Logo className="h-6 w-auto" />
+          GuardPipe
+        </Link>
+
+        <nav className="hidden items-center gap-6 text-[13px] font-medium md:flex">
+          {LINKS.map((l) => (
+            <Link
+              key={l.to}
+              to={l.to}
+              className={cn(
+                'transition-colors',
+                onDark
+                  ? 'text-white/75 hover:text-white'
+                  : 'text-neutral-600 hover:text-neutral-950',
+              )}
+            >
+              {l.label}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="flex items-center gap-3">
+          {!isAuthenticated && (
+            <Link
+              to="/login"
+              className={cn(
+                'hidden text-[13px] font-medium sm:inline',
+                onDark
+                  ? 'text-white/80 hover:text-white'
+                  : 'text-neutral-600 hover:text-neutral-950',
+              )}
+            >
+              Sign in
+            </Link>
+          )}
+          <Link
+            to={ctaTo}
+            className={cn(
+              'group inline-flex items-center gap-1 rounded-full px-4 py-2 text-[13px] font-semibold transition-colors',
+              onDark
+                ? 'bg-white text-neutral-950 hover:bg-white/90'
+                : 'bg-neutral-950 text-white hover:bg-neutral-800',
+            )}
+          >
+            {isAuthenticated ? 'Dashboard' : 'Run a quick test'}
+            <ChevronRight
+              className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5"
+              aria-hidden="true"
+            />
+          </Link>
+        </div>
+      </header>
+    </div>
   )
 }
