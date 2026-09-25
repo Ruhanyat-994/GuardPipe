@@ -892,3 +892,25 @@ func TestGetScan_UnknownScan_ReturnsNotFound(t *testing.T) {
 	require.ErrorAs(t, err, &appErr)
 	require.Equal(t, apperrors.KindNotFound, appErr.Kind)
 }
+
+// A scan created through the HTTP API records trigger_source = manual; a
+// caller that names an origin (the live-scanning worker) has it kept as-is.
+func TestCreateScan_RecordsTriggerSource(t *testing.T) {
+	svc, _, _, _, _, _ := newTestOrchestrator(t)
+	actor := newActor()
+
+	manual, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	require.Equal(t, domain.TriggerManual, manual.TriggerSource)
+	require.Nil(t, manual.TriggerRef)
+
+	pushed, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{
+		Type: domain.ScanTypeFullSupplyChain, Branch: "feature/x",
+		TriggerSource: domain.TriggerWebhookPush, TriggerRef: "feature/x", TriggerActor: "octocat",
+	})
+	require.NoError(t, err)
+	require.Equal(t, domain.TriggerWebhookPush, pushed.TriggerSource)
+	require.Equal(t, "feature/x", *pushed.TriggerRef)
+	require.Equal(t, "octocat", *pushed.TriggerActor)
+	require.Equal(t, "feature/x", *pushed.Branch)
+}

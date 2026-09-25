@@ -42,12 +42,14 @@ func (r *ScanRepo) Create(ctx context.Context, s *domain.Scan) error {
 	}
 
 	const q = `
-		INSERT INTO scans (id, project_id, triggered_by, requested_ip, type, status, requested_engines, branch, finding_counts, pentest_config, queued_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::engine_id[], $8, $9, $10, now())
+		INSERT INTO scans (id, project_id, triggered_by, requested_ip, type, status, requested_engines, branch, finding_counts, pentest_config,
+			trigger_source, trigger_ref, trigger_actor, queued_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::engine_id[], $8, $9, $10, $11, $12, $13, now())
 		RETURNING queued_at`
 	err = r.db.QueryRow(ctx, q,
 		s.ID, s.ProjectID, s.TriggeredBy, requestedIP, string(s.Type), string(s.Status),
 		engineIDsToStrings(s.RequestedEngines), s.Branch, countsJSON, pentestConfigJSON,
+		optionalTriggerSource(s.TriggerSource), s.TriggerRef, s.TriggerActor,
 	).Scan(&s.QueuedAt)
 	if err != nil {
 		return fmt.Errorf("repo: insert scan: %w", err)
@@ -71,6 +73,7 @@ func (r *ScanRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Scan, err
 	const q = `
 		SELECT id, project_id, triggered_by, requested_ip, type, status, requested_engines, commit_sha, branch,
 			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts, pentest_config,
+			trigger_source, trigger_ref, trigger_actor,
 			(SELECT count(*) FROM scans s2 WHERE s2.project_id = scans.project_id AND s2.created_at <= scans.created_at)
 		FROM scans WHERE id = $1`
 	return scanRowScan(r.db.QueryRow(ctx, q, id))
@@ -92,6 +95,7 @@ func (r *ScanRepo) ListByProject(ctx context.Context, projectID uuid.UUID, page 
 	const listQ = `
 		SELECT id, project_id, triggered_by, requested_ip, type, status, requested_engines, commit_sha, branch,
 			cancel_requested, error_reason, queued_at, started_at, finished_at, finding_counts, pentest_config,
+			trigger_source, trigger_ref, trigger_actor,
 			ROW_NUMBER() OVER (ORDER BY created_at ASC)
 		FROM scans WHERE project_id = $1
 		ORDER BY created_at DESC
@@ -137,7 +141,8 @@ func (r *ScanRepo) ListByOrg(ctx context.Context, orgID uuid.UUID, page orchestr
 	// of that particular project," never a shared cross-project counter.
 	const listQ = `
 		SELECT s.id, s.project_id, s.triggered_by, s.type, s.status, s.requested_engines, s.commit_sha, s.branch,
-			s.cancel_requested, s.error_reason, s.queued_at, s.started_at, s.finished_at, s.finding_counts, p.name,
+			s.cancel_requested, s.error_reason, s.queued_at, s.started_at, s.finished_at, s.finding_counts,
+			s.trigger_source, s.trigger_ref, s.trigger_actor, p.name,
 			ROW_NUMBER() OVER (PARTITION BY s.project_id ORDER BY s.created_at ASC)
 		FROM scans s
 		JOIN projects p ON p.id = s.project_id
@@ -157,11 +162,13 @@ func (r *ScanRepo) ListByOrg(ctx context.Context, orgID uuid.UUID, page orchestr
 		var scanType, status, projectName string
 		var requestedEngines []string
 		var findingCounts map[string]int
+		var triggerSource *string
 
 		if err := rows.Scan(
 			&s.ID, &s.ProjectID, &s.TriggeredBy, &scanType, &status, &requestedEngines,
 			&s.CommitSHA, &s.Branch, &s.CancelRequested, &s.ErrorReason,
-			&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &projectName, &s.ScanNumber,
+			&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts,
+			&triggerSource, &s.TriggerRef, &s.TriggerActor, &projectName, &s.ScanNumber,
 		); err != nil {
 			return nil, 0, fmt.Errorf("repo: scan org scan row: %w", err)
 		}
@@ -169,6 +176,9 @@ func (r *ScanRepo) ListByOrg(ctx context.Context, orgID uuid.UUID, page orchestr
 		s.Status = domain.ScanStatus(status)
 		s.RequestedEngines = stringsToEngineIDs(requestedEngines)
 		s.FindingCounts = stringMapToSeverityMap(findingCounts)
+		if triggerSource != nil {
+			s.TriggerSource = domain.TriggerSource(*triggerSource)
+		}
 
 		out = append(out, orchestrator.OrgScanSummary{Scan: s, ProjectName: projectName})
 	}
@@ -211,11 +221,13 @@ func scanRowScan(row pgx.Row) (*domain.Scan, error) {
 	var findingCounts map[string]int
 	var pentestConfigJSON []byte
 	var requestedIP *netip.Addr
+	var triggerSource *string
 
 	err := row.Scan(
 		&s.ID, &s.ProjectID, &s.TriggeredBy, &requestedIP, &scanType, &status, &requestedEngines,
 		&s.CommitSHA, &s.Branch, &s.CancelRequested, &s.ErrorReason,
-		&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &pentestConfigJSON, &s.ScanNumber,
+		&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts, &pentestConfigJSON,
+		&triggerSource, &s.TriggerRef, &s.TriggerActor, &s.ScanNumber,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -230,6 +242,9 @@ func scanRowScan(row pgx.Row) (*domain.Scan, error) {
 	s.FindingCounts = stringMapToSeverityMap(findingCounts)
 	if requestedIP != nil {
 		s.RequestedFromIP = requestedIP.String()
+	}
+	if triggerSource != nil {
+		s.TriggerSource = domain.TriggerSource(*triggerSource)
 	}
 	s.PentestConfig, err = unmarshalPentestConfig(pentestConfigJSON)
 	if err != nil {
@@ -251,6 +266,16 @@ func parseOptionalIP(ip string) (*netip.Addr, error) {
 		return nil, err
 	}
 	return &addr, nil
+}
+
+// optionalTriggerSource maps an empty TriggerSource to NULL — the column's
+// CHECK constraint only accepts the named values.
+func optionalTriggerSource(t domain.TriggerSource) *string {
+	if t == "" {
+		return nil
+	}
+	v := string(t)
+	return &v
 }
 
 // marshalPentestConfig/unmarshalPentestConfig round-trip domain.Scan.PentestConfig

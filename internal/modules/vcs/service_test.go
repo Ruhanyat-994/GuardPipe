@@ -52,29 +52,30 @@ func TestService_ValidateRepository_PropagatesClientError(t *testing.T) {
 }
 
 func TestService_ShallowClone_UsesNormalizedCloneURLAndByteCap(t *testing.T) {
-	var gotURL, gotToken, gotDest string
+	var gotURL, gotBranch, gotToken, gotDest string
 	var gotMax int64
-	clone := func(_ context.Context, cloneURL, token, destDir string, maxBytes int64) error {
-		gotURL, gotToken, gotDest, gotMax = cloneURL, token, destDir, maxBytes
+	clone := func(_ context.Context, cloneURL, branch, token, destDir string, maxBytes int64) error {
+		gotURL, gotBranch, gotToken, gotDest, gotMax = cloneURL, branch, token, destDir, maxBytes
 		return nil
 	}
 	svc := vcs.NewService(nil, clone, 250)
 
-	err := svc.ShallowClone(context.Background(), "https://github.com/acme/payments-api.git", "ghp_token", "/tmp/ws/scan-1")
+	err := svc.ShallowClone(context.Background(), "https://github.com/acme/payments-api.git", "feature/x", "ghp_token", "/tmp/ws/scan-1")
 	require.NoError(t, err)
 	require.Equal(t, "https://github.com/acme/payments-api.git", gotURL)
+	require.Equal(t, "feature/x", gotBranch)
 	require.Equal(t, "ghp_token", gotToken)
 	require.Equal(t, "/tmp/ws/scan-1", gotDest)
 	require.EqualValues(t, 250*1024*1024, gotMax)
 }
 
 func TestService_ShallowClone_InvalidURLNeverCallsClone(t *testing.T) {
-	clone := func(context.Context, string, string, string, int64) error {
+	clone := func(context.Context, string, string, string, string, int64) error {
 		t.Fatal("clone must not be called for an invalid URL")
 		return nil
 	}
 	svc := vcs.NewService(nil, clone, 250)
 
-	err := svc.ShallowClone(context.Background(), "not a url", "", "/tmp/ws")
+	err := svc.ShallowClone(context.Background(), "not a url", "", "", "/tmp/ws")
 	require.ErrorIs(t, err, github.ErrInvalidRepositoryURL)
 }

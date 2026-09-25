@@ -4,12 +4,12 @@
 |---|---|
 | **Document** | API Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Status** | Draft |
 | **Style** | REST · JSON · OpenAPI 3.1 conventions · RFC 9457 errors |
 | **Base URL** | `http://localhost:8080/api/v1` |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-23 |
+| **Last updated** | 2026-09-24 |
 
 ### Revision history
 
@@ -19,6 +19,7 @@
 | 1.1 | 2026-08-16 | Team | `POST /projects`'s example `repository` object gains `credential_invalid`/`credential_invalid_reason` (also present on every other endpoint returning a repository) — set once a scan's clone is rejected with the stored credential, cleared by the existing attach/replace flow (`documentation/06-database-design.md` §4.5, migration `00012`). **Needs its second reviewer** per this doc's own change-control rule, since this file requires two approvals and only one person made this edit |
 | 1.2 | 2026-08-23 | Team | `GET /scans/{id}/export` implemented for real (`json`/`csv`/`pdf`, `modules/reporting`'s export slice pulled forward from Phase 13) — was previously JSON-only-documented with `pdf`/`sarif` returning a placeholder `501`. `sarif` remains unimplemented, now a plain `400 scan.export_format_unsupported`. **Needs its second reviewer**, same standing caveat as 1.1 |
 | 1.3 | 2026-08-23 | Team | `GET /scans/{id}/progress` gains a real, live per-engine `activity` field and an honest (elapsed-time-based, not frozen) `progress_pct` for a running job — previously a hardcoded `50`. Also corrects this section's own long-standing inaccuracy: progress was never actually Redis-backed (`gp:progress:{scan_id}` was aspirational, not built); it's now genuinely live, backed by an in-process store (`orchestrator.LiveProgress`), which this revision documents instead of the Redis shape that never existed. **Needs its second reviewer**, same standing caveat as 1.1 |
+| 1.4 | 2026-09-24 | Team | GitHub webhook live scanning built (`BUILD_GUIDE.md` Phase 17 Part B, FR-ORC-013/015..018): new §5.1 (`GET/PUT/DELETE /projects/{id}/live-scanning`); the webhook receiver moves from the reserved `POST /webhooks/github` to `POST /api/v1/webhooks/github/{id}` (see §9 for why); scan responses gain `trigger_source`/`trigger_ref`/`trigger_actor`. **Needs its second reviewer** per this doc's change-control rule |
 
 > **Change control:** this is the frontend/backend contract. Breaking changes require **two approvals** and a note to the frontend owner. Freeze target: end of Sprint 0.
 
@@ -407,6 +408,42 @@ A self-contained snapshot distinct from `GET /scans/{id}`'s live shape above: ev
 
 **Doc debt, not yet through this doc's own two-approval change-control process** (this doc's own header rule, §21): this entry, and the `csv` format the original spec never named, were added and shipped in one solo session per explicit user direction to fix a live gap (a clean pentest scan's coverage was being silently discarded before it ever reached the API — see `internal/modules/orchestrator/worker.go`'s persistence fix and `internal/engines/pentest/coverage.go`). Needs a second reviewer before this is "really" done, same caveat rev 1.1 above already carries for the same reason.
 
+**Scan origin fields.** `GET /scans/{id}`, `GET /projects/{id}/scans` and `GET /scans` rows all carry:
+```json
+{ "trigger_source": "webhook_pull_request", "trigger_ref": "refs/pull/12/head", "trigger_actor": "octocat" }
+```
+`trigger_source` is `manual` | `scheduled` | `webhook_push` | `webhook_pull_request` | `cli_watch` (reserved), or `null` for scans created before origins were recorded. `trigger_actor` is the GitHub login from the webhook payload; the accountable GuardPipe user is still the scan's `triggered_by`.
+
+### 5.1 Live scanning (GitHub webhook)
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| `GET` | `/projects/{id}/live-scanning` | viewer | Current settings + delivery health; `enabled: false` when off |
+| `PUT` | `/projects/{id}/live-scanning` | admin | Turn on, or change settings / resume after a pause |
+| `DELETE` | `/projects/{id}/live-scanning` | admin | Turn off and remove the hook from GitHub |
+| `POST` | `/webhooks/github/{id}` | signature | Receiver GitHub calls — see §9 |
+
+**`PUT /projects/{id}/live-scanning`**
+```json
+// request
+{ "engines": ["codescan", "depscan", "k8sscan"], "watched_branches": ["main"], "confirmed": true }
+
+// 200 response (same shape as GET)
+{ "enabled": true,
+  "allowed_engines": ["codescan", "depscan", "containerscan", "k8sscan", "cicdscan", "docreview"],
+  "engines": ["codescan", "depscan", "k8sscan"], "watched_branches": ["main"],
+  "enabled_by": "1b2c…", "enabled_by_name": "Jane Doe", "attested_at": "2026-09-24T10:00:00Z",
+  "last_delivery_at": "2026-09-24T10:00:02Z", "last_delivery_status": "ping_ok",
+  "paused_reason": null, "paused_at": null }
+```
+- `confirmed` must be `true` on every call (400 `livescan.confirmation_required`) — the caller becomes accountable for every automatic scan.
+- `engines` may never include `pentest` (400 `livescan.pentest_not_allowed`, FR-ORC-016). `watched_branches` omitted or empty means the repository's default branch.
+- Needs a repository (422 `livescan.no_repository`) and an attached GitHub token (422 `livescan.credential_required`) that can manage webhooks — otherwise 422 `github.hook_permission_denied`.
+- The first call registers a hook on GitHub (`push`, `pull_request`, JSON, per-hook secret). Later calls only update settings and clear any circuit-breaker pause.
+- The webhook secret is never returned by any endpoint.
+
+**`DELETE /projects/{id}/live-scanning`** → `200 { "github_hook_removed": true }`. `false` means live scanning is off in GuardPipe but GitHub refused the hook deletion (revoked token); the user removes it by hand.
+
 ---
 
 ## 6. Findings
@@ -561,9 +598,17 @@ Lets the UI show "what does GuardPipe actually check?" without the frontend dupl
 | `GET` | `/healthz` | none | Liveness — always 200 if the process is up |
 | `GET` | `/readyz` | none | Readiness — 200 only if Postgres + Redis reachable and migrations applied |
 | `GET` | `/version` | none | `{version, commit, built_at, go_version}` |
-| `POST` | `/webhooks/github` | signature | GitHub push/PR trigger (**Stretch**, FR-ORC-013) |
+| `POST` | `/api/v1/webhooks/github/{id}` | signature | GitHub push/PR trigger (FR-ORC-013) |
 
-These sit **outside** `/api/v1` — they are infrastructure, not product API, and must not be versioned with it.
+The first three sit **outside** `/api/v1` — they are infrastructure, not product API, and must not be versioned with it.
+
+**Webhook receiver.** Originally reserved here as `POST /webhooks/github` outside `/api/v1`; built under `/api/v1` instead, because the deployed ingress/nginx already route `/api/*` to the backend and nothing else — a root-level path would need its own routing rule in every environment for no benefit. `{id}` is the `project_webhooks.id` UUID baked into the hook's URL when it's registered; it selects which per-hook secret the signature is checked against. It is the one product route outside the JWT/RBAC chain:
+- `X-Hub-Signature-256` must be a valid HMAC-SHA256 of the raw body under that hook's secret → otherwise `401 webhook.signature_invalid`, nothing queued. Unknown `{id}` → `404`.
+- `ping` → `202`, recorded as delivery health. Events other than `push`/`pull_request` → `202`, ignored.
+- A repeated `X-GitHub-Delivery` → `202`, ignored.
+- Otherwise the event is queued and the response is `202` immediately; the scan is created asynchronously by the worker, never inside the request (GitHub times out deliveries after ~10 s and disables hooks that keep failing). Rate-limited triggers are dropped and audited, never reported to GitHub as an error.
+- Body capped at 5 MB.
+
 
 ---
 
@@ -599,6 +644,11 @@ GET    /api/v1/scans/:id/events            # Stretch (SSE)
 GET    /api/v1/scans/:id/export
 GET    /api/v1/scans/:id/findings
 
+GET    /api/v1/projects/:id/live-scanning
+PUT    /api/v1/projects/:id/live-scanning
+DELETE /api/v1/projects/:id/live-scanning
+POST   /api/v1/webhooks/github/:id         # signature-authenticated, no JWT
+
 GET    /api/v1/findings/:id
 PATCH  /api/v1/findings/:id/status
 GET    /api/v1/findings/:id/history
@@ -615,10 +665,9 @@ PATCH  /api/v1/rules/:id
 GET    /healthz
 GET    /readyz
 GET    /version
-POST   /webhooks/github                    # Stretch
 ```
 
-**39 endpoints** — 35 under `/api/v1` plus 4 system endpoints. Every one maps to at least one requirement in [02 — SRS](02-srs.md).
+**42 endpoints** — 39 under `/api/v1` plus 3 system endpoints. Every one maps to at least one requirement in [02 — SRS](02-srs.md).
 
 ---
 

@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.10 |
+| **Version** | 1.11 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-09-14 |
+| **Last updated** | 2026-09-24 |
 
 ### Revision history
 
@@ -24,6 +24,7 @@
 | 1.8 | 2026-08-23 | Team | New buildable (not long-running — `profiles: [build-only]`) `pentest-sandbox` service added to `docker-compose.yml`, built from `internal/scripts/pentest/Dockerfile`: an alpine-based image (never distroless — needs a real shell) bundling naabu/nmap/httpx/whatweb/testssl.sh/curl/katana/gau/CeWL/ffuf/nuclei/iptables/su-exec. `GUARDPIPE_SANDBOX_IMAGE` default changed from the old placeholder to `guardpipe-pentest-sandbox:latest` (§5.5) — a plain locally-built tag, not a pinned digest like this file's other image references, since it's never pushed to any registry. Build it once with `docker compose build pentest-sandbox` before a pentest scan can actually run tools; the engine still registers and fails cleanly without it. |
 | 1.9 | 2026-09-14 | Team | §5.3 adds `GUARDPIPE_SECURE_COOKIES` — previously the refresh-token cookie's `Secure` flag was hardcoded to `GUARDPIPE_ENV == "production"`, which broke session persistence across a page reload on the first real EKS deployment (the ALB has no TLS listener yet, and browsers silently refuse to store a `Secure` cookie set over plain HTTP). Now independently overridable, defaulting to the same behavior as before for anyone who hasn't hit this. Built, `internal/platform/config`. |
 | 1.10 | 2026-09-14 | Team | §5.4 adds a second pentest sandbox backend: `GUARDPIPE_SANDBOX_BACKEND` (`docker` default, `kubernetes` new), `GUARDPIPE_K8S_SANDBOX_IMAGE`, `GUARDPIPE_K8S_SANDBOX_NAMESPACE`. The EKS deployment has no Docker socket reachable from `guardpipe-worker` at all (pentest was disabled outright there until now — see `documentation/12-security-and-threat-model.md`'s sandboxing posture for why a shared host Docker socket was rejected instead); the `kubernetes` backend (`internal/adapters/k8spentestsandbox`) runs each tool invocation as a one-shot `batch/v1.Job`, isolated by a per-job `NetworkPolicy` rather than the Docker path's in-container `iptables` self-firewall — lets every sandbox pod run fully non-root with every capability dropped from the start, no root-then-drop dance needed. Built. |
+| 1.11 | 2026-09-24 | Team | New §5.9 (GitHub webhook live scanning, `BUILD_GUIDE.md` Phase 17 Part B): `GUARDPIPE_WEBHOOK_PUBLIC_URL`, `GUARDPIPE_LIVESCAN_MAX_PER_HOUR`, `GUARDPIPE_LIVESCAN_DEBOUNCE`. Built, `internal/platform/config`. |
 
 ---
 
@@ -209,6 +210,15 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 |---|---|
 | `GUARDPIPE_GATE_WARN` | `30` |
 | `GUARDPIPE_GATE_BLOCK` | `70` |
+
+### 5.9 Live scanning (GitHub webhooks)
+
+| Variable | Default | Required | Notes |
+|---|---|---|---|
+| `GUARDPIPE_WEBHOOK_PUBLIC_URL` | `GUARDPIPE_BASE_URL` | no | Origin GitHub delivers webhooks to — must be reachable from the internet. On AWS, the ALB's HTTPS URL. Locally, a tunnel that forwards paths unchanged, e.g. `cloudflared tunnel --url http://localhost:8080` or ngrok (GitHub can't reach `localhost`; smee.io doesn't work because each hook has its own path). Read when a hook is **registered**: changing it later doesn't move hooks that already exist — turn live scanning off and on again per project |
+| `GUARDPIPE_LIVESCAN_MAX_PER_HOUR` | `10` | no | Automatic scans per project per hour; the circuit breaker pauses live scanning at 3× this many triggers. Minimum 1 |
+| `GUARDPIPE_LIVESCAN_DEBOUNCE` | `30s` | no | How long a push waits for further pushes to the same branch before its one scan starts. Pull requests aren't debounced |
+
 
 **Fail-fast validation.** A missing required variable, a short JWT secret, or a wrong-length encryption key aborts startup with a message naming the variable. A security product that boots half-configured is worse than one that refuses to boot.
 

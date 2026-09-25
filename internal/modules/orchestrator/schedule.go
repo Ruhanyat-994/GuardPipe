@@ -225,7 +225,10 @@ func (s *service) TriggerSchedule(ctx context.Context, scheduleID uuid.UUID) (*S
 		userID = *sched.CreatedBy
 	}
 	actor := domain.Actor{UserID: userID, OrgID: orgID, Role: domain.RoleAdmin}
-	in := CreateScanInput{Type: sched.Profile.Type, Engines: sched.Profile.Engines, Branch: sched.Profile.Branch, PentestConfig: sched.Profile.PentestConfig}
+	in := CreateScanInput{
+		Type: sched.Profile.Type, Engines: sched.Profile.Engines, Branch: sched.Profile.Branch, PentestConfig: sched.Profile.PentestConfig,
+		TriggerSource: domain.TriggerScheduled,
+	}
 
 	detail, createErr := s.CreateScan(ctx, actor, sched.ProjectID, in)
 	status := "triggered"

@@ -36,6 +36,13 @@ type CreateScanInput struct {
 	// reporting.Assembler as the exported report's accountability watermark
 	// (who ran this scan, and from where).
 	SourceIP string
+	// TriggerSource/TriggerRef/TriggerActor record where the scan came from
+	// (domain.Scan's fields of the same names). An empty TriggerSource means
+	// manual — the HTTP handler never sets it, only the scheduler and the
+	// live-scanning webhook worker do.
+	TriggerSource domain.TriggerSource
+	TriggerRef    string
+	TriggerActor  string
 }
 
 // ScanDetail is a Scan plus its jobs — documentation/07-api-specification.md

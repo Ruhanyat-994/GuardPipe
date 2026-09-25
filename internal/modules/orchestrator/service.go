@@ -235,6 +235,16 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 	if in.Branch != "" {
 		scan.Branch = &in.Branch
 	}
+	scan.TriggerSource = in.TriggerSource
+	if scan.TriggerSource == "" {
+		scan.TriggerSource = domain.TriggerManual
+	}
+	if in.TriggerRef != "" {
+		scan.TriggerRef = &in.TriggerRef
+	}
+	if in.TriggerActor != "" {
+		scan.TriggerActor = &in.TriggerActor
+	}
 	if actor.UserID != uuid.Nil {
 		triggeredBy := actor.UserID
 		scan.TriggeredBy = &triggeredBy
@@ -286,7 +296,7 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 		s.audit.Log(ctx, audit.Entry{
 			OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "scan.started",
 			ResourceType: strPtr("scan"), ResourceID: &scan.ID, IP: ipAddr,
-			Detail: map[string]any{"project_id": projectID.String(), "type": string(in.Type), "engines": engines},
+			Detail: map[string]any{"project_id": projectID.String(), "type": string(in.Type), "engines": engines, "trigger_source": string(scan.TriggerSource)},
 		})
 	}
 

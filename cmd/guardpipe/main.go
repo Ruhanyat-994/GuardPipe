@@ -44,6 +44,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
 	modulepentest "github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
@@ -430,6 +431,17 @@ func run() error {
 		repo.NewScanScheduleRepo(db.Pool), membershipRepo,
 	)
 
+	// modules/livescan (BUILD_GUIDE.md Phase 17 Part B) — GitHub webhook live
+	// scanning. The API process receives and verifies deliveries; the
+	// worker process (below) turns them into scans.
+	liveScanStore := queue.NewLiveScanStore(redisClient)
+	liveScanSvc := livescan.NewService(livescan.Config{
+		PublicBaseURL:             cfg.LiveScan.PublicURL,
+		EncryptionKey:             cfg.Security.EncryptionKeyRaw,
+		MaxScansPerProjectPerHour: cfg.LiveScan.MaxScansPerProjectPerHour,
+		Debounce:                  cfg.LiveScan.Debounce,
+	}, repo.NewProjectWebhookRepo(db.Pool), githubClient, projectSvc, orchestratorSvc, liveScanStore, auditSvc, log)
+
 	// scorer's thresholds come from the same GUARDPIPE_GATE_WARN/BLOCK config
 	// values documentation/11-risk-scoring-and-severity.md §3.8 names —
 	// everything else in scoring.DefaultConfig() is a calibrated constant
@@ -505,6 +517,10 @@ func run() error {
 		go scheduler.Start(workerCtx)
 		log.Info("scan scheduler started")
 
+		liveScanWorker := &livescan.Worker{Service: liveScanSvc, Coordinator: liveScanStore, Log: log}
+		go liveScanWorker.Start(workerCtx)
+		log.Info("live scanning worker started", "webhook_public_url", cfg.LiveScan.PublicURL)
+
 		defer stopWorkers()
 	}
 
@@ -570,6 +586,7 @@ func run() error {
 		AdminSvc:        adminSvc,
 		OrgSvc:          orgSvc,
 		PentestSvc:      pentestSvc,
+		LiveScanSvc:     liveScanSvc,
 		Users:           repo.NewUserRepo(db.Pool),
 		AISvc:           aiSvc,
 		HealthDB:        db,

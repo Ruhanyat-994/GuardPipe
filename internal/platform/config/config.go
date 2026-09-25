@@ -37,6 +37,7 @@ type Config struct {
 	AI       AI
 	External External
 	Gate     Gate
+	LiveScan LiveScan
 }
 
 // Core — §5.1.
@@ -135,6 +136,22 @@ type Scanning struct {
 	// persists the vulnerability database across scans instead of
 	// re-downloading it from scratch on every containerscan run.
 	TrivyCacheVolume string
+}
+
+// LiveScan — GitHub webhook live scanning (BUILD_GUIDE.md Phase 17 Part B).
+type LiveScan struct {
+	// PublicURL is the origin GitHub delivers webhooks to. It must be
+	// reachable from the internet: the ALB's HTTPS URL on AWS, or a
+	// path-preserving tunnel (cloudflared, ngrok) for local testing.
+	// Defaults to GUARDPIPE_BASE_URL, which is only right when that's
+	// already public.
+	PublicURL string
+	// MaxScansPerProjectPerHour caps automatic scans per project; the
+	// circuit breaker pauses live scanning at 3x this many attempts.
+	MaxScansPerProjectPerHour int
+	// Debounce is how long a push waits for further pushes to the same
+	// branch before its scan starts.
+	Debounce time.Duration
 }
 
 // Pentest — §5.5.
@@ -336,6 +353,11 @@ func Load() (*Config, error) {
 			Block: getInt("GUARDPIPE_GATE_BLOCK", 70, p),
 		},
 	}
+	cfg.LiveScan = LiveScan{
+		PublicURL:                 getString("GUARDPIPE_WEBHOOK_PUBLIC_URL", cfg.Core.BaseURL),
+		MaxScansPerProjectPerHour: getInt("GUARDPIPE_LIVESCAN_MAX_PER_HOUR", 10, p),
+		Debounce:                  getDuration("GUARDPIPE_LIVESCAN_DEBOUNCE", 30*time.Second, p),
+	}
 
 	validateSecurity(cfg, p)
 	if cfg.AI.Enabled && len(cfg.AI.KeyPool()) == 0 {
@@ -346,6 +368,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.Scanning.SandboxBackend != "docker" && cfg.Scanning.SandboxBackend != "kubernetes" {
 		p.add("GUARDPIPE_SANDBOX_BACKEND must be \"docker\" or \"kubernetes\", got %q", cfg.Scanning.SandboxBackend)
+	}
+	if cfg.LiveScan.MaxScansPerProjectPerHour < 1 {
+		p.add("GUARDPIPE_LIVESCAN_MAX_PER_HOUR must be at least 1, got %d", cfg.LiveScan.MaxScansPerProjectPerHour)
 	}
 	if cfg.Scanning.SandboxBackend == "kubernetes" && cfg.Scanning.K8sSandboxImage == "" {
 		p.add("GUARDPIPE_K8S_SANDBOX_IMAGE is required when GUARDPIPE_SANDBOX_BACKEND is \"kubernetes\"")

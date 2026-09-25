@@ -42,7 +42,7 @@ func TestShallowClone_SucceedsWithinSizeCap(t *testing.T) {
 	src := newFixtureRepo(t)
 	dest := filepath.Join(t.TempDir(), "clone")
 
-	err := github.ShallowClone(context.Background(), src, "", dest, 10*1024*1024)
+	err := github.ShallowClone(context.Background(), src, "", "", dest, 10*1024*1024)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dest, "README.md"))
@@ -70,7 +70,7 @@ func TestShallowClone_AbortsOverSizeCap(t *testing.T) {
 	// Near-miss the other direction from the success case above: same
 	// repository, but a cap so small even one loose object exceeds it —
 	// the clone must not silently succeed just because "some" content fit.
-	err := github.ShallowClone(context.Background(), src, "", dest, 5)
+	err := github.ShallowClone(context.Background(), src, "", "", dest, 5)
 	require.ErrorIs(t, err, github.ErrRepoTooLarge)
 
 	_, statErr := os.Stat(dest)
@@ -79,6 +79,6 @@ func TestShallowClone_AbortsOverSizeCap(t *testing.T) {
 
 func TestShallowClone_NonexistentSourceFails(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "clone")
-	err := github.ShallowClone(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), "", dest, 10*1024*1024)
+	err := github.ShallowClone(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), "", "", dest, 10*1024*1024)
 	require.ErrorIs(t, err, github.ErrCloneFailed)
 }

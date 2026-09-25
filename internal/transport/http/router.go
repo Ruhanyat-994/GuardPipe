@@ -13,6 +13,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
@@ -54,6 +55,10 @@ type RouterConfig struct {
 	// attack surface, evidence, reports, authorization) — never nil in
 	// production (cmd/guardpipe/main.go always wires it).
 	PentestSvc *pentest.Service
+	// LiveScanSvc is BUILD_GUIDE.md Phase 17 Part B's GitHub webhook live
+	// scanning. nil (a test router that doesn't need it) leaves its routes
+	// unregistered.
+	LiveScanSvc livescan.Service
 	// Users backs the export report's accountability watermark (who
 	// requested this scan) — reporting.UserReader, satisfied directly by
 	// *store/repo.UserRepo.
@@ -256,6 +261,23 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		scans.POST("/:id/cancel", middleware.RBAC(memberAndAbove...), scanH.Cancel)
 		scans.GET("/:id/findings", middleware.RBAC(viewerAndAbove...), scanH.ListFindings)
 		scans.GET("/:id/export", middleware.RBAC(viewerAndAbove...), scanH.Export)
+	}
+
+	// GitHub webhook live scanning (BUILD_GUIDE.md Phase 17 Part B).
+	// Changing it is adminOnly: it registers a hook on the customer's GitHub
+	// repository and makes scans run under the confirming user's name.
+	//
+	// /webhooks/github/:id is the one route deliberately outside the
+	// JWT/RBAC chain — GitHub calls it, not a user. It's authenticated by
+	// the X-Hub-Signature-256 HMAC against that webhook's own secret
+	// (documentation/12-security-and-threat-model.md S4). The :id (an
+	// unguessable UUID) picks which secret to verify with.
+	if cfg.LiveScanSvc != nil {
+		liveScanH := handler.NewLiveScanHandler(cfg.LiveScanSvc, cfg.Users, v)
+		projects.GET("/:id/live-scanning", middleware.RBAC(viewerAndAbove...), liveScanH.Get)
+		projects.PUT("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Enable)
+		projects.DELETE("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Disable)
+		api.POST("/webhooks/github/:id", liveScanH.Receive)
 	}
 
 	// Pentest v2's own read-only API surface (architecture dossier §08) —

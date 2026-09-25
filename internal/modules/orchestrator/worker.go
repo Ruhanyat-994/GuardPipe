@@ -26,7 +26,7 @@ import (
 // Cloner is the subset of modules/vcs.Service the worker needs — defined
 // here (the consumer) so tests substitute a fake instead of a real clone.
 type Cloner interface {
-	ShallowClone(ctx context.Context, rawURL, token, destDir string) error
+	ShallowClone(ctx context.Context, rawURL, branch, token, destDir string) error
 }
 
 // CloneInfoProvider is the subset of modules/project.Service the worker
@@ -299,7 +299,7 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		// other job concurrently or later in the same scan reuses that same
 		// directory instead of re-cloning the repository from scratch.
 		workspaceDir, release, err := p.workspaces.acquire(ctx, scan.ID, func() (string, error) {
-			dir, _, prepErr := p.prepareWorkspace(ctx, scan.ProjectID)
+			dir, _, prepErr := p.prepareWorkspace(ctx, scan.ProjectID, scanBranch(scan))
 			return dir, prepErr
 		})
 		if err != nil {
@@ -339,6 +339,9 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		// other engine still getting to run even if this second, redundant
 		// lookup somehow fails.
 		if repoURL, branch, _, err := p.Projects.GetCloneInfo(ctx, scan.ProjectID); err == nil {
+			if b := scanBranch(scan); b != "" {
+				branch = b
+			}
 			scanInput.Repository = &domain.RepositoryRef{CloneURL: repoURL, Branch: branch}
 		}
 
@@ -525,7 +528,10 @@ func (p *Pool) runEngine(ctx context.Context, engine domain.Engine, in domain.Sc
 // via workspaceCache.acquire) owns removal instead, since a workspace this
 // function creates may now be shared by every job in a scan, not just the
 // one that happened to trigger the clone.
-func (p *Pool) prepareWorkspace(ctx context.Context, projectID uuid.UUID) (dir string, cleanup func(), err error) {
+//
+// branch is the scan's own requested branch (a live-scanning push to a
+// feature branch, say); empty means the repository's default branch.
+func (p *Pool) prepareWorkspace(ctx context.Context, projectID uuid.UUID, branch string) (dir string, cleanup func(), err error) {
 	repoURL, _, token, err := p.Projects.GetCloneInfo(ctx, projectID)
 	if err != nil {
 		return "", nil, fmt.Errorf("get clone info: %w", err)
@@ -540,7 +546,7 @@ func (p *Pool) prepareWorkspace(ctx context.Context, projectID uuid.UUID) (dir s
 	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
 
-	if err := p.Cloner.ShallowClone(ctx, repoURL, token, dir); err != nil {
+	if err := p.Cloner.ShallowClone(ctx, repoURL, branch, token, dir); err != nil {
 		cleanup()
 		// A stored credential being rejected only means "this credential is
 		// bad" if one was actually supplied — a 401/403 on a public repo
@@ -619,4 +625,13 @@ func sanitizeSymlink(root, path string) error {
 		return os.Remove(path)
 	}
 	return nil
+}
+
+// scanBranch is the branch a scan asked for, or "" for the repository's
+// default branch.
+func scanBranch(scan *domain.Scan) string {
+	if scan.Branch == nil {
+		return ""
+	}
+	return *scan.Branch
 }

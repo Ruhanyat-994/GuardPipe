@@ -11,6 +11,19 @@ export type ScanType = 'full_supply_chain' | 'partial' | 'pentest_only'
 export type ScanStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
 
+// Where a scan came from (migration 00027). null on scans created before
+// origins were recorded.
+export type TriggerSource =
+  'manual' | 'scheduled' | 'webhook_push' | 'webhook_pull_request' | 'cli_watch'
+
+export interface ScanTrigger {
+  trigger_source: TriggerSource | null
+  // The branch (push) or refs/pull/{n}/head (pull request) GitHub named.
+  trigger_ref: string | null
+  // The GitHub login that pushed or opened the pull request.
+  trigger_actor: string | null
+}
+
 export interface Job {
   id: string
   engine: Engine
@@ -67,7 +80,7 @@ export interface RiskAssessment {
   verdict: 'pass' | 'warn' | 'block'
 }
 
-export interface Scan {
+export interface Scan extends ScanTrigger {
   id: string
   project_id: string
   type: ScanType
@@ -204,7 +217,7 @@ export interface FindingList {
 // ScanSummary is one row of the scan-history table — deliberately lighter
 // than Scan (no per-job detail; `GET /projects/{id}/scans` doesn't return
 // it, avoiding an N+1 job/finding-count query per row for a list endpoint).
-export interface ScanSummary {
+export interface ScanSummary extends ScanTrigger {
   id: string
   project_id: string
   type: ScanType
@@ -359,4 +372,48 @@ export function updateSchedule(
 
 export function deleteSchedule(scheduleId: string): Promise<void> {
   return apiClient.delete(`/schedules/${scheduleId}`)
+}
+
+// --- GitHub live scanning — BUILD_GUIDE.md Phase 17 Part B ---
+
+export interface LiveScanSettings {
+  enabled: boolean
+  // What the form may offer — the server never includes pentest here.
+  allowed_engines: Engine[]
+  engines: Engine[]
+  watched_branches: string[]
+  enabled_by: string | null
+  enabled_by_name: string | null
+  attested_at: string | null
+  last_delivery_at: string | null
+  last_delivery_status: string | null
+  // Set when the circuit breaker paused live scanning; re-saving with the
+  // confirmation ticked resumes it.
+  paused_reason: string | null
+  paused_at: string | null
+  // Live scans stop once paying for one would leave less than this % of
+  // the plan's monthly tokens (token billing).
+  min_balance_percent: number
+}
+
+export interface EnableLiveScanInput {
+  engines: Engine[]
+  watched_branches: string[]
+  confirmed: boolean
+  min_balance_percent?: number
+}
+
+export function getLiveScan(projectId: string): Promise<LiveScanSettings> {
+  return apiClient.get(`/projects/${projectId}/live-scanning`)
+}
+
+export function enableLiveScan(
+  projectId: string,
+  input: EnableLiveScanInput,
+): Promise<LiveScanSettings> {
+  return apiClient.put<LiveScanSettings>(`/projects/${projectId}/live-scanning`, input)
+}
+
+export function disableLiveScan(projectId: string): Promise<{ github_hook_removed: boolean }> {
+  return apiClient.delete(`/projects/${projectId}/live-scanning`)
 }

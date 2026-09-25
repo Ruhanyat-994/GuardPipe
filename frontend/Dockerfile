@@ -7,6 +7,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+# Unset by default, so .env.production's relative /api/v1 (same-origin, for
+# the EKS ALB) wins. Local Docker Compose passes an absolute backend URL here
+# because nothing in front of nginx routes /api/* to the backend locally.
+ARG VITE_API_BASE_URL
 RUN npm run build
 
 FROM nginx:1.27-alpine AS runtime

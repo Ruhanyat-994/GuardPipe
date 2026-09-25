@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Database Design |
 | **Project** | GuardPipe |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Status** | Draft |
 | **Engine** | PostgreSQL 16 · Redis 7 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-16 |
+| **Last updated** | 2026-09-24 |
 
 ### Revision history
 
@@ -18,6 +18,7 @@
 | 1.1 | 2026-08-01 | Team | §4.1/§13 corrected — description text only, no schema/DDL change — after fixing a real cross-account data leak caused by the previously-described single-shared-organisation model. **Needs its second reviewer per this doc's own change-control rule (§ above)**, since this file requires two approvals and only one person made this edit |
 | 1.2 | 2026-08-16 | Team | §4.3 gains `created_at`/`family_issued_at` on `refresh_tokens` (migration `00011`, BUILD_GUIDE.md Phase 14's session-timeout hardening); §11's planned sequence renumbered accordingly (indexes/triggers pushed to `00012`/`00013`). **Also needs its second reviewer** — same single-author caveat as 1.1, migration was built and merged same-session on explicit user request rather than waiting on the normal two-approval schema-PR flow |
 | 1.3 | 2026-08-16 | Team | §4.5 gains `credential_invalid_at`/`credential_invalid_reason` on `repositories` (migration `00012`) — a scan whose clone is rejected 401/403 now leaves a persisted signal on the project instead of only ever showing up as one scan's job failure reason; cleared by the existing attach/replace flow. §11's planned sequence renumbered again (indexes/triggers now `00013`/`00014`). **Also needs its second reviewer**, same caveat as 1.1/1.2 |
+| 1.4 | 2026-09-24 | Team | Migration `00027` (`BUILD_GUIDE.md` Phase 17 Part B, GitHub webhook live scanning): new §4.20 `project_webhooks`; §4.9 `scans` gains nullable `trigger_source`/`trigger_ref`/`trigger_actor`; §7 gains the `gp:webhook:*` Redis keys. Purely additive — no existing column changes. **Needs its second reviewer**, same caveat as 1.1–1.3 |
 
 > **Change control:** this is a shared contract across all six developers. Any schema change requires **two approvals** and follows the protocol in §12.
 
@@ -324,6 +325,9 @@ Append-only legal record. Never updated, never deleted.
 | `error_reason` | `TEXT` | NULL | only for whole-scan failure |
 | `queued_at` / `started_at` / `finished_at` | `TIMESTAMPTZ` | | |
 | `finding_counts` | `JSONB` | NOT NULL, default `'{}'` | denormalised `{critical:n, high:n, …}` for fast list rendering |
+| `trigger_source` | `TEXT` | NULL, CHECK in (`manual`, `scheduled`, `webhook_push`, `webhook_pull_request`, `cli_watch`) | what started the scan (migration `00027`); NULL on older scans. `cli_watch` is reserved for the CLI git hook |
+| `trigger_ref` | `TEXT` | NULL | branch, or `refs/pull/{n}/head`, named by the webhook |
+| `trigger_actor` | `TEXT` | NULL | GitHub login that pushed. Not a user FK: the accountable GuardPipe user is still `triggered_by` |
 
 **Indexes**
 | Index | Query it serves |
@@ -514,6 +518,25 @@ Append-only. No `UPDATE`, no `DELETE` — enforced by only ever exposing an inse
 
 **Index:** `idx_audit_org_created` on `(org_id, created_at DESC)`.
 
+### 4.20 `project_webhooks`
+GitHub webhook live scanning (migration `00027`, FR-ORC-013/015..018). One row per project with live scanning on — the row existing *is* "on"; turning it off deletes the row and the hook on GitHub.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | `UUID` | PK | also the path segment of the hook's delivery URL, `/api/v1/webhooks/github/{id}` |
+| `project_id` | `UUID` | NOT NULL, UNIQUE, FK → `projects(id)` ON DELETE CASCADE | |
+| `github_hook_id` | `BIGINT` | NOT NULL | GitHub's own ID, needed to delete the hook |
+| `secret_ciphertext` / `secret_nonce` | `BYTEA` | NOT NULL | per-hook HMAC signing secret, AES-256-GCM, same scheme as `project_credentials` |
+| `engines` | `engine_id[]` | NOT NULL, CHECK non-empty, CHECK `NOT ('pentest' = ANY(engines))` | the user's explicit choice; pentest is impossible at the schema level (FR-ORC-016) |
+| `watched_branches` | `TEXT[]` | NOT NULL, CHECK non-empty | short branch names |
+| `enabled_by` | `UUID` | FK → `users(id)` ON DELETE SET NULL | who confirmed; every triggered scan's `triggered_by` (FR-ORC-017) |
+| `attested_at` | `TIMESTAMPTZ` | NOT NULL | when they confirmed |
+| `last_delivery_at` / `last_delivery_status` | `TIMESTAMPTZ` / `TEXT` | NULL | delivery health for the settings screen |
+| `paused_reason` / `paused_at` | `TEXT` / `TIMESTAMPTZ` | NULL | set by the circuit breaker; cleared on re-confirmation |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | NOT NULL | |
+
+Lookups are by primary key (the receiver) or by the UNIQUE `project_id` (settings screen) — both already indexed.
+
 ---
 
 ## 5. The `location` JSONB contract
@@ -597,6 +620,10 @@ Redis holds no system of record. Every key has a TTL or is a queue that is rebui
 | `gp:budget:{scan_id}` | STRING (int) | 24 h | remaining AI token budget (FR-AI-009) |
 | `gp:ratelimit:{scope}:{id}` | STRING (int) | window | token bucket counters |
 | `gp:lock:{resource}` | STRING | 30 s | short-lived advisory locks (SET NX PX) |
+| `gp:webhook:events` | LIST | — | verified webhook deliveries waiting for the live-scanning worker. Not rebuilt on startup: losing it costs at most the in-flight pushes' scans |
+| `gp:webhook:seen:{delivery_id}` | STRING | 24 h | `X-GitHub-Delivery` dedup (threat S4) |
+| `gp:webhook:pending` / `gp:webhook:pending:data` | ZSET / HASH | until fired | push debounce: member/field `{project_id}:{branch}`, score = fire-at (ms), data = latest trigger |
+| `gp:webhook:count:project:{project_id}` | STRING (int) | 1 h | automatic-scan counter behind the hourly cap and circuit breaker (threat S6) |
 
 **Namespace rule:** every key starts `gp:`. A shared Redis with another application must not be able to collide with us, and `FLUSHDB` during development must be obviously scoped.
 

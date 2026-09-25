@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { Card } from '../ui/Card'
+import { ScanOriginBadge } from './ScanOriginBadge'
 import type { OrgScanSummary, ScanSummary } from '../../lib/scansApi'
 import { relativeTime } from '../../lib/format'
 
@@ -78,6 +79,7 @@ export function ScanHistoryTable({
                     {s.id.slice(0, 8)}
                   </span>
                 </div>
+                <ScanOriginBadge scan={s} className="mt-1" />
               </td>
               <td className="px-4 py-3">
                 <span

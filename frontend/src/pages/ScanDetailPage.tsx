@@ -6,6 +6,7 @@ import { Card, CardDescription } from '../components/ui/Card'
 import { EngineFindingsSection } from '../components/project/EngineFindingsSection'
 import { ExportScanButton } from '../components/project/ExportScanButton'
 import { PartialResultBanner } from '../components/project/PartialResultBanner'
+import { ScanOriginBadge } from '../components/project/ScanOriginBadge'
 import { SupplyChainPipeline } from '../components/project/SupplyChainPipeline'
 import { ApiError } from '../lib/apiClient'
 import { getProject, type Project } from '../lib/projectsApi'
@@ -147,6 +148,9 @@ export function ScanDetailPage() {
           <p className="text-body-sm text-text-secondary">
             {scan.type.replace(/_/g, ' ')} · queued {new Date(scan.queued_at).toLocaleString()}
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <ScanOriginBadge scan={scan} />
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {!TERMINAL_STATUSES.has(scan.status) && (
