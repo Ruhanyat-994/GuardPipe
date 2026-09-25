@@ -106,10 +106,12 @@ func TestSweepOrphanedJobs(t *testing.T) {
 	pool.EngineTimeouts = map[domain.EngineID]time.Duration{domain.EnginePentest: 2 * time.Hour}
 	tokens := newFakeTokens()
 	pool.Tokens = tokens
+	notifier := &recordingNotifier{}
+	pool.Notifier = notifier
 
 	// A depscan job its worker abandoned a month ago → failed, refunded,
 	// its scan finalised and notified.
-	_, lost := runningJob(t, scans, jobs, domain.EngineDepScan, 30*24*time.Hour)
+	lostScan, lost := runningJob(t, scans, jobs, domain.EngineDepScan, 30*24*time.Hour)
 	// Same, but the user already asked to cancel → cancelled.
 	cancelScan, cancelledJob := runningJob(t, scans, jobs, domain.EngineDepScan, time.Hour)
 	require.NoError(t, scans.SetCancelRequested(context.Background(), cancelScan))
@@ -130,6 +132,7 @@ func TestSweepOrphanedJobs(t *testing.T) {
 	require.Equal(t, domain.JobStatusRunning, status(longPentest))
 	require.Contains(t, tokens.refunds, lost)
 	require.Contains(t, tokens.refunds, cancelledJob, "an orphan never did the work — refunded even though cancelled")
+	require.ElementsMatch(t, []uuid.UUID{lostScan, cancelScan}, notifier.calls())
 
 	require.Zero(t, pool.SweepOrphanedJobs(context.Background()), "idempotent")
 }

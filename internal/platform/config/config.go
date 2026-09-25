@@ -9,6 +9,10 @@ package config
 import (
 	"encoding/base64"
 	"errors"
+	"net"
+	"net/mail"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -39,6 +43,7 @@ type Config struct {
 	Gate     Gate
 	LiveScan LiveScan
 	Billing  Billing
+	Mail     Mail
 }
 
 // Core — §5.1.
@@ -149,6 +154,31 @@ type Billing struct {
 	// TickInterval is how often the worker runs monthly grants and expiry.
 	TickInterval time.Duration
 }
+
+// Mail — scan-report emails (modules/notification, adapters/mailer).
+type Mail struct {
+	// Backend is GUARDPIPE_MAIL_BACKEND: "log" (default — emails are queued
+	// and "sent" as a log line), "smtp" (Mailpit locally, or any SMTP
+	// server), "ses" (Amazon SES via the AWS SDK and the pod's IAM role), or
+	// "off" (no email at all; the in-app feed still works).
+	Backend string
+	// From is the sender, e.g. "GuardPipe <reports@example.com>". For SES
+	// the address (or its domain) must be a verified SES identity.
+	From string
+	// AppURL is the frontend's origin, used for links inside emails.
+	// Defaults to the first GUARDPIPE_CORS_ORIGINS entry.
+	AppURL              string
+	SMTPAddr            string
+	SMTPUsername        string
+	SMTPPassword        string
+	SESRegion           string
+	SESConfigurationSet string
+	// MaxAttachmentBytes: a larger PDF is linked instead of attached.
+	MaxAttachmentBytes int
+}
+
+// Enabled reports whether any email is sent (or logged) at all.
+func (m Mail) Enabled() bool { return m.Backend != "off" }
 
 // LiveScan — GitHub webhook live scanning (BUILD_GUIDE.md Phase 17 Part B).
 type LiveScan struct {
@@ -375,7 +405,24 @@ func Load() (*Config, error) {
 		TickInterval: getDuration("GUARDPIPE_BILLING_TICK_INTERVAL", time.Minute, p),
 	}
 
+	defaultAppURL := "http://localhost:5173"
+	if len(cfg.Security.CORSOrigins) > 0 {
+		defaultAppURL = cfg.Security.CORSOrigins[0]
+	}
+	cfg.Mail = Mail{
+		Backend:             strings.ToLower(getString("GUARDPIPE_MAIL_BACKEND", "log")),
+		From:                getString("GUARDPIPE_MAIL_FROM", "GuardPipe <noreply@guardpipe.local>"),
+		AppURL:              getString("GUARDPIPE_APP_URL", defaultAppURL),
+		SMTPAddr:            getString("GUARDPIPE_SMTP_ADDR", "mailpit:1025"),
+		SMTPUsername:        getString("GUARDPIPE_SMTP_USERNAME", ""),
+		SMTPPassword:        getString("GUARDPIPE_SMTP_PASSWORD", ""),
+		SESRegion:           getString("GUARDPIPE_SES_REGION", os.Getenv("AWS_REGION")),
+		SESConfigurationSet: getString("GUARDPIPE_SES_CONFIGURATION_SET", ""),
+		MaxAttachmentBytes:  getInt("GUARDPIPE_MAIL_MAX_ATTACHMENT_MB", 10, p) * 1024 * 1024,
+	}
+
 	validateSecurity(cfg, p)
+	validateMail(cfg.Mail, p)
 	if cfg.AI.Enabled && len(cfg.AI.KeyPool()) == 0 {
 		p.add("GUARDPIPE_GEMINI_API_KEY or GUARDPIPE_GEMINI_API_KEYS is required when GUARDPIPE_AI_ENABLED is true")
 	}
@@ -445,4 +492,35 @@ func loadEngineTimeouts(p *problems) map[domain.EngineID]time.Duration {
 		timeouts[engine] = getDuration(key, def, p)
 	}
 	return timeouts
+}
+
+func validateMail(m Mail, p *problems) {
+	switch m.Backend {
+	case "off", "log", "smtp", "ses":
+	default:
+		p.add("GUARDPIPE_MAIL_BACKEND must be one of \"log\", \"smtp\", \"ses\", \"off\", got %q", m.Backend)
+		return
+	}
+	if !m.Enabled() {
+		return
+	}
+	if addr, err := mail.ParseAddress(m.From); err != nil || addr.Address == "" {
+		p.add("GUARDPIPE_MAIL_FROM must be a valid address like \"GuardPipe <reports@example.com>\", got %q", m.From)
+	}
+	if u, err := url.Parse(m.AppURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		p.add("GUARDPIPE_APP_URL must be an http(s) origin, got %q", m.AppURL)
+	}
+	if m.MaxAttachmentBytes < 1024*1024 {
+		p.add("GUARDPIPE_MAIL_MAX_ATTACHMENT_MB must be at least 1")
+	}
+	switch m.Backend {
+	case "smtp":
+		if _, _, err := net.SplitHostPort(m.SMTPAddr); err != nil {
+			p.add("GUARDPIPE_SMTP_ADDR must be host:port, got %q", m.SMTPAddr)
+		}
+	case "ses":
+		if m.SESRegion == "" {
+			p.add("GUARDPIPE_SES_REGION (or AWS_REGION) is required when GUARDPIPE_MAIL_BACKEND is \"ses\"")
+		}
+	}
 }

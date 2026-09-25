@@ -4,12 +4,12 @@
 |---|---|
 | **Document** | API Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Status** | Draft |
 | **Style** | REST · JSON · OpenAPI 3.1 conventions · RFC 9457 errors |
 | **Base URL** | `http://localhost:8080/api/v1` |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-09-24 |
+| **Last updated** | 2026-09-25 |
 
 ### Revision history
 
@@ -20,6 +20,7 @@
 | 1.2 | 2026-08-23 | Team | `GET /scans/{id}/export` implemented for real (`json`/`csv`/`pdf`, `modules/reporting`'s export slice pulled forward from Phase 13) — was previously JSON-only-documented with `pdf`/`sarif` returning a placeholder `501`. `sarif` remains unimplemented, now a plain `400 scan.export_format_unsupported`. **Needs its second reviewer**, same standing caveat as 1.1 |
 | 1.3 | 2026-08-23 | Team | `GET /scans/{id}/progress` gains a real, live per-engine `activity` field and an honest (elapsed-time-based, not frozen) `progress_pct` for a running job — previously a hardcoded `50`. Also corrects this section's own long-standing inaccuracy: progress was never actually Redis-backed (`gp:progress:{scan_id}` was aspirational, not built); it's now genuinely live, backed by an in-process store (`orchestrator.LiveProgress`), which this revision documents instead of the Redis shape that never existed. **Needs its second reviewer**, same standing caveat as 1.1 |
 | 1.4 | 2026-09-24 | Team | GitHub webhook live scanning built (`BUILD_GUIDE.md` Phase 17 Part B, FR-ORC-013/015..018): new §5.1 (`GET/PUT/DELETE /projects/{id}/live-scanning`); the webhook receiver moves from the reserved `POST /webhooks/github` to `POST /api/v1/webhooks/github/{id}` (see §9 for why); scan responses gain `trigger_source`/`trigger_ref`/`trigger_actor`. **Needs its second reviewer** per this doc's change-control rule |
+| 1.5 | 2026-09-25 | Team | New `GET /scans/active` (FR-UI-010) and new §5.2 notifications + report-email settings endpoints (FR-NOT-001..006), including the one public token-authenticated route `POST /notification-settings/verify`. **Needs its second reviewer** per this doc's change-control rule |
 
 > **Change control:** this is the frontend/backend contract. Breaking changes require **two approvals** and a note to the frontend owner. Freeze target: end of Sprint 0.
 
@@ -315,6 +316,7 @@ Attempting a pentest against a target with `status != "attested"` returns `409 t
 |---|---|---|---|
 | `POST` | `/projects/{id}/scans` | member | Start a scan |
 | `GET` | `/projects/{id}/scans` | viewer | Scan history |
+| `GET` | `/scans/active` | viewer | Every queued/running scan in the caller's org (max 25, newest first), same row shape as `GET /scans`; a project-scoped collaborator session sees only its project's. Polled by the app shell's running-scans indicator (FR-UI-010) |
 | `GET` | `/scans/{id}` | viewer | Scan detail + per-engine job status |
 | `POST` | `/scans/{id}/cancel` | member | Cancel |
 | `GET` | `/scans/{id}/progress` | viewer | Lightweight progress (polling target) |
@@ -609,6 +611,35 @@ The first three sit **outside** `/api/v1` — they are infrastructure, not produ
 - Otherwise the event is queued and the response is `202` immediately; the scan is created asynchronously by the worker, never inside the request (GitHub times out deliveries after ~10 s and disables hooks that keep failing). Rate-limited triggers are dropped and audited, never reported to GitHub as an error.
 - Body capped at 5 MB.
 
+### 5.2 Notifications and report emails
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| `GET` | `/notifications` | any | The caller's feed for their current org, newest 30, plus `unread_count` |
+| `POST` | `/notifications/{id}/read` | any | Mark one read — someone else's id is 404 |
+| `POST` | `/notifications/read-all` | any | Mark all read |
+| `GET` | `/me/notification-settings` | any | The caller's own report-email settings |
+| `PUT` | `/me/notification-settings` | any | Change toggles and/or report address (rate-limited like login) |
+| `POST` | `/me/notification-settings/resend-verification` | any | New link for the pending address (rate-limited) |
+| `POST` | `/me/notification-settings/test` | any | Send a test email to the current report address (rate-limited) |
+| `POST` | `/notification-settings/verify` | token | Confirm a report address from the emailed link — **public**, the token is the credential; rate-limited |
+
+**`PUT /me/notification-settings`** — every field optional:
+```json
+// request
+{ "email_on_scan_complete": true, "email_on_live_scan": false, "report_email": "security@example.org" }
+
+// 200 response (same shape as GET)
+{ "account_email": "jane@example.com", "report_email": "jane@example.com", "using_account_email": true,
+  "pending_email": "security@example.org", "pending_expires_at": "2026-09-26T10:00:00Z",
+  "email_on_scan_complete": true, "email_on_live_scan": false, "email_enabled": true }
+```
+- A new `report_email` is **not used** until confirmed: this call emails a single-use link (24 h) to it and returns it as `pending_email`; `report_email` stays what it was (FR-NOT-004).
+- `report_email: ""` (or the account email itself) switches back to the account email immediately.
+- 400 `notification.invalid_email`; 422 `notification.email_disabled` when the server has no mail backend (`email_enabled: false`); 502 `notification.send_failed` if the verification email couldn't be sent.
+
+**`POST /notification-settings/verify`** `{ "token": "…" }` → `200 { "report_email": "security@example.org" }`, or 404 `notification.invalid_token` (unknown, used, or expired — indistinguishable on purpose).
+
 
 ---
 
@@ -637,6 +668,7 @@ DELETE /api/v1/targets/:id
 
 POST   /api/v1/projects/:id/scans
 GET    /api/v1/projects/:id/scans
+GET    /api/v1/scans/active
 GET    /api/v1/scans/:id
 POST   /api/v1/scans/:id/cancel
 GET    /api/v1/scans/:id/progress

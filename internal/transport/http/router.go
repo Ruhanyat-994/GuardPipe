@@ -15,6 +15,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/billing"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/notification"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
@@ -60,6 +61,10 @@ type RouterConfig struct {
 	// scanning. nil (a test router that doesn't need it) leaves its routes
 	// unregistered.
 	LiveScanSvc livescan.Service
+	// NotificationSvc is the scan-completion feed and each user's report-
+	// email settings. nil (a test router that doesn't need it) leaves its
+	// routes unregistered.
+	NotificationSvc *notification.Service
 	// BillingSvc is token billing (TOKENIZATION-ARCHITECTURE.md). nil
 	// (GUARDPIPE_BILLING_MODE=off, or a test router) leaves /billing/*
 	// unregistered. ScanPreviewer backs the cost estimate.
@@ -262,6 +267,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	scans := api.Group("/scans", requireAuth, requireNotSuspended)
 	{
 		scans.GET("", middleware.RBAC(viewerAndAbove...), scanH.ListForOrg)
+		scans.GET("/active", middleware.RBAC(viewerAndAbove...), scanH.ListActive)
 		scans.GET("/:id", middleware.RBAC(viewerAndAbove...), scanH.Get)
 		scans.GET("/:id/progress", middleware.RBAC(viewerAndAbove...), scanH.Progress)
 		scans.POST("/:id/cancel", middleware.RBAC(memberAndAbove...), scanH.Cancel)
@@ -284,6 +290,28 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		projects.PUT("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Enable)
 		projects.DELETE("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Disable)
 		api.POST("/webhooks/github/:id", liveScanH.Receive)
+	}
+
+	// Scan-completion notifications: the bell's feed, and each user's own
+	// report-email settings. /notification-settings/verify is public (the
+	// emailed token is the credential) and rate-limited like login, as are
+	// the two routes that send an email.
+	if cfg.NotificationSvc != nil {
+		notifH := handler.NewNotificationHandler(cfg.NotificationSvc, v)
+		api.POST("/notification-settings/verify", authLimiter, notifH.VerifyReportEmail)
+		mySettings := api.Group("/me/notification-settings", requireAuth, requireNotSuspended)
+		{
+			mySettings.GET("", notifH.GetSettings)
+			mySettings.PUT("", authLimiter, notifH.UpdateSettings)
+			mySettings.POST("/resend-verification", authLimiter, notifH.ResendVerification)
+			mySettings.POST("/test", authLimiter, notifH.SendTest)
+		}
+		notifications := api.Group("/notifications", requireAuth, requireNotSuspended)
+		{
+			notifications.GET("", notifH.List)
+			notifications.POST("/read-all", notifH.MarkAllRead)
+			notifications.POST("/:id/read", notifH.MarkRead)
+		}
 	}
 
 	// Token billing. The catalog is public (the pricing page shows it to

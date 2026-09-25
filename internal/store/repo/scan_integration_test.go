@@ -178,6 +178,52 @@ func TestScanRepo_ListByOrg_ScopedToOrgAndNewestFirst(t *testing.T) {
 	require.Equal(t, "Org B Project", otherList[0].ProjectName)
 }
 
+// TestScanRepo_ListActiveByOrg_OnlyQueuedAndRunningInOwnOrg: finished
+// scans and another org's in-flight scan must not show up in the running-
+// scans indicator, and "Scan #N" must still count the finished scans.
+func TestScanRepo_ListActiveByOrg_OnlyQueuedAndRunningInOwnOrg(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	scans := repo.NewScanRepo(pool)
+
+	orgA, err := repo.NewOrganizationRepo(pool).Create(ctx, "Org A")
+	require.NoError(t, err)
+	orgB, err := repo.NewOrganizationRepo(pool).Create(ctx, "Org B")
+	require.NoError(t, err)
+	projectA := id.New()
+	_, err = pool.Exec(ctx, `INSERT INTO projects (id, org_id, name, status) VALUES ($1, $2, $3, 'active')`, projectA, orgA, "Org A Project")
+	require.NoError(t, err)
+	projectB := id.New()
+	_, err = pool.Exec(ctx, `INSERT INTO projects (id, org_id, name, status) VALUES ($1, $2, $3, 'active')`, projectB, orgB, "Org B Project")
+	require.NoError(t, err)
+
+	newScan := func(projectID uuid.UUID) *domain.Scan {
+		s := &domain.Scan{ID: id.New(), ProjectID: projectID, Type: domain.ScanTypeFullSupplyChain, Status: domain.ScanStatusQueued, RequestedEngines: []domain.EngineID{domain.EngineDepScan}}
+		require.NoError(t, scans.Create(ctx, s))
+		return s
+	}
+	done := newScan(projectA)
+	_, err = pool.Exec(ctx, `UPDATE scans SET status = 'completed' WHERE id = $1`, done.ID)
+	require.NoError(t, err)
+	running := newScan(projectA)
+	require.NoError(t, scans.MarkStarted(ctx, running.ID))
+	queued := newScan(projectA)
+	newScan(projectB)
+
+	list, err := scans.ListActiveByOrg(ctx, orgA, 10)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, queued.ID, list[0].ID, "newest first")
+	require.Equal(t, 3, list[0].ScanNumber, "numbering counts the completed scan too")
+	require.Equal(t, running.ID, list[1].ID)
+	require.Equal(t, domain.ScanStatusRunning, list[1].Status)
+	require.Equal(t, "Org A Project", list[1].ProjectName)
+
+	limited, err := scans.ListActiveByOrg(ctx, orgA, 1)
+	require.NoError(t, err)
+	require.Len(t, limited, 1)
+}
+
 func TestScanJobRepo_ListRunningStartedBefore(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()

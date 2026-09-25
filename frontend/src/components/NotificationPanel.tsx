@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bell, Building2, Check, FolderKanban, Inbox, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  AlertTriangle,
+  Bell,
+  Building2,
+  Check,
+  CheckCircle2,
+  FolderKanban,
+  Inbox,
+  X,
+  XCircle,
+} from 'lucide-react'
 import { Popover } from './ui/Popover'
 import { Button } from './ui/Button'
 import { ApiError } from '../lib/apiClient'
@@ -15,6 +26,13 @@ import {
   listMyProjectInvites,
   type PendingProjectInvite,
 } from '../lib/projectsApi'
+import {
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type AppNotification,
+} from '../lib/notificationsApi'
+import { cn } from '../lib/cn'
 
 /** How often the bell polls for new invites while the app is open — there's
  * no push/WebSocket channel in this codebase (Redis is job-queue only), so
@@ -29,7 +47,15 @@ const POLL_INTERVAL_MS = 20_000
  * use. project-collaborators follow-up: previously this panel only ever
  * showed org invites. */
 type FeedItem =
-  { kind: 'org'; invite: PendingInvite } | { kind: 'project'; invite: PendingProjectInvite }
+  | { kind: 'org'; invite: PendingInvite }
+  | { kind: 'project'; invite: PendingProjectInvite }
+  | { kind: 'scan'; notification: AppNotification }
+
+function createdAt(item: FeedItem): number {
+  return new Date(
+    item.kind === 'scan' ? item.notification.created_at : item.invite.created_at,
+  ).getTime()
+}
 
 /**
  * documentation/09-ui-ux-design-system.md §4.4 — slide-in panel anchored
@@ -52,15 +78,19 @@ export function NotificationPanel() {
   const pollRef = useRef<number | null>(null)
 
   function refresh() {
-    Promise.all([listMyInvites(), listMyProjectInvites()])
-      .then(([orgRes, projectRes]) => {
+    Promise.all([
+      listMyInvites(),
+      listMyProjectInvites(),
+      // Scan notifications are additive — an older backend without the
+      // endpoint (or a transient failure) still shows invites.
+      listNotifications().catch(() => ({ data: [] as AppNotification[], unread_count: 0 })),
+    ])
+      .then(([orgRes, projectRes, scanRes]) => {
         const merged: FeedItem[] = [
           ...orgRes.data.map((invite): FeedItem => ({ kind: 'org', invite })),
           ...projectRes.data.map((invite): FeedItem => ({ kind: 'project', invite })),
-        ].sort(
-          (a, b) =>
-            new Date(b.invite.created_at).getTime() - new Date(a.invite.created_at).getTime(),
-        )
+          ...scanRes.data.map((notification): FeedItem => ({ kind: 'scan', notification })),
+        ].sort((a, b) => createdAt(b) - createdAt(a))
         setItems(merged)
         setError(null)
       })
@@ -80,10 +110,36 @@ export function NotificationPanel() {
   }, [])
 
   function key(item: FeedItem): string {
-    return `${item.kind}:${item.invite.id}`
+    return item.kind === 'scan' ? `scan:${item.notification.id}` : `${item.kind}:${item.invite.id}`
+  }
+
+  function markScanRead(n: AppNotification) {
+    if (n.read_at) return
+    const now = new Date().toISOString()
+    setItems((prev) =>
+      prev.map((i) =>
+        i.kind === 'scan' && i.notification.id === n.id
+          ? { ...i, notification: { ...i.notification, read_at: now } }
+          : i,
+      ),
+    )
+    markNotificationRead(n.id).catch(() => undefined)
+  }
+
+  function handleMarkAllRead() {
+    const now = new Date().toISOString()
+    setItems((prev) =>
+      prev.map((i) =>
+        i.kind === 'scan' && !i.notification.read_at
+          ? { ...i, notification: { ...i.notification, read_at: now } }
+          : i,
+      ),
+    )
+    markAllNotificationsRead().catch(() => undefined)
   }
 
   async function handleAccept(item: FeedItem) {
+    if (item.kind === 'scan') return
     setBusyKey(key(item))
     setError(null)
     try {
@@ -101,6 +157,7 @@ export function NotificationPanel() {
   }
 
   async function handleDecline(item: FeedItem) {
+    if (item.kind === 'scan') return
     setBusyKey(key(item))
     setError(null)
     try {
@@ -117,7 +174,10 @@ export function NotificationPanel() {
     }
   }
 
-  const unreadCount = items.length
+  // Invites always count (they need an answer); scan notifications only
+  // until they've been read.
+  const unreadCount = items.filter((i) => i.kind !== 'scan' || !i.notification.read_at).length
+  const hasUnreadScans = items.some((i) => i.kind === 'scan' && !i.notification.read_at)
 
   return (
     <Popover
@@ -149,8 +209,19 @@ export function NotificationPanel() {
         </button>
       )}
     >
-      {() => (
+      {(close) => (
         <div className="max-h-96 overflow-y-auto py-1">
+          {hasUnreadScans && (
+            <div className="flex justify-end px-4 pt-1">
+              <button
+                type="button"
+                onClick={handleMarkAllRead}
+                className="text-caption font-medium text-accent hover:underline"
+              >
+                Mark all as read
+              </button>
+            </div>
+          )}
           {error && (
             <p role="alert" className="px-4 py-2 text-caption text-danger">
               {error}
@@ -159,56 +230,68 @@ export function NotificationPanel() {
 
           {items.length > 0 ? (
             <ul className="flex flex-col divide-y divide-border-default">
-              {items.map((item) => (
-                <li key={key(item)} className="flex flex-col gap-2 px-4 py-3">
-                  <div className="flex items-start gap-2.5">
-                    {item.kind === 'org' ? (
-                      <Building2
-                        className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <FolderKanban
-                        className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary"
-                        aria-hidden="true"
-                      />
-                    )}
-                    {item.kind === 'org' ? (
-                      <p className="text-body-sm text-text-primary">
-                        You&rsquo;ve been invited to join{' '}
-                        <span className="font-semibold">{item.invite.org_name}</span> as{' '}
-                        <span className="capitalize">{item.invite.role}</span>.
-                      </p>
-                    ) : (
-                      <p className="text-body-sm text-text-primary">
-                        You&rsquo;ve been invited to collaborate on{' '}
-                        <span className="font-semibold">{item.invite.project_name}</span> (shared by{' '}
-                        {item.invite.org_name}) as{' '}
-                        <span className="capitalize">{item.invite.role}</span>.
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex gap-2 pl-6">
-                    <Button
-                      size="sm"
-                      loading={busyKey === key(item)}
-                      onClick={() => void handleAccept(item)}
-                    >
-                      <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                      Accept
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={busyKey !== null}
-                      onClick={() => void handleDecline(item)}
-                    >
-                      <X className="h-3.5 w-3.5" aria-hidden="true" />
-                      Decline
-                    </Button>
-                  </div>
-                </li>
-              ))}
+              {items.map((item) =>
+                item.kind === 'scan' ? (
+                  <li key={key(item)}>
+                    <ScanNotificationRow
+                      notification={item.notification}
+                      onOpen={() => {
+                        markScanRead(item.notification)
+                        close()
+                      }}
+                    />
+                  </li>
+                ) : (
+                  <li key={key(item)} className="flex flex-col gap-2 px-4 py-3">
+                    <div className="flex items-start gap-2.5">
+                      {item.kind === 'org' ? (
+                        <Building2
+                          className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <FolderKanban
+                          className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary"
+                          aria-hidden="true"
+                        />
+                      )}
+                      {item.kind === 'org' ? (
+                        <p className="text-body-sm text-text-primary">
+                          You&rsquo;ve been invited to join{' '}
+                          <span className="font-semibold">{item.invite.org_name}</span> as{' '}
+                          <span className="capitalize">{item.invite.role}</span>.
+                        </p>
+                      ) : (
+                        <p className="text-body-sm text-text-primary">
+                          You&rsquo;ve been invited to collaborate on{' '}
+                          <span className="font-semibold">{item.invite.project_name}</span> (shared
+                          by {item.invite.org_name}) as{' '}
+                          <span className="capitalize">{item.invite.role}</span>.
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex gap-2 pl-6">
+                      <Button
+                        size="sm"
+                        loading={busyKey === key(item)}
+                        onClick={() => void handleAccept(item)}
+                      >
+                        <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                        Accept
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={busyKey !== null}
+                        onClick={() => void handleDecline(item)}
+                      >
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                        Decline
+                      </Button>
+                    </div>
+                  </li>
+                ),
+              )}
             </ul>
           ) : (
             <div className="flex flex-col items-center gap-2 px-6 py-10 text-center">
@@ -217,13 +300,60 @@ export function NotificationPanel() {
                 {loaded ? "You're all caught up" : 'Loading…'}
               </p>
               <p className="text-caption text-text-tertiary">
-                Org and project invites land here live. Scan-completion and finding alerts will too,
-                once the orchestrator produces them.
+                Invites, and a note whenever one of your scans finishes, land here.
               </p>
             </div>
           )}
         </div>
       )}
     </Popover>
+  )
+}
+
+const SCAN_ICON = {
+  scan_completed: { Icon: CheckCircle2, className: 'text-success' },
+  scan_failed: { Icon: XCircle, className: 'text-danger' },
+  scan_cancelled: { Icon: AlertTriangle, className: 'text-text-tertiary' },
+} as const
+
+function ScanNotificationRow({
+  notification,
+  onOpen,
+}: {
+  notification: AppNotification
+  onOpen: () => void
+}) {
+  const { Icon, className } = SCAN_ICON[notification.kind] ?? SCAN_ICON.scan_completed
+  const unread = !notification.read_at
+  const content = (
+    <div className="flex items-start gap-2.5">
+      <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', className)} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <p
+          className={cn('text-body-sm text-text-primary', unread ? 'font-semibold' : 'font-normal')}
+        >
+          {notification.title}
+        </p>
+        <p className="text-caption break-words text-text-secondary">{notification.body}</p>
+        <p className="mt-0.5 text-caption text-text-tertiary">
+          {new Date(notification.created_at).toLocaleString()}
+        </p>
+      </div>
+      {unread && (
+        <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-accent" aria-label="Unread" />
+      )}
+    </div>
+  )
+  if (!notification.scan_id) {
+    return <div className="px-4 py-3">{content}</div>
+  }
+  return (
+    <Link
+      to={`/scans/${notification.scan_id}`}
+      onClick={onOpen}
+      className="block px-4 py-3 hover:bg-bg-subtle"
+    >
+      {content}
+    </Link>
   )
 }

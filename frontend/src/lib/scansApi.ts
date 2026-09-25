@@ -277,6 +277,12 @@ export function listOrgScans(page = 1, pageSize = 20): Promise<OrgScanList> {
   return apiClient.get<OrgScanList>(`/scans?page=${page}&page_size=${pageSize}`)
 }
 
+/** `GET /scans/active` — every queued/running scan in the org, newest
+ * first (capped server-side). Polled by ActiveScansProvider. */
+export function listActiveScans(): Promise<{ data: OrgScanSummary[] }> {
+  return apiClient.get<{ data: OrgScanSummary[] }>('/scans/active')
+}
+
 export function getScan(scanId: string): Promise<Scan> {
   return apiClient.get<Scan>(`/scans/${scanId}`)
 }

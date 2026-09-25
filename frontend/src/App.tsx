@@ -23,6 +23,8 @@ import { BlogPostPage } from './pages/BlogPostPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { RulesPage } from './pages/RulesPage'
 import { OrgSettingsPage } from './pages/OrgSettingsPage'
+import { NotificationSettingsPage } from './pages/NotificationSettingsPage'
+import { VerifyReportEmailPage } from './pages/VerifyReportEmailPage'
 import { TeamDashboardPage } from './pages/TeamDashboardPage'
 import { AcceptInvitePage } from './pages/AcceptInvitePage'
 import { AcceptProjectInvitePage } from './pages/AcceptProjectInvitePage'
@@ -111,6 +113,8 @@ function App() {
           (CTA to /login or /register with the token preserved), so it isn't
           wrapped in RequireAuth the way every other authenticated route is. */}
       <Route path="/invites/:token/accept" element={<AcceptInvitePage />} />
+      {/* Public: the emailed token is the credential (see the page's doc). */}
+      <Route path="/verify-report-email" element={<VerifyReportEmailPage />} />
       <Route path="/project-invites/:token/accept" element={<AcceptProjectInvitePage />} />
 
       <Route element={<ProtectedShell />}>
@@ -166,6 +170,7 @@ function App() {
             profile fields remain a later addition. */}
         <Route path="/settings" element={<OrgSettingsPage />} />
         <Route path="/settings/billing" element={<BillingPage />} />
+        <Route path="/settings/notifications" element={<NotificationSettingsPage />} />
       </Route>
 
       {/* Platform admin panel (BUILD_GUIDE.md Phase 14) — a separate route

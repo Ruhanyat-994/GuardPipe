@@ -36,6 +36,11 @@ type Service interface {
 	// projectID/ownership check needed: the query itself is already scoped
 	// to actor.OrgID.
 	ListOrgScans(ctx context.Context, actor domain.Actor, page Page) ([]OrgScanSummary, int, error)
+	// ListActiveScans is every queued or running scan across the actor's
+	// org, newest first — what AppShell's running-scans indicator polls so
+	// a user can leave the scan page and still see (and be told about) the
+	// scans still in flight. Scoped to actor.OrgID exactly like ListOrgScans.
+	ListActiveScans(ctx context.Context, actor domain.Actor) ([]OrgScanSummary, error)
 	GetProgress(ctx context.Context, actor domain.Actor, scanID uuid.UUID) (*Progress, error)
 	CancelScan(ctx context.Context, actor domain.Actor, scanID uuid.UUID) error
 	ListFindings(ctx context.Context, actor domain.Actor, scanID uuid.UUID, page Page) ([]domain.Finding, int, error)
@@ -59,6 +64,9 @@ type ScanRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Scan, error)
 	ListByProject(ctx context.Context, projectID uuid.UUID, page Page) ([]domain.Scan, int, error)
 	ListByOrg(ctx context.Context, orgID uuid.UUID, page Page) ([]OrgScanSummary, int, error)
+	// ListActiveByOrg is ListByOrg restricted to queued/running scans,
+	// capped at limit rows.
+	ListActiveByOrg(ctx context.Context, orgID uuid.UUID, limit int) ([]OrgScanSummary, error)
 	SetCancelRequested(ctx context.Context, id uuid.UUID) error
 	// MarkStarted records the scan's transition out of `queued` — status
 	// `running` and `started_at = now()` — the first time any of its jobs is
@@ -593,6 +601,30 @@ func (s *service) ListOrgScans(ctx context.Context, actor domain.Actor, page Pag
 		return nil, 0, apperrors.Internal(fmt.Errorf("list org scans: %w", err))
 	}
 	return scans, total, nil
+}
+
+// maxActiveScans caps ListActiveScans — the indicator is a glance, not a
+// history page, and an org with more in flight than this still gets told
+// "N running" by the rows it does see.
+const maxActiveScans = 25
+
+func (s *service) ListActiveScans(ctx context.Context, actor domain.Actor) ([]OrgScanSummary, error) {
+	scans, err := s.scans.ListActiveByOrg(ctx, actor.OrgID, maxActiveScans)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list active scans: %w", err))
+	}
+	// A collaborator session switched into one shared project may only see
+	// that project's scans, never the rest of the org's.
+	if actor.ProjectID != nil {
+		scoped := scans[:0]
+		for _, sc := range scans {
+			if sc.ProjectID == *actor.ProjectID {
+				scoped = append(scoped, sc)
+			}
+		}
+		scans = scoped
+	}
+	return scans, nil
 }
 
 func (s *service) CancelScan(ctx context.Context, actor domain.Actor, scanID uuid.UUID) error {

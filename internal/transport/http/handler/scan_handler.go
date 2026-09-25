@@ -117,6 +117,26 @@ func (h *ScanHandler) ListForOrg(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.OrgScanListResponse{Data: items, Pagination: dto.NewPagination(page.Page, page.PageSize, total)})
 }
 
+// ListActive handles `GET /scans/active` — every queued/running scan in the
+// actor's org, for AppShell's running-scans indicator. Unpaginated: the
+// service caps it.
+func (h *ScanHandler) ListActive(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	scans, err := h.svc.ListActiveScans(c.Request.Context(), actor)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]dto.OrgScanSummaryResponse, len(scans))
+	for i, s := range scans {
+		items[i] = dto.FromOrgScanSummary(s)
+	}
+	c.JSON(http.StatusOK, dto.ActiveScanListResponse{Data: items})
+}
+
 // Get handles `GET /scans/{id}`.
 func (h *ScanHandler) Get(c *gin.Context) {
 	actor, ok := requireActor(c)

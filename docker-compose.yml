@@ -44,6 +44,17 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local stand-in for Amazon SES: catches every email the backend sends
+  # (GUARDPIPE_MAIL_BACKEND=smtp, GUARDPIPE_SMTP_ADDR=mailpit:1025) and shows
+  # it at http://localhost:8025 — nothing ever leaves the machine. Pinned
+  # rather than :latest, like every other image here.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "8025:8025"
+    environment:
+      MP_MAX_MESSAGES: 500
+
   guardpipe:
     build:
       context: .

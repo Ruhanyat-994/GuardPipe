@@ -113,6 +113,25 @@ func (f *fakeScanRepo) ListByOrg(_ context.Context, _ uuid.UUID, page orchestrat
 	end := min(start+page.PageSize, len(out))
 	return out[start:end], total, nil
 }
+
+// ListActiveByOrg ignores orgID for the same reason ListByOrg does.
+func (f *fakeScanRepo) ListActiveByOrg(_ context.Context, _ uuid.UUID, limit int) ([]orchestrator.OrgScanSummary, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []orchestrator.OrgScanSummary
+	for _, s := range f.byID {
+		if s.Status == domain.ScanStatusQueued || s.Status == domain.ScanStatusRunning {
+			out = append(out, orchestrator.OrgScanSummary{Scan: *s, ProjectName: "Test Project"})
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
 func (f *fakeScanRepo) SetCancelRequested(_ context.Context, scanID uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -773,6 +792,41 @@ func TestListOrgScans_ReturnsScansWithProjectName(t *testing.T) {
 	require.Len(t, scans, 1)
 	require.Equal(t, created.ID, scans[0].ID)
 	require.NotEmpty(t, scans[0].ProjectName)
+}
+
+func TestListActiveScans_ReturnsOnlyInFlightScans(t *testing.T) {
+	svc, scans, _, _, _, _ := newTestOrchestrator(t)
+	actor := newActor()
+
+	inFlight, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	finished, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	scans.byID[finished.ID].Status = domain.ScanStatusCompleted
+
+	active, err := svc.ListActiveScans(context.Background(), actor)
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+	require.Equal(t, inFlight.ID, active[0].ID)
+}
+
+// A collaborator switched into one shared project must not see the rest of
+// the org's running scans.
+func TestListActiveScans_ProjectScopedActor_SeesOnlyThatProject(t *testing.T) {
+	svc, _, _, _, _, _ := newTestOrchestrator(t)
+	actor := newActor()
+
+	shared, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	_, err = svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+
+	scoped := actor
+	scoped.ProjectID = &shared.ProjectID
+	active, err := svc.ListActiveScans(context.Background(), scoped)
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+	require.Equal(t, shared.ID, active[0].ID)
 }
 
 // TestListScans_CrossOrgProject_ReturnsNotFound is the 404-not-403 rule

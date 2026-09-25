@@ -670,6 +670,56 @@ func TestPool_ProcessJob_LastJobFinalizes_ComputesAndPersistsRiskAssessment(t *t
 	require.Equal(t, "1.0", record.FormulaVersion)
 }
 
+type recordingNotifier struct {
+	mu    sync.Mutex
+	scans []uuid.UUID
+}
+
+func (n *recordingNotifier) ScanFinished(_ context.Context, scanID uuid.UUID) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.scans = append(n.scans, scanID)
+	return nil
+}
+
+func (n *recordingNotifier) calls() []uuid.UUID {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]uuid.UUID(nil), n.scans...)
+}
+
+// TestPool_ProcessJob_LastJobFinalizes_NotifiesOnce: the notifier hears
+// about a scan exactly once, when its last job finishes — never per job.
+func TestPool_ProcessJob_LastJobFinalizes_NotifiesOnce(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineCodeScan, applicable: true}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+	notifier := &recordingNotifier{}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs,
+		JobResults:    &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings},
+		Projects:      &fakeCloneInfo{},
+		Cloner:        &fakeCloner{},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log:      discardLogger(),
+		Notifier: notifier,
+	}
+	scanID, jobID := seedScanAndJob(t, scans, jobs, domain.EngineCodeScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	require.Equal(t, []uuid.UUID{scanID}, notifier.calls())
+}
+
 // TestPool_ProcessJob_ScanCancelled_DoesNotScore: a cancelled scan's last
 // job still finalizes it (to `cancelled`, not `completed`) — that must not
 // trigger scoring, which only makes sense for a scan that actually ran to

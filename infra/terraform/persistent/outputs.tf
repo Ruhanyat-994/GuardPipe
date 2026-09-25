@@ -73,3 +73,19 @@ output "sonarqube_token_parameter_name" {
 output "sonarqube_token_parameter_arn" {
   value = aws_ssm_parameter.sonarqube_token.arn
 }
+
+output "ses_identity_arn" {
+  description = "ARN of the SES sender identity, or \"\" when none is configured. cluster/ scopes the app role's ses:SendEmail permission to it."
+  value       = length(aws_sesv2_email_identity.sender) > 0 ? aws_sesv2_email_identity.sender[0].arn : ""
+}
+
+output "ses_dkim_records" {
+  description = "DKIM CNAME records to add to the sender domain's DNS (domain identities only)."
+  value = length(aws_sesv2_email_identity.sender) > 0 ? [
+    for t in try(aws_sesv2_email_identity.sender[0].dkim_signing_attributes[0].tokens, []) : {
+      name  = "${t}._domainkey.${var.ses_sender_identity}"
+      type  = "CNAME"
+      value = "${t}.dkim.amazonses.com"
+    }
+  ] : []
+}

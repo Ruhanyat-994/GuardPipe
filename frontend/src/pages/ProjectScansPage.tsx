@@ -7,6 +7,7 @@ import { ScanLauncher } from '../components/project/ScanLauncher'
 import { useProjectContext } from '../components/project/ProjectContext'
 import { ApiError } from '../lib/apiClient'
 import { listScans, type Scan, type ScanSummary } from '../lib/scansApi'
+import { useActiveScansStore } from '../stores/activeScansStore'
 
 /**
  * The project's Scans tab — a launcher (pick engines, run one/several/all)
@@ -18,6 +19,7 @@ import { listScans, type Scan, type ScanSummary } from '../lib/scansApi'
 export function ProjectScansPage() {
   const { project, refetch } = useProjectContext()
   const navigate = useNavigate()
+  const refreshActiveScans = useActiveScansStore((s) => s.refresh)
   const [scans, setScans] = useState<ScanSummary[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -37,6 +39,7 @@ export function ProjectScansPage() {
   }, [project.id])
 
   function handleStarted(scan: Scan) {
+    refreshActiveScans()
     navigate(`/scans/${scan.id}`)
   }
 

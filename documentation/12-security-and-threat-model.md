@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Security Design and Threat Model |
 | **Project** | GuardPipe |
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Status** | Draft |
 | **Method** | STRIDE · OWASP ASVS 4.0 |
 | **Owner** | Member 6 (with all) |
-| **Last updated** | 2026-09-24 |
+| **Last updated** | 2026-09-25 |
 
 ### Revision history
 
@@ -20,6 +20,7 @@
 | 1.3 | 2026-08-23 | Team | §5.2 gained an explicit note on the pentest target denylist (`GUARDPIPE_PENTEST_DENYLIST`), which replaces the old allowlist model — a hosted product can't pre-enumerate every customer's target domain, so any public, non-blocked-range host is accepted by default and only explicitly denylisted hosts are refused. Matches `02-srs.md` rev 1.4's FR-PRJ-007/FR-PEN-002 |
 | 1.4 | 2026-08-23 | Team | §3.1 `S4` (forged webhook) control column extended with delivery-ID replay dedup; new `S6` added (webhook-triggered scan flooding / cost abuse) — both now point at the full "Live / continuous scanning" design added to `BUILD_GUIDE.md` Phase 15+ (post-graduation roadmap, still Stretch/not implemented this semester) |
 | 1.5 | 2026-09-24 | Team | `S4` and `S6` are now built controls, not Stretch (`BUILD_GUIDE.md` Phase 17 Part B, `internal/modules/livescan`). `S6`'s quota is a per-project hourly cap (`GUARDPIPE_LIVESCAN_MAX_PER_HOUR`) until billing's `entitlement.Check` exists; the circuit breaker pauses at 3× the cap. New `E7` added: a webhook-triggered pentest is refused by design at three layers |
+| 1.6 | 2026-09-25 | Team | New residual risk #8 and a report-email controls note (FR-NOT-001..006): verified-recipient-only rule, header-injection handling, IRSA-scoped SES sending |
 
 ---
 
@@ -343,6 +344,14 @@ Permissions-Policy: geolocation=(), camera=(), microphone=()
 | 5 | An organisation can't yet gain a second member (no invite flow) — each account is its own single-member organisation | Out of scope | Invite flow + role assignment within an existing organisation |
 | 6 | HTTP in the local Compose deployment | Local only | TLS termination is required for any non-local deployment |
 | 7 | JWT secret is a single symmetric key | Adequate at this scale | Asymmetric signing with rotation |
+| 8 | Emailed PDF reports travel as ordinary email — findings leave GuardPipe's access control once delivered | Requested feature; users opt in per address and can turn it off | Email a sign-in link only, never the PDF |
+
+**Report emails (FR-NOT-001..006).** A scan report is a map of an organisation's weaknesses, so where it gets emailed is a security decision, not a preference:
+- **No unverified recipient, ever.** A new report address sits in `pending_email` until the single-use link sent *to that address* is clicked (24 h, only its SHA-256 stored). Without this, anyone who got into an account could quietly redirect every future report to an outside mailbox. Requesting and confirming are both written to `audit_log`.
+- **Recipient is the accountable user only** — `scans.triggered_by` (the same person the report's "Authorisation & responsibility" section names), never other org members or an arbitrary list.
+- **Header injection** — the mailer rejects CR/LF in every header value and Q-encodes the subject; user-controlled values in the HTML body go through `html/template`.
+- **No SES keys** — on AWS the backend sends through the `guardpipe-app` IRSA role, allowed only `ses:SendEmail`/`ses:SendRawEmail` on the one verified sender identity.
+- **Sending can't harm a scan** — the worker only writes an outbox row; delivery happens in a separate loop with retries.
 
 ---
 

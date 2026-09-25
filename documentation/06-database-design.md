@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Database Design |
 | **Project** | GuardPipe |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Status** | Draft |
 | **Engine** | PostgreSQL 16 · Redis 7 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-09-24 |
+| **Last updated** | 2026-09-25 |
 
 ### Revision history
 
@@ -19,6 +19,7 @@
 | 1.2 | 2026-08-16 | Team | §4.3 gains `created_at`/`family_issued_at` on `refresh_tokens` (migration `00011`, BUILD_GUIDE.md Phase 14's session-timeout hardening); §11's planned sequence renumbered accordingly (indexes/triggers pushed to `00012`/`00013`). **Also needs its second reviewer** — same single-author caveat as 1.1, migration was built and merged same-session on explicit user request rather than waiting on the normal two-approval schema-PR flow |
 | 1.3 | 2026-08-16 | Team | §4.5 gains `credential_invalid_at`/`credential_invalid_reason` on `repositories` (migration `00012`) — a scan whose clone is rejected 401/403 now leaves a persisted signal on the project instead of only ever showing up as one scan's job failure reason; cleared by the existing attach/replace flow. §11's planned sequence renumbered again (indexes/triggers now `00013`/`00014`). **Also needs its second reviewer**, same caveat as 1.1/1.2 |
 | 1.4 | 2026-09-24 | Team | Migration `00027` (`BUILD_GUIDE.md` Phase 17 Part B, GitHub webhook live scanning): new §4.20 `project_webhooks`; §4.9 `scans` gains nullable `trigger_source`/`trigger_ref`/`trigger_actor`; §7 gains the `gp:webhook:*` Redis keys. Purely additive — no existing column changes. **Needs its second reviewer**, same caveat as 1.1–1.3 |
+| 1.5 | 2026-09-25 | Team | Migration `00029` (scan-completion notifications, FR-NOT-001..006): new §4.21 `user_notification_settings`, `scan_report_emails` (email outbox) and `notifications` (in-app feed). **Needs its second reviewer** per the schema change protocol |
 
 > **Change control:** this is a shared contract across all six developers. Any schema change requires **two approvals** and follows the protocol in §12.
 
@@ -536,6 +537,41 @@ GitHub webhook live scanning (migration `00027`, FR-ORC-013/015..018). One row p
 | `created_at` / `updated_at` | `TIMESTAMPTZ` | NOT NULL | |
 
 Lookups are by primary key (the receiver) or by the UNIQUE `project_id` (settings screen) — both already indexed.
+
+### 4.21 `user_notification_settings`, `scan_report_emails`, `notifications`
+Scan-completion notifications (migration `00029`, FR-NOT-001..006).
+
+**`user_notification_settings`** — one row per user, created on first change; no row = defaults.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `user_id` | `UUID` | PK, FK → `users(id)` ON DELETE CASCADE | |
+| `report_email` | `CITEXT` | NULL | the **verified** report address; NULL = account email |
+| `pending_email` / `pending_token_hash` / `pending_expires_at` | `CITEXT` / `BYTEA` / `TIMESTAMPTZ` | all NULL or all set (CHECK); partial UNIQUE index on the hash | an address awaiting its confirmation link; only the SHA-256 of the token is stored (FR-NOT-004) |
+| `email_on_scan_complete` | `BOOLEAN` | NOT NULL DEFAULT true | manual + scheduled scans |
+| `email_on_live_scan` | `BOOLEAN` | NOT NULL DEFAULT false | webhook scans (FR-NOT-003) |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | NOT NULL | |
+
+**`scan_report_emails`** — the email outbox (FR-NOT-005). The scan worker only inserts; `notification.Sender` claims due rows with `FOR UPDATE SKIP LOCKED`, renders the PDF, sends, and retries with backoff.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | `UUID` | PK | |
+| `scan_id` / `user_id` / `org_id` | `UUID` | NOT NULL, FKs ON DELETE CASCADE; UNIQUE (`scan_id`, `user_id`) | one report per scan per user |
+| `recipient` | `CITEXT` | NOT NULL | resolved when queued — the record of where the report went |
+| `status` | `TEXT` | CHECK `pending`/`sending`/`sent`/`failed` | `sending` with an expired lease is claimable again |
+| `attempts` / `next_attempt_at` / `last_error` / `sent_at` | `INT` / `TIMESTAMPTZ` / `TEXT` / `TIMESTAMPTZ` | | partial index on `next_attempt_at` WHERE status in (`pending`,`sending`) |
+
+**`notifications`** — the bell's feed, scoped to user **and** org (a multi-org member only sees the org their session is in).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | `UUID` | PK | |
+| `user_id` / `org_id` | `UUID` | NOT NULL, FKs ON DELETE CASCADE | index (`user_id`, `org_id`, `created_at` DESC) |
+| `kind` | `TEXT` | CHECK `scan_completed`/`scan_failed`/`scan_cancelled` | TEXT + CHECK: expected to grow |
+| `scan_id` | `UUID` | FK → `scans(id)` ON DELETE CASCADE; UNIQUE (`scan_id`, `user_id`) | |
+| `title` / `body` | `TEXT` | NOT NULL | plain text; rendered as text, never HTML |
+| `read_at` / `created_at` | `TIMESTAMPTZ` | | |
 
 ---
 

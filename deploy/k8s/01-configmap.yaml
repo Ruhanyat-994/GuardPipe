@@ -76,5 +76,16 @@ data:
   GUARDPIPE_GEMINI_MODEL_SMART: "gemini-2.5-flash"
   GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN: "100000"
 
+  # Scan-report emails (modules/notification). "log" until an SES sender
+  # identity exists and is verified (infra/terraform/persistent's
+  # ses_sender_identity) — then set "ses" and a From address at that
+  # identity. SES credentials come from the guardpipe-app IAM role (IRSA);
+  # no AWS key is ever configured here. Email links use the first
+  # GUARDPIPE_CORS_ORIGINS entry (the ALB URL) unless GUARDPIPE_APP_URL is set.
+  GUARDPIPE_MAIL_BACKEND: "log"
+  GUARDPIPE_MAIL_FROM: "GuardPipe <reports@guardpipe.local>"
+  # GUARDPIPE_SES_REGION: defaults to AWS_REGION, which the EKS pod identity
+  # webhook injects alongside the IRSA credentials.
+
   GUARDPIPE_GATE_WARN: "30"
   GUARDPIPE_GATE_BLOCK: "70"

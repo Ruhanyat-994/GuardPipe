@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver, used only to run goose migrations
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/dockerx"
@@ -24,6 +25,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8scodescanscanner"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8spentestsandbox"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/mailer"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	paymentdemo "github.com/Ruhanyat-994/GuardPipe/internal/adapters/payment/demo"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/pentestsandbox"
@@ -47,11 +49,13 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/billing"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/notification"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
 	modulepentest "github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
 	pentestrepo "github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest/repo"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/project"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/reporting"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/scoring"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/vcs"
 	"github.com/Ruhanyat-994/GuardPipe/internal/platform/config"
@@ -519,6 +523,21 @@ func run() error {
 		pool.Tokens = billing.OrchestratorCharger{Service: billingSvc}
 	}
 
+	// modules/notification — scan-completion feed + emailed PDF reports.
+	// The worker only queues (pool.Notifier); notificationSender, started
+	// with the other worker loops below, does the rendering and sending.
+	scanMailer, err := newMailer(ctx, cfg.Mail, log)
+	if err != nil {
+		return err
+	}
+	notificationRepo := repo.NewNotificationRepo(db.Pool)
+	notificationSvc := notification.NewService(notification.Config{
+		AppURL:       cfg.Mail.AppURL,
+		EmailEnabled: cfg.Mail.Enabled(),
+	}, notificationRepo, scanMailer, auditSvc, log)
+	pool.Notifier = notificationSvc
+	log.Info("scan notifications enabled", "mail_backend", cfg.Mail.Backend)
+
 	// GUARDPIPE_ROLE=api never runs the worker pool; GUARDPIPE_ROLE=all
 	// (the default) and GUARDPIPE_ROLE=worker both do — the same binary,
 	// an intentional near-zero-cost split into separate replicas later.
@@ -543,6 +562,21 @@ func run() error {
 		liveScanWorker := &livescan.Worker{Service: liveScanSvc, Coordinator: liveScanStore, Log: log}
 		go liveScanWorker.Start(workerCtx)
 		log.Info("live scanning worker started", "webhook_public_url", cfg.LiveScan.PublicURL)
+
+		if cfg.Mail.Enabled() {
+			notificationSender := &notification.Sender{
+				Repo:   notificationRepo,
+				Mailer: scanMailer,
+				Reports: scanReportRenderer{
+					assembler: reporting.NewAssembler(orchestratorSvc, projectSvc, repo.NewUserRepo(db.Pool), aiSvc, log),
+				},
+				AppURL:             cfg.Mail.AppURL,
+				Log:                log,
+				MaxAttachmentBytes: cfg.Mail.MaxAttachmentBytes,
+			}
+			go notificationSender.Start(workerCtx)
+			log.Info("scan report email sender started", "backend", cfg.Mail.Backend)
+		}
 
 		if billingSvc != nil {
 			billingTicker := &billing.Ticker{Service: billingSvc, Interval: cfg.Billing.TickInterval, Log: log}
@@ -616,6 +650,7 @@ func run() error {
 		OrgSvc:          orgSvc,
 		PentestSvc:      pentestSvc,
 		LiveScanSvc:     liveScanSvc,
+		NotificationSvc: notificationSvc,
 		BillingSvc:      billingSvc,
 		ScanPreviewer:   orchestratorSvc.(orchestrator.ScanPreviewer),
 		Users:           repo.NewUserRepo(db.Pool),
@@ -705,4 +740,39 @@ func runHealthcheck() int {
 		return 1
 	}
 	return 0
+}
+
+// newMailer picks the scan-report mail backend (GUARDPIPE_MAIL_BACKEND).
+// "off" returns nil — notification.Service then never queues or sends.
+func newMailer(ctx context.Context, m config.Mail, log *slog.Logger) (notification.Mailer, error) {
+	switch m.Backend {
+	case "smtp":
+		return mailer.SMTP{Addr: m.SMTPAddr, From: m.From, Username: m.SMTPUsername, Password: m.SMTPPassword}, nil
+	case "ses":
+		ses, err := mailer.NewSES(ctx, m.SESRegion, m.From, m.SESConfigurationSet)
+		if err != nil {
+			return nil, fmt.Errorf("initialise SES mailer: %w", err)
+		}
+		return ses, nil
+	case "log":
+		return mailer.Log{Logger: log}, nil
+	}
+	return nil, nil
+}
+
+// scanReportRenderer adapts reporting (Assembler + RenderPDF) to
+// notification.ReportRenderer. The report is built as the scan's own
+// organisation would see it: an admin-role system actor scoped to that org,
+// the same shape the scheduler uses — Assembler's own org-ownership checks
+// still apply, so it can never render another org's scan.
+type scanReportRenderer struct {
+	assembler *reporting.Assembler
+}
+
+func (r scanReportRenderer) RenderScanPDF(ctx context.Context, orgID, scanID uuid.UUID) ([]byte, error) {
+	data, err := r.assembler.Build(ctx, domain.Actor{OrgID: orgID, Role: domain.RoleAdmin}, scanID)
+	if err != nil {
+		return nil, err
+	}
+	return reporting.RenderPDF(data)
 }

@@ -86,3 +86,15 @@ variable "ecr_image_retention_count" {
   type        = number
   default     = 10
 }
+
+variable "ses_sender_identity" {
+  description = <<-EOT
+    What scan-report emails are sent from (modules/notification, GUARDPIPE_MAIL_BACKEND=ses):
+    a domain you control (e.g. "guardpipe.example.com", recommended: gives DKIM, and any
+    address at it can send) or a single address (e.g. "reports@example.com": AWS emails it a
+    verification link). Empty (the default) creates no SES identity and leaves email on the
+    "log" backend.
+  EOT
+  type        = string
+  default     = ""
+}

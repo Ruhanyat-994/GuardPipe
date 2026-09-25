@@ -324,6 +324,11 @@ type OrgScanListResponse struct {
 	Pagination Pagination               `json:"pagination"`
 }
 
+// ActiveScanListResponse matches `GET /scans/active`.
+type ActiveScanListResponse struct {
+	Data []OrgScanSummaryResponse `json:"data"`
+}
+
 // EngineProgressResponse is one entry in ProgressResponse.Engines.
 type EngineProgressResponse struct {
 	Engine      string `json:"engine"`

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Ban, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Ban, Info, ShieldAlert } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, CardDescription } from '../components/ui/Card'
 import { EngineFindingsSection } from '../components/project/EngineFindingsSection'
@@ -177,6 +177,16 @@ export function ScanDetailPage() {
         <p role="alert" className="mb-4 text-body-sm text-danger">
           {cancelError}
         </p>
+      )}
+
+      {!TERMINAL_STATUSES.has(scan.status) && (
+        <div className="mb-4 flex items-start gap-2.5 rounded-md border border-accent/30 bg-accent/5 px-4 py-3 text-body-sm text-text-secondary">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+          <p>
+            You don&rsquo;t need to stay on this page — the scan keeps running on the server. Its
+            progress stays visible in the top bar, and you&rsquo;ll be notified when it finishes.
+          </p>
+        </div>
       )}
 
       <PartialResultBanner jobs={scan.jobs} />

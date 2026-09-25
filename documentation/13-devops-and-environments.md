@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.11 |
+| **Version** | 1.12 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-09-24 |
+| **Last updated** | 2026-09-25 |
 
 ### Revision history
 
@@ -25,6 +25,7 @@
 | 1.9 | 2026-09-14 | Team | §5.3 adds `GUARDPIPE_SECURE_COOKIES` — previously the refresh-token cookie's `Secure` flag was hardcoded to `GUARDPIPE_ENV == "production"`, which broke session persistence across a page reload on the first real EKS deployment (the ALB has no TLS listener yet, and browsers silently refuse to store a `Secure` cookie set over plain HTTP). Now independently overridable, defaulting to the same behavior as before for anyone who hasn't hit this. Built, `internal/platform/config`. |
 | 1.10 | 2026-09-14 | Team | §5.4 adds a second pentest sandbox backend: `GUARDPIPE_SANDBOX_BACKEND` (`docker` default, `kubernetes` new), `GUARDPIPE_K8S_SANDBOX_IMAGE`, `GUARDPIPE_K8S_SANDBOX_NAMESPACE`. The EKS deployment has no Docker socket reachable from `guardpipe-worker` at all (pentest was disabled outright there until now — see `documentation/12-security-and-threat-model.md`'s sandboxing posture for why a shared host Docker socket was rejected instead); the `kubernetes` backend (`internal/adapters/k8spentestsandbox`) runs each tool invocation as a one-shot `batch/v1.Job`, isolated by a per-job `NetworkPolicy` rather than the Docker path's in-container `iptables` self-firewall — lets every sandbox pod run fully non-root with every capability dropped from the start, no root-then-drop dance needed. Built. |
 | 1.11 | 2026-09-24 | Team | New §5.9 (GitHub webhook live scanning, `BUILD_GUIDE.md` Phase 17 Part B): `GUARDPIPE_WEBHOOK_PUBLIC_URL`, `GUARDPIPE_LIVESCAN_MAX_PER_HOUR`, `GUARDPIPE_LIVESCAN_DEBOUNCE`. Built, `internal/platform/config`. |
+| 1.12 | 2026-09-25 | Team | New §5.10 scan report email variables (`GUARDPIPE_MAIL_*`, `GUARDPIPE_SMTP_*`, `GUARDPIPE_SES_*`, `GUARDPIPE_APP_URL`), the `mailpit` Compose service, and the SES-on-AWS rollout steps |
 
 ---
 
@@ -219,6 +220,20 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_LIVESCAN_MAX_PER_HOUR` | `10` | no | Automatic scans per project per hour; the circuit breaker pauses live scanning at 3× this many triggers. Minimum 1 |
 | `GUARDPIPE_LIVESCAN_DEBOUNCE` | `30s` | no | How long a push waits for further pushes to the same branch before its one scan starts. Pull requests aren't debounced |
 
+### 5.10 Scan report emails
+
+| Variable | Default | Required | Notes |
+|---|---|---|---|
+| `GUARDPIPE_MAIL_BACKEND` | `log` | no | `log` (queue and log a line, send nothing), `smtp` (local Compose: the `mailpit` service, UI at http://localhost:8025), `ses` (Amazon SES via the AWS SDK and the pod's IAM role — no keys), `off` (no email; the in-app feed still works) |
+| `GUARDPIPE_MAIL_FROM` | `GuardPipe <noreply@guardpipe.local>` | with smtp/ses | Sender. For SES it must be at a verified identity (`infra/terraform/persistent`'s `ses_sender_identity`) |
+| `GUARDPIPE_APP_URL` | first `GUARDPIPE_CORS_ORIGINS` entry | no | Frontend origin used for links in emails |
+| `GUARDPIPE_SMTP_ADDR` | `mailpit:1025` | with smtp | `host:port`; STARTTLS is used whenever the server offers it |
+| `GUARDPIPE_SMTP_USERNAME` / `GUARDPIPE_SMTP_PASSWORD` | — | no | Only for an SMTP server that needs a login |
+| `GUARDPIPE_SES_REGION` | `AWS_REGION` | with ses | Injected by the EKS pod identity webhook on EKS |
+| `GUARDPIPE_SES_CONFIGURATION_SET` | — | no | Optional SES configuration set (bounce/complaint events) |
+| `GUARDPIPE_MAIL_MAX_ATTACHMENT_MB` | `10` | no | A larger PDF is linked instead of attached |
+
+**Moving to SES on AWS:** set `ses_sender_identity` in `infra/terraform/persistent` and apply; add the `ses_dkim_records` output to DNS (domain) or click AWS's email (single address); re-apply `cluster/` so the app role gets its send-only SES policy; request SES production access (new accounts are sandboxed: verified recipients only, 200/day); then set `GUARDPIPE_MAIL_BACKEND: "ses"` and a matching `GUARDPIPE_MAIL_FROM` in `deploy/k8s/01-configmap.yaml`.
 
 **Fail-fast validation.** A missing required variable, a short JWT secret, or a wrong-length encryption key aborts startup with a message naming the variable. A security product that boots half-configured is worse than one that refuses to boot.
 

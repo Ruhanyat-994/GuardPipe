@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -186,6 +187,64 @@ func (r *ScanRepo) ListByOrg(ctx context.Context, orgID uuid.UUID, page orchestr
 		return nil, 0, fmt.Errorf("repo: iterate org scans: %w", err)
 	}
 	return out, total, nil
+}
+
+// ListActiveByOrg is ListByOrg restricted to queued/running scans — the
+// running-scans indicator's poll. Same row shape and per-project
+// scan_number as ListByOrg; the window function runs over every scan of the
+// project before the status filter is applied, so "Scan #N" still matches
+// the history page.
+func (r *ScanRepo) ListActiveByOrg(ctx context.Context, orgID uuid.UUID, limit int) ([]orchestrator.OrgScanSummary, error) {
+	const q = `
+		SELECT * FROM (
+			SELECT s.id, s.project_id, s.triggered_by, s.type, s.status, s.requested_engines, s.commit_sha, s.branch,
+				s.cancel_requested, s.error_reason, s.queued_at, s.started_at, s.finished_at, s.finding_counts,
+				s.trigger_source, s.trigger_ref, s.trigger_actor, p.name,
+				ROW_NUMBER() OVER (PARTITION BY s.project_id ORDER BY s.created_at ASC),
+				s.created_at
+			FROM scans s
+			JOIN projects p ON p.id = s.project_id
+			WHERE p.org_id = $1
+		) numbered
+		WHERE status IN ('queued', 'running')
+		ORDER BY created_at DESC
+		LIMIT $2`
+	rows, err := r.db.Query(ctx, q, orgID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("repo: list active org scans: %w", err)
+	}
+	defer rows.Close()
+
+	var out []orchestrator.OrgScanSummary
+	for rows.Next() {
+		var s domain.Scan
+		var scanType, status, projectName string
+		var requestedEngines []string
+		var findingCounts map[string]int
+		var triggerSource *string
+		var createdAt time.Time
+
+		if err := rows.Scan(
+			&s.ID, &s.ProjectID, &s.TriggeredBy, &scanType, &status, &requestedEngines,
+			&s.CommitSHA, &s.Branch, &s.CancelRequested, &s.ErrorReason,
+			&s.QueuedAt, &s.StartedAt, &s.FinishedAt, &findingCounts,
+			&triggerSource, &s.TriggerRef, &s.TriggerActor, &projectName, &s.ScanNumber, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("repo: scan active org scan row: %w", err)
+		}
+		s.Type = domain.ScanType(scanType)
+		s.Status = domain.ScanStatus(status)
+		s.RequestedEngines = stringsToEngineIDs(requestedEngines)
+		s.FindingCounts = stringMapToSeverityMap(findingCounts)
+		if triggerSource != nil {
+			s.TriggerSource = domain.TriggerSource(*triggerSource)
+		}
+		out = append(out, orchestrator.OrgScanSummary{Scan: s, ProjectName: projectName})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo: iterate active org scans: %w", err)
+	}
+	return out, nil
 }
 
 func (r *ScanRepo) SetCancelRequested(ctx context.Context, id uuid.UUID) error {

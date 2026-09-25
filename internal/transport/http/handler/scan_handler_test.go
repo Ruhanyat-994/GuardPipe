@@ -63,6 +63,9 @@ func (f *fakeOrchestratorService) ListScans(context.Context, domain.Actor, uuid.
 func (f *fakeOrchestratorService) ListOrgScans(context.Context, domain.Actor, orchestrator.Page) ([]orchestrator.OrgScanSummary, int, error) {
 	return f.orgScans, f.total, f.err
 }
+func (f *fakeOrchestratorService) ListActiveScans(context.Context, domain.Actor) ([]orchestrator.OrgScanSummary, error) {
+	return f.orgScans, f.err
+}
 func (f *fakeOrchestratorService) GetProgress(context.Context, domain.Actor, uuid.UUID) (*orchestrator.Progress, error) {
 	return f.progress, f.err
 }

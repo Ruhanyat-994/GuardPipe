@@ -145,6 +145,9 @@ type Pool struct {
 	// Tokens refunds a job's tokens when it ends without doing the work it
 	// was paid for (see refundable). nil = billing off.
 	Tokens TokenRefunder
+	// Notifier is told once a scan reaches its terminal status (after
+	// scoring, so it can report the score). nil = nobody is notified.
+	Notifier ScanFinishedNotifier
 	// Progress is the live store an engine's ScanInput.ReportProgress
 	// writes to (nil is fine — a nil store just means ReportProgress calls
 	// are silently dropped, same as never calling it). Service.GetProgress
@@ -481,6 +484,20 @@ func (p *Pool) persist(ctx context.Context, result JobResult) {
 // status: scoring, then notifications.
 func (p *Pool) afterFinalize(ctx context.Context, scanID uuid.UUID) {
 	p.finalizeScoring(ctx, scanID)
+	if p.Notifier != nil {
+		if err := p.Notifier.ScanFinished(ctx, scanID); err != nil {
+			p.Log.Error("orchestrator: scan-finished notification failed", "scan_id", scanID, "error", err)
+		}
+	}
+}
+
+// ScanFinishedNotifier is told when a scan's last job reaches a terminal
+// status (modules/notification implements it: the in-app feed entry and the
+// queued report email). Best-effort, like scoring: a failure is logged,
+// never surfaced to the scan. Implementations must be quick and must not
+// call out to a mail provider — that belongs in their own background loop.
+type ScanFinishedNotifier interface {
+	ScanFinished(ctx context.Context, scanID uuid.UUID) error
 }
 
 // TokenRefunder is the refund half of TokenCharger — all the worker needs.
