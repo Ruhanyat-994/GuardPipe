@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/cn'
 import { ActiveScansIndicator } from './ActiveScansIndicator'
+import { AssistantDock } from './assistant/AssistantDock'
 import { GlobalSearch } from './GlobalSearch'
 import { Logo } from './Logo'
 import { NotificationPanel } from './NotificationPanel'
@@ -277,6 +278,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="min-w-0 flex-1 overflow-y-auto">{children}</div>
       </div>
       <Toaster />
+      <AssistantDock />
     </div>
   )
 }

@@ -60,6 +60,46 @@ func containsInstructionEcho(raw []byte) bool {
 	return false
 }
 
+// RemediationStep is one step of a remediate_finding plan.
+type RemediationStep struct {
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+	Code   string `json:"code,omitempty"`
+}
+
+// RemediateFindingResponse is the decoded, validated shape of a
+// remediate_finding response (the finding assistant's "Remediation").
+type RemediateFindingResponse struct {
+	Summary      string            `json:"summary"`
+	Steps        []RemediationStep `json:"steps"`
+	Verification string            `json:"verification"`
+	Confidence   string            `json:"confidence"`
+}
+
+func (r RemediateFindingResponse) validate() error {
+	if err := requireNonEmpty("summary", r.Summary, 400); err != nil {
+		return err
+	}
+	if len(r.Steps) == 0 || len(r.Steps) > 8 {
+		return fmt.Errorf("%w: steps must have 1-8 items, got %d", ErrSchemaViolation, len(r.Steps))
+	}
+	for i, st := range r.Steps {
+		if err := requireNonEmpty(fmt.Sprintf("steps[%d].title", i), st.Title, 120); err != nil {
+			return err
+		}
+		if err := requireNonEmpty(fmt.Sprintf("steps[%d].detail", i), st.Detail, 600); err != nil {
+			return err
+		}
+		if len(st.Code) > 2000 {
+			return fmt.Errorf("%w: steps[%d].code too long", ErrSchemaViolation, i)
+		}
+	}
+	if err := requireNonEmpty("verification", r.Verification, 400); err != nil {
+		return err
+	}
+	return requireEnum("confidence", r.Confidence, "high", "medium", "low")
+}
+
 // ExplainFindingResponse is the decoded, validated shape of an
 // explain_finding response (documentation/10-ai-integration.md §6.1).
 type ExplainFindingResponse struct {
@@ -302,6 +342,17 @@ func decodeAndValidate(p Prompt, raw json.RawMessage) (any, error) {
 		for i := range v {
 			v[i].Severity = normalizeEnum(v[i].Severity)
 		}
+		if err := v.validate(); err != nil {
+			return nil, err
+		}
+		return v, nil
+
+	case PromptRemediateFinding:
+		var v RemediateFindingResponse
+		if err := dec(&v); err != nil {
+			return nil, err
+		}
+		v.Confidence = normalizeEnum(v.Confidence)
 		if err := v.validate(); err != nil {
 			return nil, err
 		}

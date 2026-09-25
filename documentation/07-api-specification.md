@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | API Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Status** | Draft |
 | **Style** | REST · JSON · OpenAPI 3.1 conventions · RFC 9457 errors |
 | **Base URL** | `http://localhost:8080/api/v1` |
@@ -21,6 +21,7 @@
 | 1.3 | 2026-08-23 | Team | `GET /scans/{id}/progress` gains a real, live per-engine `activity` field and an honest (elapsed-time-based, not frozen) `progress_pct` for a running job — previously a hardcoded `50`. Also corrects this section's own long-standing inaccuracy: progress was never actually Redis-backed (`gp:progress:{scan_id}` was aspirational, not built); it's now genuinely live, backed by an in-process store (`orchestrator.LiveProgress`), which this revision documents instead of the Redis shape that never existed. **Needs its second reviewer**, same standing caveat as 1.1 |
 | 1.4 | 2026-09-24 | Team | GitHub webhook live scanning built (`BUILD_GUIDE.md` Phase 17 Part B, FR-ORC-013/015..018): new §5.1 (`GET/PUT/DELETE /projects/{id}/live-scanning`); the webhook receiver moves from the reserved `POST /webhooks/github` to `POST /api/v1/webhooks/github/{id}` (see §9 for why); scan responses gain `trigger_source`/`trigger_ref`/`trigger_actor`. **Needs its second reviewer** per this doc's change-control rule |
 | 1.5 | 2026-09-25 | Team | New `GET /scans/active` (FR-UI-010) and new §5.2 notifications + report-email settings endpoints (FR-NOT-001..006), including the one public token-authenticated route `POST /notification-settings/verify`. **Needs its second reviewer** per this doc's change-control rule |
+| 1.6 | 2026-09-25 | Team | New §6.1 finding assistant `POST /findings/{id}/assist` (AI explain / remediate / patch, token-priced) and `ai_prices` in the billing catalogue. **Needs its second reviewer** |
 
 > **Change control:** this is the frontend/backend contract. Breaking changes require **two approvals** and a note to the frontend owner. Freeze target: end of Sprint 0.
 
@@ -640,6 +641,15 @@ The first three sit **outside** `/api/v1` — they are infrastructure, not produ
 
 **`POST /notification-settings/verify`** `{ "token": "…" }` → `200 { "report_email": "security@example.org" }`, or 404 `notification.invalid_token` (unknown, used, or expired — indistinguishable on purpose).
 
+### 6.1 Finding assistant (AI)
+
+`POST /findings/{id}/assist` · member+ · `{ "action": "explain" | "remediate" | "fix" }`
+
+One command about one finding — there is no free-text chat. Answer shapes: `explain` → `{what, why_it_matters, how_exploited, confidence}`; `remediate` → `{summary, steps:[{title, detail, code?}], verification, confidence}`; `fix` → `{patch (unified diff), explanation, confidence, caveats[]}`. Every response carries `tokens_charged`, `already_paid`, `source_used`.
+- Priced from `GET /billing/catalog` → `ai_prices` (explain 150, remediate 400, fix 750). Paid once per finding per command; a repeat is free. The model runs first and only a usable answer is charged.
+- 404 for another org's finding (or another project, for a project-scoped session); 402 `billing.insufficient_tokens` before any model call; 422 `assist.not_patchable` for `fix` on a dependency/image/network finding; 422 `assist.discarded` if the answer looked prompt-injected; 429 `assist.ai_quota` when every Gemini key is out of quota; 502 `assist.ai_failed` otherwise. None of these charge.
+- `remediate`/`fix` read the real file at the scanned commit (GitHub contents API, the project's own token) — except secret findings, whose file is never fetched or sent.
+- "Where is it?" is answered by the frontend from the finding's location; it has no endpoint and is free.
 
 ---
 

@@ -12,6 +12,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/assist"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/billing"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
@@ -65,6 +66,9 @@ type RouterConfig struct {
 	// email settings. nil (a test router that doesn't need it) leaves its
 	// routes unregistered.
 	NotificationSvc *notification.Service
+	// AssistSvc is the finding assistant (AI explain / remediate / fix).
+	// nil leaves its route unregistered.
+	AssistSvc *assist.Service
 	// BillingSvc is token billing (TOKENIZATION-ARCHITECTURE.md). nil
 	// (GUARDPIPE_BILLING_MODE=off, or a test router) leaves /billing/*
 	// unregistered. ScanPreviewer backs the cost estimate.
@@ -290,6 +294,13 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		projects.PUT("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Enable)
 		projects.DELETE("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Disable)
 		api.POST("/webhooks/github/:id", liveScanH.Receive)
+	}
+
+	// The finding assistant. member+ (like starting a scan): every command
+	// can spend the org's tokens.
+	if cfg.AssistSvc != nil {
+		assistH := handler.NewAssistHandler(cfg.AssistSvc, v)
+		api.POST("/findings/:id/assist", requireAuth, requireNotSuspended, middleware.RBAC(memberAndAbove...), assistH.Run)
 	}
 
 	// Scan-completion notifications: the bell's feed, and each user's own

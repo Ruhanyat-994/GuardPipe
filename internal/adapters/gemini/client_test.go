@@ -195,26 +195,43 @@ func TestClient_Complete_SchemaAndResponseMimeTypeAreSentWhenSet(t *testing.T) {
 // finishReason "MAX_TOKENS", which schema.Validate correctly rejects as
 // invalid JSON. None of this adapter's callers want chain-of-thought for a
 // structured classification/generation task, so thinking must always be
-// disabled (thinkingBudget: 0) rather than left at its default.
+// disabled rather than left at its default. Gemini 2.x takes thinkingBudget
+// 0; Gemini 3.x rejects that with 400 INVALID_ARGUMENT and takes
+// thinkingLevel "minimal" instead — each must get only its own knob.
 func TestClient_Complete_DisablesThinking(t *testing.T) {
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
-		writeJSON(t, w, http.StatusOK, successBody(`{}`))
-	}))
-	defer srv.Close()
+	cases := []struct {
+		model      string
+		wantBudget any
+		wantLevel  any
+	}{
+		{model: "gemini-2.5-flash", wantBudget: float64(0), wantLevel: nil},
+		{model: "models/gemini-2.5-flash", wantBudget: float64(0), wantLevel: nil},
+		{model: "gemini-3.5-flash-lite", wantBudget: nil, wantLevel: "minimal"},
+		{model: "gemini-3.5-flash", wantBudget: nil, wantLevel: "minimal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+				writeJSON(t, w, http.StatusOK, successBody(`{}`))
+			}))
+			defer srv.Close()
 
-	client, err := gemini.NewClient(srv.URL, nil, []string{"k"})
-	require.NoError(t, err)
+			client, err := gemini.NewClient(srv.URL, nil, []string{"k"})
+			require.NoError(t, err)
 
-	_, err = client.Complete(context.Background(), ai.LLMRequest{User: "u", Model: "gemini-2.5-flash"})
-	require.NoError(t, err)
+			_, err = client.Complete(context.Background(), ai.LLMRequest{User: "u", Model: tc.model})
+			require.NoError(t, err)
 
-	genConfig, ok := gotBody["generationConfig"].(map[string]any)
-	require.True(t, ok)
-	thinkingConfig, ok := genConfig["thinkingConfig"].(map[string]any)
-	require.True(t, ok, "generationConfig.thinkingConfig must be set")
-	require.Equal(t, float64(0), thinkingConfig["thinkingBudget"])
+			genConfig, ok := gotBody["generationConfig"].(map[string]any)
+			require.True(t, ok)
+			thinkingConfig, ok := genConfig["thinkingConfig"].(map[string]any)
+			require.True(t, ok, "generationConfig.thinkingConfig must be set")
+			require.Equal(t, tc.wantBudget, thinkingConfig["thinkingBudget"])
+			require.Equal(t, tc.wantLevel, thinkingConfig["thinkingLevel"])
+		})
+	}
 }
 
 func TestClient_Complete_NoCandidatesIsAnError(t *testing.T) {

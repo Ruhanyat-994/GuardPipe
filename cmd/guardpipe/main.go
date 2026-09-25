@@ -45,6 +45,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/assist"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/billing"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
@@ -639,6 +640,15 @@ func run() error {
 		auditSvc,
 	)
 
+	// modules/assist — the finding assistant. Every command is free when
+	// billing is off, and unavailable when AI is.
+	var assistTokens assist.Tokens
+	if billingSvc != nil {
+		assistTokens = billingSvc
+	}
+	assistSvc := assist.NewService(repo.NewAssistRepo(db.Pool), aiSvc, assistTokens, projectSvc,
+		githubSourceFetcher{client: githubClient}, log)
+
 	router := transporthttp.NewRouter(transporthttp.RouterConfig{
 		Logger:          log,
 		CORSOrigins:     cfg.Security.CORSOrigins,
@@ -651,6 +661,7 @@ func run() error {
 		PentestSvc:      pentestSvc,
 		LiveScanSvc:     liveScanSvc,
 		NotificationSvc: notificationSvc,
+		AssistSvc:       assistSvc,
 		BillingSvc:      billingSvc,
 		ScanPreviewer:   orchestratorSvc.(orchestrator.ScanPreviewer),
 		Users:           repo.NewUserRepo(db.Pool),
@@ -775,4 +786,17 @@ func (r scanReportRenderer) RenderScanPDF(ctx context.Context, orgID, scanID uui
 		return nil, err
 	}
 	return reporting.RenderPDF(data)
+}
+
+// githubSourceFetcher adapts the GitHub client to assist.SourceFetcher.
+type githubSourceFetcher struct {
+	client *github.Client
+}
+
+func (g githubSourceFetcher) FetchFile(ctx context.Context, repoURL, ref, filePath, token string) (string, error) {
+	r, err := github.ParseRepoURL(repoURL)
+	if err != nil {
+		return "", err
+	}
+	return g.client.GetFileContent(ctx, r.Owner, r.Name, filePath, ref, token)
 }
