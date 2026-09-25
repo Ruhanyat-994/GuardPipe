@@ -4,17 +4,18 @@
 |---|---|
 | **Document** | AI Integration Design |
 | **Project** | GuardPipe |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Status** | Draft |
 | **Provider** | Google Gemini |
 | **Owner** | Member 4 |
-| **Last updated** | 2026-07-29 |
+| **Last updated** | 2026-09-26 |
 
 ### Revision history
 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-07-29 | Team | Initial AI integration design |
+| 1.1 | 2026-09-26 | Team | §3 note: the free-tier deployment runs both tiers on `gemini-3.5-flash-lite` (2.5-flash quota and 2.5-pro access, below). The adapter disables thinking per model generation: `thinkingBudget: 0` for 2.x, `thinkingLevel: "minimal"` for 3.x |
 
 ---
 
@@ -80,6 +81,8 @@ type LLMResponse struct {
 | Scan summary | `gemini-2.5-flash` | One call per scan |
 
 Model IDs are configuration (`GUARDPIPE_GEMINI_MODEL_FAST`, `..._SMART`), never hardcoded — model names change and we should not need a release to follow.
+
+**As deployed (free tier):** both tiers default to `gemini-3.5-flash-lite`. Free-tier quotas are per Google project *and* per model — `gemini-2.5-flash` allows only 20 requests a day per project (so a new key in the same project doesn't help), and `gemini-2.5-pro` returns 404 on a free-tier key. The table above is the design intent for a paid key.
 
 ### Generation parameters
 

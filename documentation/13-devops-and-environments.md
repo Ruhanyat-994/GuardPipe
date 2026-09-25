@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.12 |
+| **Version** | 1.13 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-09-25 |
+| **Last updated** | 2026-09-26 |
 
 ### Revision history
 
@@ -26,6 +26,7 @@
 | 1.10 | 2026-09-14 | Team | §5.4 adds a second pentest sandbox backend: `GUARDPIPE_SANDBOX_BACKEND` (`docker` default, `kubernetes` new), `GUARDPIPE_K8S_SANDBOX_IMAGE`, `GUARDPIPE_K8S_SANDBOX_NAMESPACE`. The EKS deployment has no Docker socket reachable from `guardpipe-worker` at all (pentest was disabled outright there until now — see `documentation/12-security-and-threat-model.md`'s sandboxing posture for why a shared host Docker socket was rejected instead); the `kubernetes` backend (`internal/adapters/k8spentestsandbox`) runs each tool invocation as a one-shot `batch/v1.Job`, isolated by a per-job `NetworkPolicy` rather than the Docker path's in-container `iptables` self-firewall — lets every sandbox pod run fully non-root with every capability dropped from the start, no root-then-drop dance needed. Built. |
 | 1.11 | 2026-09-24 | Team | New §5.9 (GitHub webhook live scanning, `BUILD_GUIDE.md` Phase 17 Part B): `GUARDPIPE_WEBHOOK_PUBLIC_URL`, `GUARDPIPE_LIVESCAN_MAX_PER_HOUR`, `GUARDPIPE_LIVESCAN_DEBOUNCE`. Built, `internal/platform/config`. |
 | 1.12 | 2026-09-25 | Team | New §5.10 scan report email variables (`GUARDPIPE_MAIL_*`, `GUARDPIPE_SMTP_*`, `GUARDPIPE_SES_*`, `GUARDPIPE_APP_URL`), the `mailpit` Compose service, and the SES-on-AWS rollout steps |
+| 1.13 | 2026-09-26 | Team | §5 `GUARDPIPE_GEMINI_MODEL_FAST`/`_SMART` defaults moved to `gemini-3.5-flash-lite`: `gemini-2.5-flash`'s free tier is 20 requests a day per Google project, and `gemini-2.5-pro` 404s on a free-tier key |
 
 ---
 
@@ -189,8 +190,8 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_AI_ENABLED` | `true` | no | Master switch — `false` disables all AI features cleanly |
 | `GUARDPIPE_GEMINI_API_KEY` | — | if AI enabled and `_KEYS` unset | Single-key form, kept working as a one-key alias |
 | `GUARDPIPE_GEMINI_API_KEYS` | — | if AI enabled and `_KEY` unset | Comma-separated key pool (`BUILD_GUIDE.md` Phase 4) — `adapters/gemini` rotates to the next key on a 429/`RESOURCE_EXHAUSTED` response instead of failing. Prefer this over the singular form once more than one key exists; see `BUILD_GUIDE.md`'s Phase-4 note on why keys should come from **separate** Google Cloud projects to actually add quota |
-| `GUARDPIPE_GEMINI_MODEL_FAST` | `gemini-2.5-flash` | no | |
-| `GUARDPIPE_GEMINI_MODEL_SMART` | `gemini-2.5-pro` | no | |
+| `GUARDPIPE_GEMINI_MODEL_FAST` | `gemini-3.5-flash-lite` | no | |
+| `GUARDPIPE_GEMINI_MODEL_SMART` | `gemini-3.5-flash-lite` | no | free tier: `gemini-2.5-pro` 404s |
 | `GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN` | `100000` | no | |
 | `GUARDPIPE_AI_CACHE_TTL` | `168h` | no | |
 
