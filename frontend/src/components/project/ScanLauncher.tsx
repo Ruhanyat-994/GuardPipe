@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, PlayCircle, ShieldCheck, Square } from 'lucide-react'
+import { CheckSquare, Coins, Lock, PlayCircle, ShieldCheck, Square } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { Button } from '../ui/Button'
 import { Card, CardDescription, CardTitle } from '../ui/Card'
 import { cn } from '../../lib/cn'
@@ -27,6 +28,14 @@ import { GitHubMark } from '../icons/GitHubMark'
 import { KubernetesMark } from '../icons/KubernetesMark'
 import { OsvMark } from '../icons/OsvMark'
 import { SonarQubeMark } from '../icons/SonarQubeMark'
+import {
+  billingErrorMessage,
+  estimateScan,
+  formatTokens,
+  type Estimate,
+} from '../../lib/billingApi'
+import { notifyBillingChanged } from '../../lib/billingEvents'
+import { useBillingStore } from '../../stores/billingStore'
 
 /**
  * The scan launcher — replaces the single "Run Scan" button with an
@@ -70,6 +79,54 @@ export function ScanLauncher({
   // client configured nothing" and "the client explicitly picked Stealth"
   // are the same request body, matching CreateScanInput's own doc comment.
   const [pentestConfig, setPentestConfig] = useState<PentestConfigInput>({})
+
+  // Token cost of both buttons, from the backend (never computed here),
+  // refreshed as the selection changes. null = unknown (billing off, or
+  // the selection can't run) — then no cost line is shown.
+  const billing = useBillingStore((s) => s.summary)
+  const [estAll, setEstAll] = useState<Estimate | null>(null)
+  const [estSelected, setEstSelected] = useState<Estimate | null>(null)
+  const selectedKey = Array.from(selected).sort().join(',')
+  useEffect(() => {
+    let cancelled = false
+    const t = window.setTimeout(() => {
+      estimateScan({
+        project_id: project.id,
+        type: 'full_supply_chain',
+        pentest_config: pentestConfig,
+      })
+        .then((e) => !cancelled && setEstAll(e))
+        .catch(() => !cancelled && setEstAll(null))
+      const engines = selectedKey ? (selectedKey.split(',') as Engine[]) : []
+      if (engines.length === 0) {
+        setEstSelected(null)
+        return
+      }
+      estimateScan({
+        project_id: project.id,
+        type: 'partial',
+        engines,
+        ...(engines.includes('pentest') ? { pentest_config: pentestConfig } : {}),
+      })
+        .then((e) => !cancelled && setEstSelected(e))
+        .catch(() => !cancelled && setEstSelected(null))
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [project.id, selectedKey, pentestConfig, billing?.balance, billing?.plan.code])
+
+  /** Why an estimated run can't start, or null if it can. */
+  function costBlock(e: Estimate | null): string | null {
+    if (!e) return null
+    if (!e.plan_allowed)
+      return `${e.blocked_engines.map((x) => ENGINE_META[x]?.label ?? x).join(', ')} needs the Pro plan`
+    if (!e.affordable)
+      return `Needs ${formatTokens(e.total)} tokens · you have ${formatTokens(e.balance)}`
+    return null
+  }
+  const planLocks = (engine: Engine) => !!billing && !billing.plan.engines.includes(engine)
 
   // Only relevant while pentest is enabled but this project has no attested
   // target yet — fetched lazily so a project that already has one (or never
@@ -123,6 +180,11 @@ export function ScanLauncher({
     })
   }
 
+  function notifyAfter(scan: Scan) {
+    notifyBillingChanged() // the bar slides down right away
+    onStarted(scan)
+  }
+
   async function attestPendingTarget(): Promise<boolean> {
     if (!pendingTarget) return true
     setAttestError(null)
@@ -150,15 +212,19 @@ export function ScanLauncher({
     setStarting('all')
     setError(null)
     try {
-      onStarted(
+      notifyAfter(
         await createScan(project.id, {
           type: 'full_supply_chain',
           ...(isSelectable('pentest') ? { pentest_config: pentestConfig } : {}),
         }),
       )
     } catch (err) {
-      setError(err instanceof ApiError ? err.problem.detail : 'Could not start the scan.')
+      setError(
+        billingErrorMessage(err) ??
+          (err instanceof ApiError ? err.problem.detail : 'Could not start the scan.'),
+      )
       setStarting(null)
+      notifyBillingChanged()
     }
   }
 
@@ -175,7 +241,7 @@ export function ScanLauncher({
     setStarting('selected')
     setError(null)
     try {
-      onStarted(
+      notifyAfter(
         await createScan(project.id, {
           type: 'partial',
           engines: Array.from(selected),
@@ -183,8 +249,12 @@ export function ScanLauncher({
         }),
       )
     } catch (err) {
-      setError(err instanceof ApiError ? err.problem.detail : 'Could not start the scan.')
+      setError(
+        billingErrorMessage(err) ??
+          (err instanceof ApiError ? err.problem.detail : 'Could not start the scan.'),
+      )
       setStarting(null)
+      notifyBillingChanged()
     }
   }
 
@@ -258,7 +328,13 @@ export function ScanLauncher({
                 {meta.hasGitHubMark && <GitHubMark className="h-3 w-3" />}
                 {meta.hasGeminiMark && <GeminiMark />}
               </div>
-              <span className="text-caption text-text-tertiary">{caption}</span>
+              {enabled && planLocks(engine) ? (
+                <span className="inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 text-caption font-semibold text-accent">
+                  <Lock className="h-3 w-3" aria-hidden="true" /> Pro
+                </span>
+              ) : (
+                <span className="text-caption text-text-tertiary">{caption}</span>
+              )}
             </button>
           )
         })}
@@ -311,8 +387,69 @@ export function ScanLauncher({
         </p>
       )}
 
+      {(estAll || estSelected) && (
+        <div className="mt-4 rounded-lg border border-border-default bg-bg-subtle/60 px-4 py-3 text-body-sm">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+            <span className="flex items-center gap-1.5 text-text-secondary">
+              <Coins className="h-4 w-4 text-accent" aria-hidden="true" />
+              Balance{' '}
+              <strong className="tabular-nums text-text-primary">
+                {formatTokens((estSelected ?? estAll)!.balance)}
+              </strong>
+            </span>
+            {estAll && (
+              <span className="text-text-secondary">
+                Run all:{' '}
+                <strong className="tabular-nums text-text-primary">
+                  {formatTokens(estAll.total)}
+                </strong>
+              </span>
+            )}
+            {estSelected && (
+              <span className="text-text-secondary">
+                Selected:{' '}
+                <strong className="tabular-nums text-text-primary">
+                  {formatTokens(estSelected.total)}
+                </strong>
+                {estSelected.affordable && (
+                  <span className="text-text-tertiary">
+                    {' '}
+                    · {formatTokens(estSelected.balance_after)} left after
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+          {estSelected && estSelected.lines.length > 1 && (
+            <p className="mt-1.5 text-caption text-text-tertiary">
+              {estSelected.lines
+                .map((l) => `${ENGINE_META[l.engine]?.label ?? l.engine} ${formatTokens(l.tokens)}`)
+                .join(' · ')}
+            </p>
+          )}
+          {(costBlock(estSelected) || costBlock(estAll)) && (
+            <p className="mt-2 flex flex-wrap items-center gap-2 text-warning">
+              {costBlock(estSelected) ?? costBlock(estAll)}
+              <Link
+                to="/pricing"
+                className="rounded-md bg-accent px-2 py-0.5 text-caption font-semibold text-text-inverse hover:opacity-90"
+              >
+                {estSelected?.plan_allowed === false || estAll?.plan_allowed === false
+                  ? 'Upgrade to Pro'
+                  : 'Buy tokens'}
+              </Link>
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Button onClick={() => void runAll()} loading={starting === 'all'}>
+        <Button
+          onClick={() => void runAll()}
+          loading={starting === 'all'}
+          disabled={!!costBlock(estAll)}
+          title={costBlock(estAll) ?? undefined}
+        >
           <PlayCircle className="h-4 w-4" aria-hidden="true" />
           Run All Scans
         </Button>
@@ -320,7 +457,8 @@ export function ScanLauncher({
           variant="secondary"
           onClick={() => void runSelected()}
           loading={starting === 'selected' || attesting}
-          disabled={selected.size === 0 || runSelectedBlocked}
+          disabled={selected.size === 0 || runSelectedBlocked || !!costBlock(estSelected)}
+          title={costBlock(estSelected) ?? undefined}
         >
           Run Selected ({selected.size})
         </Button>

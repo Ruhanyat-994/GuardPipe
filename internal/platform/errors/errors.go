@@ -22,6 +22,9 @@ const (
 	KindExternal      Kind = "external"
 	KindInternal      Kind = "internal"
 	KindUnprocessable Kind = "unprocessable"
+	// KindPaymentRequired is "you need to buy more": not enough tokens for
+	// a scan, or a declined (demo) payment.
+	KindPaymentRequired Kind = "payment_required"
 )
 
 // StatusFor maps a Kind to its HTTP status code. This lives in
@@ -47,6 +50,8 @@ func StatusFor(k Kind) int {
 		return http.StatusInternalServerError
 	case KindUnprocessable:
 		return http.StatusUnprocessableEntity
+	case KindPaymentRequired:
+		return http.StatusPaymentRequired
 	default:
 		return http.StatusInternalServerError
 	}
@@ -74,6 +79,23 @@ type Error struct {
 	// RetryAfter is seconds until the caller may retry — only meaningful
 	// when Kind is KindRateLimited.
 	RetryAfter int
+	// Extensions are extra machine-readable members of the RFC 9457 body
+	// (RFC 9457 §3.2 allows them), e.g. billing's required/available/
+	// shortfall token counts. Never put internal detail here — it's sent
+	// to the client as-is.
+	Extensions map[string]any
+}
+
+// WithExtensions returns e with the given problem-details extension members
+// added (it mutates and returns the same *Error, for one-line use).
+func (e *Error) WithExtensions(ext map[string]any) *Error {
+	if e.Extensions == nil {
+		e.Extensions = map[string]any{}
+	}
+	for k, v := range ext {
+		e.Extensions[k] = v
+	}
+	return e
 }
 
 func (e *Error) Error() string {
@@ -144,6 +166,12 @@ func External(code, detail string, err error) *Error {
 // runs) and Conflict (409, a state clash) — this is a semantic rejection.
 func Unprocessable(code, detail string) *Error {
 	return &Error{Kind: KindUnprocessable, Code: code, Title: "Unprocessable", Detail: detail}
+}
+
+// PaymentRequired reports that the caller has to pay (or top up) before
+// this can be done — status 402.
+func PaymentRequired(code, detail string) *Error {
+	return &Error{Kind: KindPaymentRequired, Code: code, Title: "Payment required", Detail: detail}
 }
 
 // Internal wraps an unexpected error. Its Detail is deliberately generic and

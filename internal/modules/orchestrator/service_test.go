@@ -178,6 +178,17 @@ func (f *fakeScanJobRepo) ListByScan(_ context.Context, scanID uuid.UUID) ([]dom
 	}
 	return out, nil
 }
+func (f *fakeScanJobRepo) ListRunningStartedBefore(_ context.Context, before time.Time) ([]domain.ScanJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.ScanJob
+	for _, j := range f.byID {
+		if j.Status == domain.JobStatusRunning && j.StartedAt != nil && j.StartedAt.Before(before) {
+			out = append(out, *j)
+		}
+	}
+	return out, nil
+}
 func (f *fakeScanJobRepo) MarkRunning(_ context.Context, jobID uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -289,6 +300,13 @@ var terminalJobStatuses = map[domain.JobStatus]bool{
 // findings block already used — a real, `-race`-caught bug the first time
 // a test (TestPool_ProcessJob_SameScanConcurrentJobs_ClonesWorkspaceOnce)
 // actually exercised two jobs of the same scan running concurrently.
+// FinalizeStuckScans — the real repair is proven against Postgres
+// (TestJobResultRepo_ConcurrentResults_FinalizeExactlyOnce); here it's a
+// no-op so the sweeper can run in unit tests.
+func (f *fakeJobResultRepo) FinalizeStuckScans(context.Context) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestrator.JobResult) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

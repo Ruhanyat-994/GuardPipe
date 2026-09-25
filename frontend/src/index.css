@@ -126,3 +126,36 @@ body {
 .sc-canvas .react-flow__attribution {
   display: none;
 }
+
+/* Token bar: a spent/refunded amount floats away from the balance
+   (components/billing/TokenBar.tsx). Covered by the global reduced-motion
+   rule above. */
+@keyframes token-float {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-14px);
+  }
+}
+.token-float {
+  animation: token-float 1.8s var(--ease-standard) forwards;
+}
+
+@keyframes token-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+.token-shimmer {
+  animation: token-shimmer 1.2s var(--ease-standard) 1;
+}

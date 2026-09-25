@@ -12,6 +12,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/billing"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
@@ -59,6 +60,11 @@ type RouterConfig struct {
 	// scanning. nil (a test router that doesn't need it) leaves its routes
 	// unregistered.
 	LiveScanSvc livescan.Service
+	// BillingSvc is token billing (TOKENIZATION-ARCHITECTURE.md). nil
+	// (GUARDPIPE_BILLING_MODE=off, or a test router) leaves /billing/*
+	// unregistered. ScanPreviewer backs the cost estimate.
+	BillingSvc    *billing.Service
+	ScanPreviewer orchestrator.ScanPreviewer
 	// Users backs the export report's accountability watermark (who
 	// requested this scan) — reporting.UserReader, satisfied directly by
 	// *store/repo.UserRepo.
@@ -280,6 +286,26 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		api.POST("/webhooks/github/:id", liveScanH.Receive)
 	}
 
+	// Token billing. The catalog is public (the pricing page shows it to
+	// logged-out visitors); buying and cancelling are admin-only; the
+	// demo-checkout confirm answers 404 unless GUARDPIPE_BILLING_MODE=demo.
+	if cfg.BillingSvc != nil {
+		billingH := handler.NewBillingHandler(cfg.BillingSvc, cfg.ScanPreviewer, cfg.AdminSvc, v)
+		api.GET("/billing/catalog", billingH.Catalog)
+		billingGroup := api.Group("/billing", requireAuth, requireNotSuspended)
+		{
+			billingGroup.GET("/summary", middleware.RBAC(viewerAndAbove...), billingH.Summary)
+			billingGroup.GET("/ledger", middleware.RBAC(viewerAndAbove...), billingH.Ledger)
+			billingGroup.GET("/scans/:id", middleware.RBAC(viewerAndAbove...), billingH.ScanTokens)
+			billingGroup.POST("/estimate", middleware.RBAC(memberAndAbove...), billingH.Estimate)
+			billingGroup.POST("/checkout", middleware.RBAC(adminOnly...), billingH.StartCheckout)
+			billingGroup.GET("/checkout/:id", middleware.RBAC(adminOnly...), billingH.GetCheckout)
+			billingGroup.POST("/checkout/:id/confirm", middleware.RBAC(adminOnly...), billingH.ConfirmCheckout)
+			billingGroup.POST("/subscription/cancel", middleware.RBAC(adminOnly...), billingH.CancelSubscription)
+			billingGroup.POST("/subscription/resume", middleware.RBAC(adminOnly...), billingH.ResumeSubscription)
+		}
+	}
+
 	// Pentest v2's own read-only API surface (architecture dossier §08) —
 	// the deduplicated/correlated findings, attack-surface inventory,
 	// evidence, generated-report metadata, and authorization record a
@@ -336,6 +362,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		adminGroup.PATCH("/pentest-flags/:id", requireOperator, adminH.ResolveFlag)
 		adminGroup.GET("/audit-log", requireOperator, adminH.ListAuditLog)
 		adminGroup.GET("/system-health", requireOperator, adminH.SystemHealth)
+		if cfg.BillingSvc != nil {
+			billingAdminH := handler.NewBillingHandler(cfg.BillingSvc, cfg.ScanPreviewer, cfg.AdminSvc, v)
+			adminGroup.GET("/billing/orgs/:id", requireOperator, billingAdminH.AdminGet)
+			adminGroup.POST("/billing/orgs/:id/adjust", requireOperator, billingAdminH.AdminAdjust)
+			adminGroup.POST("/billing/orgs/:id/advance-cycle", requireOperator, billingAdminH.AdminAdvanceCycle)
+		}
 	}
 
 	return r

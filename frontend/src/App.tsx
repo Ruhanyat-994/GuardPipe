@@ -31,6 +31,9 @@ import { AdminOrganizationDetailPage } from './pages/AdminOrganizationDetailPage
 import { AdminPentestFlagsPage } from './pages/AdminPentestFlagsPage'
 import { AdminAuditLogPage } from './pages/AdminAuditLogPage'
 import { AdminSystemHealthPage } from './pages/AdminSystemHealthPage'
+import { PricingPage } from './pages/PricingPage'
+import { CheckoutPage } from './pages/CheckoutPage'
+import { BillingPage } from './pages/BillingPage'
 import { RequireAuth } from './components/RequireAuth'
 import { RequireOperator } from './components/RequireOperator'
 import { AppShell } from './components/AppShell'
@@ -88,6 +91,15 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
+      <Route path="/pricing" element={<PricingPage />} />
+      <Route
+        path="/checkout/:id"
+        element={
+          <RequireAuth>
+            <CheckoutPage />
+          </RequireAuth>
+        }
+      />
       <Route path="/blog" element={<BlogIndexPage />} />
       <Route path="/blog/:slug" element={<BlogPostPage />} />
       <Route path="/guides" element={<GuidesIndexPage />} />
@@ -153,6 +165,7 @@ function App() {
             Phase-9 placeholder's real content for org membership; per-account
             profile fields remain a later addition. */}
         <Route path="/settings" element={<OrgSettingsPage />} />
+        <Route path="/settings/billing" element={<BillingPage />} />
       </Route>
 
       {/* Platform admin panel (BUILD_GUIDE.md Phase 14) — a separate route

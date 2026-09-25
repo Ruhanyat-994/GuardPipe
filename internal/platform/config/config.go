@@ -38,6 +38,7 @@ type Config struct {
 	External External
 	Gate     Gate
 	LiveScan LiveScan
+	Billing  Billing
 }
 
 // Core — §5.1.
@@ -136,6 +137,17 @@ type Scanning struct {
 	// persists the vulnerability database across scans instead of
 	// re-downloading it from scratch on every containerscan run.
 	TrivyCacheVolume string
+}
+
+// Billing — token-based subscription billing (TOKENIZATION-ARCHITECTURE.md).
+type Billing struct {
+	// Mode is GUARDPIPE_BILLING_MODE: "demo" (default — tokens are charged
+	// for real, purchases go through the demo checkout, no money or card
+	// data involved), "off" (nothing charged or gated), or "stripe"
+	// (reserved; not implemented yet, so it fails startup).
+	Mode string
+	// TickInterval is how often the worker runs monthly grants and expiry.
+	TickInterval time.Duration
 }
 
 // LiveScan — GitHub webhook live scanning (BUILD_GUIDE.md Phase 17 Part B).
@@ -358,6 +370,10 @@ func Load() (*Config, error) {
 		MaxScansPerProjectPerHour: getInt("GUARDPIPE_LIVESCAN_MAX_PER_HOUR", 10, p),
 		Debounce:                  getDuration("GUARDPIPE_LIVESCAN_DEBOUNCE", 30*time.Second, p),
 	}
+	cfg.Billing = Billing{
+		Mode:         strings.ToLower(getString("GUARDPIPE_BILLING_MODE", "demo")),
+		TickInterval: getDuration("GUARDPIPE_BILLING_TICK_INTERVAL", time.Minute, p),
+	}
 
 	validateSecurity(cfg, p)
 	if cfg.AI.Enabled && len(cfg.AI.KeyPool()) == 0 {
@@ -371,6 +387,16 @@ func Load() (*Config, error) {
 	}
 	if cfg.LiveScan.MaxScansPerProjectPerHour < 1 {
 		p.add("GUARDPIPE_LIVESCAN_MAX_PER_HOUR must be at least 1, got %d", cfg.LiveScan.MaxScansPerProjectPerHour)
+	}
+	switch cfg.Billing.Mode {
+	case "demo", "off":
+	case "stripe":
+		p.add("GUARDPIPE_BILLING_MODE=stripe is not implemented yet — use \"demo\" or \"off\"")
+	default:
+		p.add("GUARDPIPE_BILLING_MODE must be \"demo\" or \"off\", got %q", cfg.Billing.Mode)
+	}
+	if cfg.Billing.TickInterval < time.Second {
+		p.add("GUARDPIPE_BILLING_TICK_INTERVAL must be at least 1s, got %s", cfg.Billing.TickInterval)
 	}
 	if cfg.Scanning.SandboxBackend == "kubernetes" && cfg.Scanning.K8sSandboxImage == "" {
 		p.add("GUARDPIPE_K8S_SANDBOX_IMAGE is required when GUARDPIPE_SANDBOX_BACKEND is \"kubernetes\"")

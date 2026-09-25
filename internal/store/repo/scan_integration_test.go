@@ -6,11 +6,14 @@ package repo_test
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/domain"
@@ -173,6 +176,83 @@ func TestScanRepo_ListByOrg_ScopedToOrgAndNewestFirst(t *testing.T) {
 	require.Len(t, otherList, 1)
 	require.Equal(t, otherOrgScan.ID, otherList[0].ID)
 	require.Equal(t, "Org B Project", otherList[0].ProjectName)
+}
+
+func TestScanJobRepo_ListRunningStartedBefore(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	scan := &domain.Scan{ID: id.New(), ProjectID: projectID, Type: domain.ScanTypeFullSupplyChain, Status: domain.ScanStatusQueued, RequestedEngines: []domain.EngineID{domain.EngineDepScan}}
+	require.NoError(t, repo.NewScanRepo(pool).Create(ctx, scan))
+	jobs := repo.NewScanJobRepo(pool)
+	old, fresh, queued := id.New(), id.New(), id.New()
+	require.NoError(t, jobs.CreateMany(ctx, []domain.ScanJob{
+		{ID: old, ScanID: scan.ID, Engine: domain.EngineDepScan, Status: domain.JobStatusQueued},
+		{ID: fresh, ScanID: scan.ID, Engine: domain.EngineCodeScan, Status: domain.JobStatusQueued},
+		{ID: queued, ScanID: scan.ID, Engine: domain.EngineK8sScan, Status: domain.JobStatusQueued},
+	}))
+	require.NoError(t, jobs.MarkRunning(ctx, old))
+	require.NoError(t, jobs.MarkRunning(ctx, fresh))
+	_, err := pool.Exec(ctx, `UPDATE scan_jobs SET started_at = now() - interval '2 hours' WHERE id = $1`, old)
+	require.NoError(t, err)
+
+	stale, err := jobs.ListRunningStartedBefore(ctx, time.Now().Add(-time.Hour))
+	require.NoError(t, err)
+	require.Len(t, stale, 1)
+	require.Equal(t, old, stale[0].ID)
+}
+
+// TestJobResultRepo_ConcurrentResults_FinalizeExactlyOnce reproduces the
+// stuck-scan bug: seven engines failing at the same instant each committed
+// "not all done yet" and the scan stayed queued forever. With the scan-row
+// lock, exactly one of them finalises it.
+func TestJobResultRepo_ConcurrentResults_FinalizeExactlyOnce(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	scan := &domain.Scan{ID: id.New(), ProjectID: projectID, Type: domain.ScanTypeFullSupplyChain, Status: domain.ScanStatusQueued, RequestedEngines: []domain.EngineID{domain.EngineDepScan}}
+	require.NoError(t, repo.NewScanRepo(pool).Create(ctx, scan))
+	engines := []domain.EngineID{domain.EngineDocReview, domain.EngineCodeScan, domain.EngineDepScan, domain.EngineContainerScan, domain.EngineK8sScan, domain.EngineCICDScan, domain.EnginePentest}
+	var jobs []domain.ScanJob
+	for _, e := range engines {
+		jobs = append(jobs, domain.ScanJob{ID: id.New(), ScanID: scan.ID, Engine: e, Status: domain.JobStatusRunning})
+	}
+	require.NoError(t, repo.NewScanJobRepo(pool).CreateMany(ctx, jobs))
+
+	results := repo.NewJobResultRepo(pool)
+	var wg sync.WaitGroup
+	var finalizedCount atomic.Int32
+	start := make(chan struct{})
+	for _, j := range jobs {
+		wg.Add(1)
+		go func(j domain.ScanJob) {
+			defer wg.Done()
+			<-start
+			done, err := results.PersistJobResult(ctx, orchestrator.JobResult{JobID: j.ID, ScanID: scan.ID, ProjectID: projectID, Engine: j.Engine, Status: domain.JobStatusFailed, ErrorReason: "workspace_unavailable"})
+			assert.NoError(t, err)
+			if done {
+				finalizedCount.Add(1)
+			}
+		}(j)
+	}
+	close(start)
+	wg.Wait()
+
+	require.Equal(t, int32(1), finalizedCount.Load(), "exactly one job result finalises the scan")
+	got, err := repo.NewScanRepo(pool).GetByID(ctx, scan.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.ScanStatusCompleted, got.Status)
+
+	// Repair path: a scan stuck by the old bug is found and closed once.
+	stuck := &domain.Scan{ID: id.New(), ProjectID: projectID, Type: domain.ScanTypePartial, Status: domain.ScanStatusQueued, RequestedEngines: []domain.EngineID{domain.EngineDepScan}}
+	require.NoError(t, repo.NewScanRepo(pool).Create(ctx, stuck))
+	require.NoError(t, repo.NewScanJobRepo(pool).CreateMany(ctx, []domain.ScanJob{{ID: id.New(), ScanID: stuck.ID, Engine: domain.EngineDepScan, Status: domain.JobStatusFailed}}))
+	ids, err := results.FinalizeStuckScans(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uuid.UUID{stuck.ID}, ids, "the already-completed scan is not touched again")
+	ids, err = results.FinalizeStuckScans(ctx)
+	require.NoError(t, err)
+	require.Empty(t, ids)
 }
 
 func TestScanRepo_SetCancelRequested(t *testing.T) {

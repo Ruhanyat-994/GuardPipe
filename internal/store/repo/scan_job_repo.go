@@ -68,6 +68,31 @@ func (r *ScanJobRepo) ListByScan(ctx context.Context, scanID uuid.UUID) ([]domai
 	return out, nil
 }
 
+// ListRunningStartedBefore returns every job still `running` that started
+// before `before` — the orphan sweeper's candidates (Pool.SweepOrphanedJobs).
+// Uses idx_jobs_status_claimed's partial index on status = 'running'.
+func (r *ScanJobRepo) ListRunningStartedBefore(ctx context.Context, before time.Time) ([]domain.ScanJob, error) {
+	const q = jobSelectColumns + ` FROM scan_jobs WHERE status = 'running' AND started_at < $1 ORDER BY started_at`
+	rows, err := r.db.Query(ctx, q, before)
+	if err != nil {
+		return nil, fmt.Errorf("repo: list stale running jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.ScanJob
+	for rows.Next() {
+		j, err := jobRowScan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("repo: scan job row: %w", err)
+		}
+		out = append(out, *j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo: iterate stale running jobs: %w", err)
+	}
+	return out, nil
+}
+
 func (r *ScanJobRepo) MarkRunning(ctx context.Context, id uuid.UUID) error {
 	const q = `UPDATE scan_jobs SET status = 'running', claimed_at = now(), started_at = now() WHERE id = $1`
 	tag, err := r.db.Exec(ctx, q, id)

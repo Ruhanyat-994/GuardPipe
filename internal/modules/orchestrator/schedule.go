@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -103,6 +104,11 @@ func (s *service) CreateSchedule(ctx context.Context, actor domain.Actor, projec
 	}
 	if !in.Profile.Type.Valid() {
 		return nil, apperrors.Validation("schedule.invalid_input", "profile.type must be a recognised scan type", nil)
+	}
+	if s.tokens != nil {
+		if err := s.tokens.RequireFeature(ctx, actor.OrgID, "schedules"); err != nil {
+			return nil, err
+		}
 	}
 	sched, err := parseAndClampCron(in.CronExpression)
 	if err != nil {
@@ -234,6 +240,23 @@ func (s *service) TriggerSchedule(ctx context.Context, scheduleID uuid.UUID) (*S
 	status := "triggered"
 	if createErr != nil {
 		status = "failed"
+		// Out of tokens / plan lapsed: skip this run, keep the schedule.
+		var appErr *apperrors.Error
+		if errors.As(createErr, &appErr) {
+			switch appErr.Code {
+			case "billing.insufficient_tokens":
+				status = "skipped_insufficient_tokens"
+			case "billing.plan_required":
+				status = "skipped_plan_required"
+			}
+			if status != "failed" && s.audit != nil {
+				s.audit.Log(ctx, audit.Entry{
+					OrgID: &orgID, ActorID: sched.CreatedBy, Action: "schedule.skipped",
+					ResourceType: strPtr("scan_schedule"), ResourceID: &sched.ID,
+					Detail: map[string]any{"reason": appErr.Code, "project_id": sched.ProjectID.String()},
+				})
+			}
+		}
 	}
 	if err := s.recordScheduleOutcome(ctx, sched, status); err != nil {
 		return nil, err

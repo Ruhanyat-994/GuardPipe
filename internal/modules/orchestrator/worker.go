@@ -142,6 +142,9 @@ type Pool struct {
 	// Pentest is nil-checked and skipped like Scorer above — see
 	// PentestIngester's own doc comment for what wiring it on adds.
 	Pentest PentestIngester
+	// Tokens refunds a job's tokens when it ends without doing the work it
+	// was paid for (see refundable). nil = billing off.
+	Tokens TokenRefunder
 	// Progress is the live store an engine's ScanInput.ReportProgress
 	// writes to (nil is fine — a nil store just means ReportProgress calls
 	// are silently dropped, same as never calling it). Service.GetProgress
@@ -386,12 +389,26 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// A cancel request must stop an engine that's already running, not only
+	// jobs still waiting in the queue: watch the scan's cancel flag and
+	// cancel runCtx with a recognisable cause. Engines are required to
+	// respect ctx (domain.Engine's contract).
+	runCtx, cancelForUser := context.WithCancelCause(runCtx)
+	defer cancelForUser(nil)
+	go p.watchForCancel(runCtx, scan.ID, cancelForUser)
 
 	var findings []domain.Finding
 	result, runErr := p.runEngine(runCtx, engine, scanInput, func(f domain.Finding) {
 		f.ScanID = scan.ID
 		findings = append(findings, f)
 	})
+
+	if errors.Is(context.Cause(runCtx), errScanCancelledByUser) {
+		p.Log.Info("orchestrator: engine stopped by cancel request", "job_id", jobID, "engine", job.Engine)
+		// Whatever it found before being stopped is still kept.
+		p.persist(ctx, JobResult{JobID: jobID, ScanID: scan.ID, ProjectID: scan.ProjectID, Engine: job.Engine, Status: domain.JobStatusCancelled, ErrorReason: cancelledWhileRunning, Findings: findings})
+		return
+	}
 
 	if runErr != nil {
 		reason := "engine_error"
@@ -442,6 +459,11 @@ func (p *Pool) persist(ctx context.Context, result JobResult) {
 	if err != nil {
 		p.Log.Error("orchestrator: persist job result failed", "job_id", result.JobID, "status", result.Status, "error", err)
 	}
+	if p.Tokens != nil && refundable(result) {
+		if err := p.Tokens.RefundJob(ctx, result.JobID, refundReason(result)); err != nil {
+			p.Log.Error("orchestrator: token refund failed", "job_id", result.JobID, "error", err)
+		}
+	}
 	// Every call here is a job reaching a terminal status (JobResult has no
 	// other caller) — clear its live-progress entry so a finished job's
 	// last-reported "87%, fuzzing…" can never leak into a later read
@@ -451,8 +473,54 @@ func (p *Pool) persist(ctx context.Context, result JobResult) {
 		p.Progress.Clear(result.JobID)
 	}
 	if finalized {
-		p.finalizeScoring(ctx, result.ScanID)
+		p.afterFinalize(ctx, result.ScanID)
 	}
+}
+
+// afterFinalize runs once per scan, right after it reached its terminal
+// status: scoring, then notifications.
+func (p *Pool) afterFinalize(ctx context.Context, scanID uuid.UUID) {
+	p.finalizeScoring(ctx, scanID)
+}
+
+// TokenRefunder is the refund half of TokenCharger — all the worker needs.
+type TokenRefunder interface {
+	RefundJob(ctx context.Context, jobID uuid.UUID, reason string) error
+}
+
+// refundable reports whether a finished job's tokens go back: the client
+// didn't get the work they paid for, through no fault of their own.
+//   - skipped: the engine didn't apply (e.g. no Dockerfile for containerscan)
+//   - cancelled before it started (a job stopped mid-run by the user's own
+//     cancel request did use the engine, so it stays paid for)
+//   - failed: our failure (engine error, timeout) — except a DNS-rebinding
+//     target, which is the target's doing, not GuardPipe's
+//
+// A succeeded job stays paid for, even with zero findings: a clean result
+// is still the product.
+func refundable(r JobResult) bool {
+	switch r.Status {
+	case domain.JobStatusSkipped:
+		return true
+	case domain.JobStatusCancelled:
+		return r.ErrorReason != cancelledWhileRunning
+	case domain.JobStatusFailed:
+		return r.ErrorReason != "dns_rebinding_suspected"
+	}
+	return false
+}
+
+func refundReason(r JobResult) string {
+	switch r.Status {
+	case domain.JobStatusSkipped:
+		return "engine_not_applicable"
+	case domain.JobStatusCancelled:
+		return "cancelled_before_start"
+	}
+	if r.ErrorReason != "" {
+		return "engine_failed:" + r.ErrorReason
+	}
+	return "engine_failed"
 }
 
 // finalizeScoring computes and persists the scan's RiskAssessment — called

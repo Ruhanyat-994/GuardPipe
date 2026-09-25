@@ -25,6 +25,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8scodescanscanner"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8spentestsandbox"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
+	paymentdemo "github.com/Ruhanyat-994/GuardPipe/internal/adapters/payment/demo"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/pentestsandbox"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/queue"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/sandbox"
@@ -43,6 +44,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/audit"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/billing"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
@@ -431,6 +433,17 @@ func run() error {
 		repo.NewScanScheduleRepo(db.Pool), membershipRepo,
 	)
 
+	// modules/billing — token billing (TOKENIZATION-ARCHITECTURE.md). Every
+	// scan is paid for in orchestrator.CreateScan and refunded per job in
+	// Pool.persist; GUARDPIPE_BILLING_MODE=off leaves billingSvc nil and
+	// nothing is charged or gated.
+	var billingSvc *billing.Service
+	if cfg.Billing.Mode != string(billing.ModeOff) {
+		billingSvc = billing.NewService(repo.NewBillingRepo(db.Pool), paymentdemo.Provider{}, auditSvc, billing.Mode(cfg.Billing.Mode), log)
+		orchestrator.SetTokenCharger(orchestratorSvc, billing.OrchestratorCharger{Service: billingSvc})
+		log.Info("billing enabled", "mode", cfg.Billing.Mode)
+	}
+
 	// modules/livescan (BUILD_GUIDE.md Phase 17 Part B) — GitHub webhook live
 	// scanning. The API process receives and verifies deliveries; the
 	// worker process (below) turns them into scans.
@@ -441,6 +454,9 @@ func run() error {
 		MaxScansPerProjectPerHour: cfg.LiveScan.MaxScansPerProjectPerHour,
 		Debounce:                  cfg.LiveScan.Debounce,
 	}, repo.NewProjectWebhookRepo(db.Pool), githubClient, projectSvc, orchestratorSvc, liveScanStore, auditSvc, log)
+	if billingSvc != nil {
+		livescan.SetTokenGate(liveScanSvc, billingSvc)
+	}
 
 	// scorer's thresholds come from the same GUARDPIPE_GATE_WARN/BLOCK config
 	// values documentation/11-risk-scoring-and-severity.md §3.8 names —
@@ -499,6 +515,9 @@ func run() error {
 		Scorer:          scorer,
 		Pentest:         pentestSvc,
 	}
+	if billingSvc != nil {
+		pool.Tokens = billing.OrchestratorCharger{Service: billingSvc}
+	}
 
 	// GUARDPIPE_ROLE=api never runs the worker pool; GUARDPIPE_ROLE=all
 	// (the default) and GUARDPIPE_ROLE=worker both do — the same binary,
@@ -508,6 +527,10 @@ func run() error {
 	if cfg.Core.Role != config.RoleAPI {
 		workerCtx, stopWorkers = context.WithCancel(context.Background())
 		go pool.Start(workerCtx)
+		// Closes jobs left `running` by a worker that died mid-run
+		// (container restart) — otherwise their scan never finishes and
+		// can't even be cancelled.
+		go pool.StartOrphanSweeper(workerCtx)
 		log.Info("worker pool started", "size", cfg.Scanning.WorkerCount, "engines", registry.IDs())
 
 		// BUILD_GUIDE.md Phase 15's cron scan scheduler — the same role
@@ -520,6 +543,12 @@ func run() error {
 		liveScanWorker := &livescan.Worker{Service: liveScanSvc, Coordinator: liveScanStore, Log: log}
 		go liveScanWorker.Start(workerCtx)
 		log.Info("live scanning worker started", "webhook_public_url", cfg.LiveScan.PublicURL)
+
+		if billingSvc != nil {
+			billingTicker := &billing.Ticker{Service: billingSvc, Interval: cfg.Billing.TickInterval, Log: log}
+			go billingTicker.Start(workerCtx)
+			log.Info("billing renewal ticker started", "interval", cfg.Billing.TickInterval)
+		}
 
 		defer stopWorkers()
 	}
@@ -587,6 +616,8 @@ func run() error {
 		OrgSvc:          orgSvc,
 		PentestSvc:      pentestSvc,
 		LiveScanSvc:     liveScanSvc,
+		BillingSvc:      billingSvc,
+		ScanPreviewer:   orchestratorSvc.(orchestrator.ScanPreviewer),
 		Users:           repo.NewUserRepo(db.Pool),
 		AISvc:           aiSvc,
 		HealthDB:        db,

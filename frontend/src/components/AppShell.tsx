@@ -14,11 +14,13 @@ import {
   Settings,
   ShieldAlert,
   Users,
+  Wallet,
 } from 'lucide-react'
 import { cn } from '../lib/cn'
 import { GlobalSearch } from './GlobalSearch'
 import { Logo } from './Logo'
 import { NotificationPanel } from './NotificationPanel'
+import { TokenBar } from './billing/TokenBar'
 import { UserMenu } from './UserMenu'
 import { Button } from './ui/Button'
 import { getProject } from '../lib/projectsApi'
@@ -164,6 +166,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Button>
           )}
 
+          <TokenBar />
+
           <NotificationPanel />
 
           <Link
@@ -213,6 +217,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
             <NavLink
               to="/settings"
+              end
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-3 rounded-md px-3 py-2 text-body-sm font-medium transition-colors',
@@ -227,6 +232,24 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Settings className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
               <span className={collapsed ? 'sr-only' : undefined}>Settings</span>
             </NavLink>
+            {!scopedProjectId && (
+              <NavLink
+                to="/settings/billing"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-3 rounded-md px-3 py-2 text-body-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-accent/10 text-accent'
+                      : 'text-text-secondary hover:bg-bg-subtle hover:text-text-primary',
+                  )
+                }
+                style={{ transitionDuration: 'var(--duration-fast)' }}
+                title={collapsed ? 'Billing' : undefined}
+              >
+                <Wallet className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
+                <span className={collapsed ? 'sr-only' : undefined}>Billing</span>
+              </NavLink>
+            )}
           </nav>
         </aside>
 

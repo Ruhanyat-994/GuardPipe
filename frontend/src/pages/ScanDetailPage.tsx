@@ -7,6 +7,7 @@ import { EngineFindingsSection } from '../components/project/EngineFindingsSecti
 import { ExportScanButton } from '../components/project/ExportScanButton'
 import { PartialResultBanner } from '../components/project/PartialResultBanner'
 import { ScanOriginBadge } from '../components/project/ScanOriginBadge'
+import { ScanTokensChip } from '../components/billing/ScanTokensChip'
 import { SupplyChainPipeline } from '../components/project/SupplyChainPipeline'
 import { ApiError } from '../lib/apiClient'
 import { getProject, type Project } from '../lib/projectsApi'
@@ -97,7 +98,7 @@ export function ScanDetailPage() {
     if (
       !id ||
       !window.confirm(
-        'Cancel this scan? Engines already running will finish on their own; anything not yet started stops immediately.',
+        "Cancel this scan? Running engines are stopped within a few seconds (what they already found is kept). Engines that haven't started won't run, and their tokens are refunded.",
       )
     ) {
       return
@@ -150,6 +151,7 @@ export function ScanDetailPage() {
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <ScanOriginBadge scan={scan} />
+            <ScanTokensChip scanId={scan.id} statusKey={scan.jobs.map((j) => j.status).join(',')} />
           </div>
         </div>
         <div className="flex items-center gap-3">
