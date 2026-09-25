@@ -222,6 +222,25 @@ type ScanResponse struct {
 	// Phase 12: "whatever preset/custom config was actually used is shown
 	// on the completed scan's detail view."
 	PentestConfig *PentestConfigResponse `json:"pentest_config"`
+	TriggerFields
+}
+
+// TriggerFields say where a scan came from (migration 00027): trigger_source
+// is manual | scheduled | webhook_push | webhook_pull_request | cli_watch,
+// or null for a scan created before origins were recorded.
+type TriggerFields struct {
+	TriggerSource *string `json:"trigger_source"`
+	TriggerRef    *string `json:"trigger_ref"`
+	TriggerActor  *string `json:"trigger_actor"`
+}
+
+func fromTrigger(s domain.Scan) TriggerFields {
+	f := TriggerFields{TriggerRef: s.TriggerRef, TriggerActor: s.TriggerActor}
+	if s.TriggerSource != "" {
+		v := string(s.TriggerSource)
+		f.TriggerSource = &v
+	}
+	return f
 }
 
 func FromScanDetail(d *orchestrator.ScanDetail) ScanResponse {
@@ -244,6 +263,7 @@ func FromScanDetail(d *orchestrator.ScanDetail) ScanResponse {
 		QueuedAt: d.QueuedAt, StartedAt: d.StartedAt, FinishedAt: d.FinishedAt,
 		FindingCounts: counts, Risk: fromRiskAssessment(d.Risk), Jobs: jobs, ScanNumber: d.ScanNumber,
 		PentestConfig: fromPentestConfig(d.PentestConfig, d.PentestConfigClamped),
+		TriggerFields: fromTrigger(d.Scan),
 	}
 }
 
@@ -265,6 +285,7 @@ type ScanSummaryResponse struct {
 	// ScanNumber is this scan's 1-based position among its own project's
 	// scans (oldest = 1) — the UI's "Scan #N" in place of a raw UUID prefix.
 	ScanNumber int `json:"scan_number"`
+	TriggerFields
 }
 
 func FromScan(s domain.Scan) ScanSummaryResponse {
@@ -275,7 +296,7 @@ func FromScan(s domain.Scan) ScanSummaryResponse {
 	return ScanSummaryResponse{
 		ID: s.ID.String(), ProjectID: s.ProjectID.String(), Type: string(s.Type), Status: string(s.Status),
 		Branch: s.Branch, QueuedAt: s.QueuedAt, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt,
-		FindingCounts: counts, ScanNumber: s.ScanNumber,
+		FindingCounts: counts, ScanNumber: s.ScanNumber, TriggerFields: fromTrigger(s),
 	}
 }
 
@@ -301,6 +322,11 @@ func FromOrgScanSummary(s orchestrator.OrgScanSummary) OrgScanSummaryResponse {
 type OrgScanListResponse struct {
 	Data       []OrgScanSummaryResponse `json:"data"`
 	Pagination Pagination               `json:"pagination"`
+}
+
+// ActiveScanListResponse matches `GET /scans/active`.
+type ActiveScanListResponse struct {
+	Data []OrgScanSummaryResponse `json:"data"`
 }
 
 // EngineProgressResponse is one entry in ProgressResponse.Engines.

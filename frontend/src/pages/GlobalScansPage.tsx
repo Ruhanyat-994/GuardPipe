@@ -9,6 +9,7 @@ import { ApiError } from '../lib/apiClient'
 import { listProjects, type Project } from '../lib/projectsApi'
 import { listOrgScans, type OrgScanSummary, type Scan } from '../lib/scansApi'
 import { cn } from '../lib/cn'
+import { useActiveScansStore } from '../stores/activeScansStore'
 
 /**
  * The global Scans page — run a scan against any existing project without
@@ -19,6 +20,7 @@ import { cn } from '../lib/cn'
  */
 export function GlobalScansPage() {
   const navigate = useNavigate()
+  const refreshActiveScans = useActiveScansStore((s) => s.refresh)
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [projectsError, setProjectsError] = useState<string | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -61,6 +63,7 @@ export function GlobalScansPage() {
   }, [])
 
   function handleStarted(scan: Scan) {
+    refreshActiveScans()
     navigate(`/scans/${scan.id}`)
   }
 

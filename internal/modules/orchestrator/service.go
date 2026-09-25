@@ -36,6 +36,11 @@ type Service interface {
 	// projectID/ownership check needed: the query itself is already scoped
 	// to actor.OrgID.
 	ListOrgScans(ctx context.Context, actor domain.Actor, page Page) ([]OrgScanSummary, int, error)
+	// ListActiveScans is every queued or running scan across the actor's
+	// org, newest first — what AppShell's running-scans indicator polls so
+	// a user can leave the scan page and still see (and be told about) the
+	// scans still in flight. Scoped to actor.OrgID exactly like ListOrgScans.
+	ListActiveScans(ctx context.Context, actor domain.Actor) ([]OrgScanSummary, error)
 	GetProgress(ctx context.Context, actor domain.Actor, scanID uuid.UUID) (*Progress, error)
 	CancelScan(ctx context.Context, actor domain.Actor, scanID uuid.UUID) error
 	ListFindings(ctx context.Context, actor domain.Actor, scanID uuid.UUID, page Page) ([]domain.Finding, int, error)
@@ -59,6 +64,9 @@ type ScanRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Scan, error)
 	ListByProject(ctx context.Context, projectID uuid.UUID, page Page) ([]domain.Scan, int, error)
 	ListByOrg(ctx context.Context, orgID uuid.UUID, page Page) ([]OrgScanSummary, int, error)
+	// ListActiveByOrg is ListByOrg restricted to queued/running scans,
+	// capped at limit rows.
+	ListActiveByOrg(ctx context.Context, orgID uuid.UUID, limit int) ([]OrgScanSummary, error)
 	SetCancelRequested(ctx context.Context, id uuid.UUID) error
 	// MarkStarted records the scan's transition out of `queued` — status
 	// `running` and `started_at = now()` — the first time any of its jobs is
@@ -82,6 +90,9 @@ type ScanJobRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.ScanJob, error)
 	ListByScan(ctx context.Context, scanID uuid.UUID) ([]domain.ScanJob, error)
 	MarkRunning(ctx context.Context, id uuid.UUID) error
+	// ListRunningStartedBefore lists jobs still `running` that started
+	// before the given time — orphan-sweeper candidates.
+	ListRunningStartedBefore(ctx context.Context, before time.Time) ([]domain.ScanJob, error)
 }
 
 // FindingRepository is defined by this package — read paths only; writes
@@ -127,6 +138,9 @@ type JobResult struct {
 // worker layer, never the repository).
 type JobResultRepository interface {
 	PersistJobResult(ctx context.Context, result JobResult) (finalized bool, err error)
+	// FinalizeStuckScans finalises scans whose jobs are all terminal but
+	// which were never closed themselves, returning their IDs.
+	FinalizeStuckScans(ctx context.Context) ([]uuid.UUID, error)
 }
 
 // RiskAssessmentRepository is defined by this package; implementation lives
@@ -185,6 +199,17 @@ type service struct {
 	// always wires a real one in production).
 	schedules  ScanScheduleRepository
 	membership MembershipChecker
+	// tokens is billing (TOKENIZATION-ARCHITECTURE.md). nil = billing off.
+	tokens TokenCharger
+}
+
+// SetTokenCharger turns on token billing for svc (a Service built by
+// NewService). Kept out of NewService's already-long parameter list so
+// every existing caller and test is unaffected.
+func SetTokenCharger(svc Service, t TokenCharger) {
+	if s, ok := svc.(*service); ok {
+		s.tokens = t
+	}
 }
 
 // Enqueuer is the subset of adapters/queue.JobQueue this package needs —
@@ -224,6 +249,12 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 	if err != nil {
 		return nil, err
 	}
+	// "Run everything available" means everything the plan includes, too.
+	if s.tokens != nil && in.Type == domain.ScanTypeFullSupplyChain {
+		if engines, err = s.tokens.AllowedEngines(ctx, detail.OrgID, engines); err != nil {
+			return nil, err
+		}
+	}
 	if len(engines) == 0 {
 		return nil, apperrors.Unprocessable("scan.no_engines_available", "no engine is registered to run this scan yet")
 	}
@@ -234,6 +265,16 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 	}
 	if in.Branch != "" {
 		scan.Branch = &in.Branch
+	}
+	scan.TriggerSource = in.TriggerSource
+	if scan.TriggerSource == "" {
+		scan.TriggerSource = domain.TriggerManual
+	}
+	if in.TriggerRef != "" {
+		scan.TriggerRef = &in.TriggerRef
+	}
+	if in.TriggerActor != "" {
+		scan.TriggerActor = &in.TriggerActor
 	}
 	if actor.UserID != uuid.Nil {
 		triggeredBy := actor.UserID
@@ -251,20 +292,50 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 		clampedFields = fields
 	}
 
-	if err := s.scans.Create(ctx, scan); err != nil {
-		return nil, apperrors.Internal(fmt.Errorf("create scan: %w", err))
-	}
-
 	jobs := make([]domain.ScanJob, len(engines))
 	for i, eng := range engines {
 		jobs[i] = domain.ScanJob{ID: id.New(), ScanID: scan.ID, Engine: eng, Status: domain.JobStatusQueued}
 	}
+
+	// Pay before anything exists: a scan the org can't afford is never
+	// created (never created-then-cancelled). If creating it then fails,
+	// every job is refunded.
+	refundAll := func(string) {}
+	if s.tokens != nil {
+		req := ChargeRequest{ScanID: scan.ID, Trigger: scan.TriggerSource, ActorID: actor.UserID}
+		if scan.PentestConfig != nil {
+			req.Preset = scan.PentestConfig.Preset
+		}
+		for _, j := range jobs {
+			req.Lines = append(req.Lines, ChargeLine{JobID: j.ID, Engine: j.Engine})
+		}
+		if err := s.tokens.Charge(ctx, detail.OrgID, req); err != nil {
+			return nil, err
+		}
+		refundAll = func(reason string) {
+			for _, j := range jobs {
+				_ = s.tokens.RefundJob(ctx, j.ID, reason)
+			}
+		}
+	}
+
+	if err := s.scans.Create(ctx, scan); err != nil {
+		refundAll("create_failed")
+		return nil, apperrors.Internal(fmt.Errorf("create scan: %w", err))
+	}
 	if err := s.jobs.CreateMany(ctx, jobs); err != nil {
+		refundAll("create_failed")
 		return nil, apperrors.Internal(fmt.Errorf("create scan jobs: %w", err))
 	}
 
-	for _, j := range jobs {
+	for i, j := range jobs {
 		if err := s.queue.Enqueue(ctx, j.ID.String()); err != nil {
+			// Jobs already queued will run and are paid for; the rest never will.
+			for _, rest := range jobs[i:] {
+				if s.tokens != nil {
+					_ = s.tokens.RefundJob(ctx, rest.ID, "create_failed")
+				}
+			}
 			return nil, apperrors.Internal(fmt.Errorf("enqueue job %s: %w", j.ID, err))
 		}
 	}
@@ -286,7 +357,7 @@ func (s *service) CreateScan(ctx context.Context, actor domain.Actor, projectID 
 		s.audit.Log(ctx, audit.Entry{
 			OrgID: &actor.OrgID, ActorID: &actor.UserID, Action: "scan.started",
 			ResourceType: strPtr("scan"), ResourceID: &scan.ID, IP: ipAddr,
-			Detail: map[string]any{"project_id": projectID.String(), "type": string(in.Type), "engines": engines},
+			Detail: map[string]any{"project_id": projectID.String(), "type": string(in.Type), "engines": engines, "trigger_source": string(scan.TriggerSource)},
 		})
 	}
 
@@ -532,6 +603,30 @@ func (s *service) ListOrgScans(ctx context.Context, actor domain.Actor, page Pag
 	return scans, total, nil
 }
 
+// maxActiveScans caps ListActiveScans — the indicator is a glance, not a
+// history page, and an org with more in flight than this still gets told
+// "N running" by the rows it does see.
+const maxActiveScans = 25
+
+func (s *service) ListActiveScans(ctx context.Context, actor domain.Actor) ([]OrgScanSummary, error) {
+	scans, err := s.scans.ListActiveByOrg(ctx, actor.OrgID, maxActiveScans)
+	if err != nil {
+		return nil, apperrors.Internal(fmt.Errorf("list active scans: %w", err))
+	}
+	// A collaborator session switched into one shared project may only see
+	// that project's scans, never the rest of the org's.
+	if actor.ProjectID != nil {
+		scoped := scans[:0]
+		for _, sc := range scans {
+			if sc.ProjectID == *actor.ProjectID {
+				scoped = append(scoped, sc)
+			}
+		}
+		scans = scoped
+	}
+	return scans, nil
+}
+
 func (s *service) CancelScan(ctx context.Context, actor domain.Actor, scanID uuid.UUID) error {
 	if _, err := s.getOwnedScan(ctx, actor, scanID); err != nil {
 		return err
@@ -591,4 +686,46 @@ func (s *service) getOwnedScan(ctx context.Context, actor domain.Actor, scanID u
 func isNotFound(err error) bool {
 	var appErr *apperrors.Error
 	return errors.As(err, &appErr) && appErr.Kind == apperrors.KindNotFound
+}
+
+// ScanPreview is what CreateScan would run for a request, without creating
+// anything — backs the cost estimate shown before a scan starts, so the
+// estimate and the real charge resolve engines identically.
+type ScanPreview struct {
+	OrgID   uuid.UUID
+	Engines []domain.EngineID
+	Preset  domain.PentestPreset
+}
+
+// ScanPreviewer is implemented by the Service NewService returns.
+type ScanPreviewer interface {
+	PreviewScan(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in CreateScanInput) (*ScanPreview, error)
+}
+
+var _ ScanPreviewer = (*service)(nil)
+
+func (s *service) PreviewScan(ctx context.Context, actor domain.Actor, projectID uuid.UUID, in CreateScanInput) (*ScanPreview, error) {
+	detail, err := s.projects.Get(ctx, actor, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !in.Type.Valid() {
+		return nil, apperrors.Validation("scan.invalid_input", "type must be a recognised scan type", nil)
+	}
+	engines, err := s.resolveEngines(ctx, projectID, detail, in)
+	if err != nil {
+		return nil, err
+	}
+	if s.tokens != nil && in.Type == domain.ScanTypeFullSupplyChain {
+		if engines, err = s.tokens.AllowedEngines(ctx, detail.OrgID, engines); err != nil {
+			return nil, err
+		}
+	}
+	// Same clamp CreateScan applies, so the priced preset is the real one.
+	requested := domain.DefaultPentestScanConfig()
+	if in.PentestConfig != nil {
+		requested = *in.PentestConfig
+	}
+	clamped, _ := domain.ClampPentestScanConfig(requested, s.pentestCeiling)
+	return &ScanPreview{OrgID: detail.OrgID, Engines: engines, Preset: clamped.Preset}, nil
 }

@@ -1,6 +1,7 @@
 package errors
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -23,6 +24,29 @@ type ProblemDetails struct {
 	Code      string       `json:"code"`
 	RequestID string       `json:"request_id,omitempty"`
 	Errors    []FieldError `json:"errors,omitempty"`
+	// Extensions are merged into the top-level JSON object (RFC 9457 §3.2).
+	// A key that collides with a standard member is ignored.
+	Extensions map[string]any `json:"-"`
+}
+
+// MarshalJSON writes the standard members plus any Extensions at the top
+// level of the object.
+func (p ProblemDetails) MarshalJSON() ([]byte, error) {
+	type plain ProblemDetails
+	base, err := json.Marshal(plain(p))
+	if err != nil || len(p.Extensions) == 0 {
+		return base, err
+	}
+	merged := map[string]any{}
+	if err := json.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	for k, v := range p.Extensions {
+		if _, taken := merged[k]; !taken {
+			merged[k] = v
+		}
+	}
+	return json.Marshal(merged)
 }
 
 // ToProblemDetails converts a typed Error into the wire format. instance is
@@ -30,14 +54,15 @@ type ProblemDetails struct {
 // entry so a user-reported bug can be traced back to it.
 func (e *Error) ToProblemDetails(instance, requestID string) ProblemDetails {
 	return ProblemDetails{
-		Type:      problemBaseURL + strings.ReplaceAll(string(e.Kind), "_", "-"),
-		Title:     e.Title,
-		Status:    StatusFor(e.Kind),
-		Detail:    e.Detail,
-		Instance:  instance,
-		Code:      e.Code,
-		RequestID: requestID,
-		Errors:    e.Fields,
+		Type:       problemBaseURL + strings.ReplaceAll(string(e.Kind), "_", "-"),
+		Title:      e.Title,
+		Status:     StatusFor(e.Kind),
+		Detail:     e.Detail,
+		Instance:   instance,
+		Code:       e.Code,
+		RequestID:  requestID,
+		Errors:     e.Fields,
+		Extensions: e.Extensions,
 	}
 }
 

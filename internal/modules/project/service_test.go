@@ -517,7 +517,9 @@ type fakeVCS struct {
 func (f *fakeVCS) ValidateRepository(context.Context, string, string) (*vcs.RepoInfo, error) {
 	return f.info, f.err
 }
-func (f *fakeVCS) ShallowClone(context.Context, string, string, string) error { return f.cloneErr }
+func (f *fakeVCS) ShallowClone(context.Context, string, string, string, string) error {
+	return f.cloneErr
+}
 
 type fakeResolver map[string][]net.IPAddr
 

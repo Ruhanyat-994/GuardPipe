@@ -7,6 +7,7 @@ import { Input } from '../components/ui/Input'
 import { DocumentUploadForm } from '../components/project/DocumentUploadForm'
 import { RepositoryAttachForm } from '../components/project/RepositoryAttachForm'
 import { ScheduledScansSection } from '../components/project/ScheduledScansSection'
+import { LiveScanningSection } from '../components/project/LiveScanningSection'
 import { ProjectAssignmentsSection } from '../components/project/ProjectAssignmentsSection'
 import { ProjectCollaboratorsSection } from '../components/project/ProjectCollaboratorsSection'
 import { useProjectContext } from '../components/project/ProjectContext'
@@ -130,6 +131,12 @@ export function ProjectSettingsPage() {
       <ProjectCollaboratorsSection projectId={project.id} />
 
       <ScheduledScansSection projectId={project.id} />
+
+      <LiveScanningSection
+        projectId={project.id}
+        hasRepository={project.repository != null}
+        defaultBranch={project.repository?.default_branch ?? null}
+      />
 
       <Card className={project.repository?.credential_invalid ? 'mb-4 border-danger/30' : 'mb-4'}>
         <CardTitle className="text-h3">Credential</CardTitle>

@@ -113,6 +113,25 @@ func (f *fakeScanRepo) ListByOrg(_ context.Context, _ uuid.UUID, page orchestrat
 	end := min(start+page.PageSize, len(out))
 	return out[start:end], total, nil
 }
+
+// ListActiveByOrg ignores orgID for the same reason ListByOrg does.
+func (f *fakeScanRepo) ListActiveByOrg(_ context.Context, _ uuid.UUID, limit int) ([]orchestrator.OrgScanSummary, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []orchestrator.OrgScanSummary
+	for _, s := range f.byID {
+		if s.Status == domain.ScanStatusQueued || s.Status == domain.ScanStatusRunning {
+			out = append(out, orchestrator.OrgScanSummary{Scan: *s, ProjectName: "Test Project"})
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
 func (f *fakeScanRepo) SetCancelRequested(_ context.Context, scanID uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -173,6 +192,17 @@ func (f *fakeScanJobRepo) ListByScan(_ context.Context, scanID uuid.UUID) ([]dom
 	var out []domain.ScanJob
 	for _, j := range f.byID {
 		if j.ScanID == scanID {
+			out = append(out, *j)
+		}
+	}
+	return out, nil
+}
+func (f *fakeScanJobRepo) ListRunningStartedBefore(_ context.Context, before time.Time) ([]domain.ScanJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.ScanJob
+	for _, j := range f.byID {
+		if j.Status == domain.JobStatusRunning && j.StartedAt != nil && j.StartedAt.Before(before) {
 			out = append(out, *j)
 		}
 	}
@@ -289,6 +319,13 @@ var terminalJobStatuses = map[domain.JobStatus]bool{
 // findings block already used — a real, `-race`-caught bug the first time
 // a test (TestPool_ProcessJob_SameScanConcurrentJobs_ClonesWorkspaceOnce)
 // actually exercised two jobs of the same scan running concurrently.
+// FinalizeStuckScans — the real repair is proven against Postgres
+// (TestJobResultRepo_ConcurrentResults_FinalizeExactlyOnce); here it's a
+// no-op so the sweeper can run in unit tests.
+func (f *fakeJobResultRepo) FinalizeStuckScans(context.Context) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 func (f *fakeJobResultRepo) PersistJobResult(_ context.Context, result orchestrator.JobResult) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -757,6 +794,41 @@ func TestListOrgScans_ReturnsScansWithProjectName(t *testing.T) {
 	require.NotEmpty(t, scans[0].ProjectName)
 }
 
+func TestListActiveScans_ReturnsOnlyInFlightScans(t *testing.T) {
+	svc, scans, _, _, _, _ := newTestOrchestrator(t)
+	actor := newActor()
+
+	inFlight, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	finished, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	scans.byID[finished.ID].Status = domain.ScanStatusCompleted
+
+	active, err := svc.ListActiveScans(context.Background(), actor)
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+	require.Equal(t, inFlight.ID, active[0].ID)
+}
+
+// A collaborator switched into one shared project must not see the rest of
+// the org's running scans.
+func TestListActiveScans_ProjectScopedActor_SeesOnlyThatProject(t *testing.T) {
+	svc, _, _, _, _, _ := newTestOrchestrator(t)
+	actor := newActor()
+
+	shared, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	_, err = svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+
+	scoped := actor
+	scoped.ProjectID = &shared.ProjectID
+	active, err := svc.ListActiveScans(context.Background(), scoped)
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+	require.Equal(t, shared.ID, active[0].ID)
+}
+
 // TestListScans_CrossOrgProject_ReturnsNotFound is the 404-not-403 rule
 // (documentation/07-api-specification.md §1.4) applied to the history
 // endpoint: a project ID belonging to another organisation must look
@@ -891,4 +963,26 @@ func TestGetScan_UnknownScan_ReturnsNotFound(t *testing.T) {
 	var appErr *apperrors.Error
 	require.ErrorAs(t, err, &appErr)
 	require.Equal(t, apperrors.KindNotFound, appErr.Kind)
+}
+
+// A scan created through the HTTP API records trigger_source = manual; a
+// caller that names an origin (the live-scanning worker) has it kept as-is.
+func TestCreateScan_RecordsTriggerSource(t *testing.T) {
+	svc, _, _, _, _, _ := newTestOrchestrator(t)
+	actor := newActor()
+
+	manual, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{Type: domain.ScanTypeFullSupplyChain})
+	require.NoError(t, err)
+	require.Equal(t, domain.TriggerManual, manual.TriggerSource)
+	require.Nil(t, manual.TriggerRef)
+
+	pushed, err := svc.CreateScan(context.Background(), actor, id.New(), orchestrator.CreateScanInput{
+		Type: domain.ScanTypeFullSupplyChain, Branch: "feature/x",
+		TriggerSource: domain.TriggerWebhookPush, TriggerRef: "feature/x", TriggerActor: "octocat",
+	})
+	require.NoError(t, err)
+	require.Equal(t, domain.TriggerWebhookPush, pushed.TriggerSource)
+	require.Equal(t, "feature/x", *pushed.TriggerRef)
+	require.Equal(t, "octocat", *pushed.TriggerActor)
+	require.Equal(t, "feature/x", *pushed.Branch)
 }

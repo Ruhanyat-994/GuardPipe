@@ -4,10 +4,10 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.10 |
+| **Version** | 1.13 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
-| **Last updated** | 2026-09-14 |
+| **Last updated** | 2026-09-26 |
 
 ### Revision history
 
@@ -24,6 +24,9 @@
 | 1.8 | 2026-08-23 | Team | New buildable (not long-running — `profiles: [build-only]`) `pentest-sandbox` service added to `docker-compose.yml`, built from `internal/scripts/pentest/Dockerfile`: an alpine-based image (never distroless — needs a real shell) bundling naabu/nmap/httpx/whatweb/testssl.sh/curl/katana/gau/CeWL/ffuf/nuclei/iptables/su-exec. `GUARDPIPE_SANDBOX_IMAGE` default changed from the old placeholder to `guardpipe-pentest-sandbox:latest` (§5.5) — a plain locally-built tag, not a pinned digest like this file's other image references, since it's never pushed to any registry. Build it once with `docker compose build pentest-sandbox` before a pentest scan can actually run tools; the engine still registers and fails cleanly without it. |
 | 1.9 | 2026-09-14 | Team | §5.3 adds `GUARDPIPE_SECURE_COOKIES` — previously the refresh-token cookie's `Secure` flag was hardcoded to `GUARDPIPE_ENV == "production"`, which broke session persistence across a page reload on the first real EKS deployment (the ALB has no TLS listener yet, and browsers silently refuse to store a `Secure` cookie set over plain HTTP). Now independently overridable, defaulting to the same behavior as before for anyone who hasn't hit this. Built, `internal/platform/config`. |
 | 1.10 | 2026-09-14 | Team | §5.4 adds a second pentest sandbox backend: `GUARDPIPE_SANDBOX_BACKEND` (`docker` default, `kubernetes` new), `GUARDPIPE_K8S_SANDBOX_IMAGE`, `GUARDPIPE_K8S_SANDBOX_NAMESPACE`. The EKS deployment has no Docker socket reachable from `guardpipe-worker` at all (pentest was disabled outright there until now — see `documentation/12-security-and-threat-model.md`'s sandboxing posture for why a shared host Docker socket was rejected instead); the `kubernetes` backend (`internal/adapters/k8spentestsandbox`) runs each tool invocation as a one-shot `batch/v1.Job`, isolated by a per-job `NetworkPolicy` rather than the Docker path's in-container `iptables` self-firewall — lets every sandbox pod run fully non-root with every capability dropped from the start, no root-then-drop dance needed. Built. |
+| 1.11 | 2026-09-24 | Team | New §5.9 (GitHub webhook live scanning, `BUILD_GUIDE.md` Phase 17 Part B): `GUARDPIPE_WEBHOOK_PUBLIC_URL`, `GUARDPIPE_LIVESCAN_MAX_PER_HOUR`, `GUARDPIPE_LIVESCAN_DEBOUNCE`. Built, `internal/platform/config`. |
+| 1.12 | 2026-09-25 | Team | New §5.10 scan report email variables (`GUARDPIPE_MAIL_*`, `GUARDPIPE_SMTP_*`, `GUARDPIPE_SES_*`, `GUARDPIPE_APP_URL`), the `mailpit` Compose service, and the SES-on-AWS rollout steps |
+| 1.13 | 2026-09-26 | Team | §5 `GUARDPIPE_GEMINI_MODEL_FAST`/`_SMART` defaults moved to `gemini-3.5-flash-lite`: `gemini-2.5-flash`'s free tier is 20 requests a day per Google project, and `gemini-2.5-pro` 404s on a free-tier key |
 
 ---
 
@@ -187,8 +190,8 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_AI_ENABLED` | `true` | no | Master switch — `false` disables all AI features cleanly |
 | `GUARDPIPE_GEMINI_API_KEY` | — | if AI enabled and `_KEYS` unset | Single-key form, kept working as a one-key alias |
 | `GUARDPIPE_GEMINI_API_KEYS` | — | if AI enabled and `_KEY` unset | Comma-separated key pool (`BUILD_GUIDE.md` Phase 4) — `adapters/gemini` rotates to the next key on a 429/`RESOURCE_EXHAUSTED` response instead of failing. Prefer this over the singular form once more than one key exists; see `BUILD_GUIDE.md`'s Phase-4 note on why keys should come from **separate** Google Cloud projects to actually add quota |
-| `GUARDPIPE_GEMINI_MODEL_FAST` | `gemini-2.5-flash` | no | |
-| `GUARDPIPE_GEMINI_MODEL_SMART` | `gemini-2.5-pro` | no | |
+| `GUARDPIPE_GEMINI_MODEL_FAST` | `gemini-3.5-flash-lite` | no | |
+| `GUARDPIPE_GEMINI_MODEL_SMART` | `gemini-3.5-flash-lite` | no | free tier: `gemini-2.5-pro` 404s |
 | `GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN` | `100000` | no | |
 | `GUARDPIPE_AI_CACHE_TTL` | `168h` | no | |
 
@@ -209,6 +212,29 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 |---|---|
 | `GUARDPIPE_GATE_WARN` | `30` |
 | `GUARDPIPE_GATE_BLOCK` | `70` |
+
+### 5.9 Live scanning (GitHub webhooks)
+
+| Variable | Default | Required | Notes |
+|---|---|---|---|
+| `GUARDPIPE_WEBHOOK_PUBLIC_URL` | `GUARDPIPE_BASE_URL` | no | Origin GitHub delivers webhooks to — must be reachable from the internet. On AWS, the ALB's HTTPS URL. Locally, a tunnel that forwards paths unchanged, e.g. `cloudflared tunnel --url http://localhost:8080` or ngrok (GitHub can't reach `localhost`; smee.io doesn't work because each hook has its own path). Read when a hook is **registered**: changing it later doesn't move hooks that already exist — turn live scanning off and on again per project |
+| `GUARDPIPE_LIVESCAN_MAX_PER_HOUR` | `10` | no | Automatic scans per project per hour; the circuit breaker pauses live scanning at 3× this many triggers. Minimum 1 |
+| `GUARDPIPE_LIVESCAN_DEBOUNCE` | `30s` | no | How long a push waits for further pushes to the same branch before its one scan starts. Pull requests aren't debounced |
+
+### 5.10 Scan report emails
+
+| Variable | Default | Required | Notes |
+|---|---|---|---|
+| `GUARDPIPE_MAIL_BACKEND` | `log` | no | `log` (queue and log a line, send nothing), `smtp` (local Compose: the `mailpit` service, UI at http://localhost:8025), `ses` (Amazon SES via the AWS SDK and the pod's IAM role — no keys), `off` (no email; the in-app feed still works) |
+| `GUARDPIPE_MAIL_FROM` | `GuardPipe <noreply@guardpipe.local>` | with smtp/ses | Sender. For SES it must be at a verified identity (`infra/terraform/persistent`'s `ses_sender_identity`) |
+| `GUARDPIPE_APP_URL` | first `GUARDPIPE_CORS_ORIGINS` entry | no | Frontend origin used for links in emails |
+| `GUARDPIPE_SMTP_ADDR` | `mailpit:1025` | with smtp | `host:port`; STARTTLS is used whenever the server offers it |
+| `GUARDPIPE_SMTP_USERNAME` / `GUARDPIPE_SMTP_PASSWORD` | — | no | Only for an SMTP server that needs a login |
+| `GUARDPIPE_SES_REGION` | `AWS_REGION` | with ses | Injected by the EKS pod identity webhook on EKS |
+| `GUARDPIPE_SES_CONFIGURATION_SET` | — | no | Optional SES configuration set (bounce/complaint events) |
+| `GUARDPIPE_MAIL_MAX_ATTACHMENT_MB` | `10` | no | A larger PDF is linked instead of attached |
+
+**Moving to SES on AWS:** set `ses_sender_identity` in `infra/terraform/persistent` and apply; add the `ses_dkim_records` output to DNS (domain) or click AWS's email (single address); re-apply `cluster/` so the app role gets its send-only SES policy; request SES production access (new accounts are sandboxed: verified recipients only, 200/day); then set `GUARDPIPE_MAIL_BACKEND: "ses"` and a matching `GUARDPIPE_MAIL_FROM` in `deploy/k8s/01-configmap.yaml`.
 
 **Fail-fast validation.** A missing required variable, a short JWT secret, or a wrong-length encryption key aborts startup with a message naming the variable. A security product that boots half-configured is worse than one that refuses to boot.
 

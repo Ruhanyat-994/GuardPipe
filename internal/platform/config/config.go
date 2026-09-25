@@ -9,6 +9,10 @@ package config
 import (
 	"encoding/base64"
 	"errors"
+	"net"
+	"net/mail"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -37,6 +41,9 @@ type Config struct {
 	AI       AI
 	External External
 	Gate     Gate
+	LiveScan LiveScan
+	Billing  Billing
+	Mail     Mail
 }
 
 // Core — §5.1.
@@ -135,6 +142,58 @@ type Scanning struct {
 	// persists the vulnerability database across scans instead of
 	// re-downloading it from scratch on every containerscan run.
 	TrivyCacheVolume string
+}
+
+// Billing — token-based subscription billing (TOKENIZATION-ARCHITECTURE.md).
+type Billing struct {
+	// Mode is GUARDPIPE_BILLING_MODE: "demo" (default — tokens are charged
+	// for real, purchases go through the demo checkout, no money or card
+	// data involved), "off" (nothing charged or gated), or "stripe"
+	// (reserved; not implemented yet, so it fails startup).
+	Mode string
+	// TickInterval is how often the worker runs monthly grants and expiry.
+	TickInterval time.Duration
+}
+
+// Mail — scan-report emails (modules/notification, adapters/mailer).
+type Mail struct {
+	// Backend is GUARDPIPE_MAIL_BACKEND: "log" (default — emails are queued
+	// and "sent" as a log line), "smtp" (Mailpit locally, or any SMTP
+	// server), "ses" (Amazon SES via the AWS SDK and the pod's IAM role), or
+	// "off" (no email at all; the in-app feed still works).
+	Backend string
+	// From is the sender, e.g. "GuardPipe <reports@example.com>". For SES
+	// the address (or its domain) must be a verified SES identity.
+	From string
+	// AppURL is the frontend's origin, used for links inside emails.
+	// Defaults to the first GUARDPIPE_CORS_ORIGINS entry.
+	AppURL              string
+	SMTPAddr            string
+	SMTPUsername        string
+	SMTPPassword        string
+	SESRegion           string
+	SESConfigurationSet string
+	// MaxAttachmentBytes: a larger PDF is linked instead of attached.
+	MaxAttachmentBytes int
+}
+
+// Enabled reports whether any email is sent (or logged) at all.
+func (m Mail) Enabled() bool { return m.Backend != "off" }
+
+// LiveScan — GitHub webhook live scanning (BUILD_GUIDE.md Phase 17 Part B).
+type LiveScan struct {
+	// PublicURL is the origin GitHub delivers webhooks to. It must be
+	// reachable from the internet: the ALB's HTTPS URL on AWS, or a
+	// path-preserving tunnel (cloudflared, ngrok) for local testing.
+	// Defaults to GUARDPIPE_BASE_URL, which is only right when that's
+	// already public.
+	PublicURL string
+	// MaxScansPerProjectPerHour caps automatic scans per project; the
+	// circuit breaker pauses live scanning at 3x this many attempts.
+	MaxScansPerProjectPerHour int
+	// Debounce is how long a push waits for further pushes to the same
+	// branch before its scan starts.
+	Debounce time.Duration
 }
 
 // Pentest — §5.5.
@@ -318,8 +377,8 @@ func Load() (*Config, error) {
 			Enabled:            getBool("GUARDPIPE_AI_ENABLED", true, p),
 			GeminiAPIKey:       getString("GUARDPIPE_GEMINI_API_KEY", ""),
 			GeminiAPIKeys:      getCSV("GUARDPIPE_GEMINI_API_KEYS", nil),
-			ModelFast:          getString("GUARDPIPE_GEMINI_MODEL_FAST", "gemini-2.5-flash"),
-			ModelSmart:         getString("GUARDPIPE_GEMINI_MODEL_SMART", "gemini-2.5-pro"),
+			ModelFast:          getString("GUARDPIPE_GEMINI_MODEL_FAST", "gemini-3.5-flash-lite"),
+			ModelSmart:         getString("GUARDPIPE_GEMINI_MODEL_SMART", "gemini-3.5-flash-lite"),
 			TokenBudgetPerScan: getInt("GUARDPIPE_AI_TOKEN_BUDGET_PER_SCAN", 100000, p),
 			CacheTTL:           getDuration("GUARDPIPE_AI_CACHE_TTL", 168*time.Hour, p),
 		},
@@ -336,8 +395,34 @@ func Load() (*Config, error) {
 			Block: getInt("GUARDPIPE_GATE_BLOCK", 70, p),
 		},
 	}
+	cfg.LiveScan = LiveScan{
+		PublicURL:                 getString("GUARDPIPE_WEBHOOK_PUBLIC_URL", cfg.Core.BaseURL),
+		MaxScansPerProjectPerHour: getInt("GUARDPIPE_LIVESCAN_MAX_PER_HOUR", 10, p),
+		Debounce:                  getDuration("GUARDPIPE_LIVESCAN_DEBOUNCE", 30*time.Second, p),
+	}
+	cfg.Billing = Billing{
+		Mode:         strings.ToLower(getString("GUARDPIPE_BILLING_MODE", "demo")),
+		TickInterval: getDuration("GUARDPIPE_BILLING_TICK_INTERVAL", time.Minute, p),
+	}
+
+	defaultAppURL := "http://localhost:5173"
+	if len(cfg.Security.CORSOrigins) > 0 {
+		defaultAppURL = cfg.Security.CORSOrigins[0]
+	}
+	cfg.Mail = Mail{
+		Backend:             strings.ToLower(getString("GUARDPIPE_MAIL_BACKEND", "log")),
+		From:                getString("GUARDPIPE_MAIL_FROM", "GuardPipe <noreply@guardpipe.local>"),
+		AppURL:              getString("GUARDPIPE_APP_URL", defaultAppURL),
+		SMTPAddr:            getString("GUARDPIPE_SMTP_ADDR", "mailpit:1025"),
+		SMTPUsername:        getString("GUARDPIPE_SMTP_USERNAME", ""),
+		SMTPPassword:        getString("GUARDPIPE_SMTP_PASSWORD", ""),
+		SESRegion:           getString("GUARDPIPE_SES_REGION", os.Getenv("AWS_REGION")),
+		SESConfigurationSet: getString("GUARDPIPE_SES_CONFIGURATION_SET", ""),
+		MaxAttachmentBytes:  getInt("GUARDPIPE_MAIL_MAX_ATTACHMENT_MB", 10, p) * 1024 * 1024,
+	}
 
 	validateSecurity(cfg, p)
+	validateMail(cfg.Mail, p)
 	if cfg.AI.Enabled && len(cfg.AI.KeyPool()) == 0 {
 		p.add("GUARDPIPE_GEMINI_API_KEY or GUARDPIPE_GEMINI_API_KEYS is required when GUARDPIPE_AI_ENABLED is true")
 	}
@@ -346,6 +431,19 @@ func Load() (*Config, error) {
 	}
 	if cfg.Scanning.SandboxBackend != "docker" && cfg.Scanning.SandboxBackend != "kubernetes" {
 		p.add("GUARDPIPE_SANDBOX_BACKEND must be \"docker\" or \"kubernetes\", got %q", cfg.Scanning.SandboxBackend)
+	}
+	if cfg.LiveScan.MaxScansPerProjectPerHour < 1 {
+		p.add("GUARDPIPE_LIVESCAN_MAX_PER_HOUR must be at least 1, got %d", cfg.LiveScan.MaxScansPerProjectPerHour)
+	}
+	switch cfg.Billing.Mode {
+	case "demo", "off":
+	case "stripe":
+		p.add("GUARDPIPE_BILLING_MODE=stripe is not implemented yet — use \"demo\" or \"off\"")
+	default:
+		p.add("GUARDPIPE_BILLING_MODE must be \"demo\" or \"off\", got %q", cfg.Billing.Mode)
+	}
+	if cfg.Billing.TickInterval < time.Second {
+		p.add("GUARDPIPE_BILLING_TICK_INTERVAL must be at least 1s, got %s", cfg.Billing.TickInterval)
 	}
 	if cfg.Scanning.SandboxBackend == "kubernetes" && cfg.Scanning.K8sSandboxImage == "" {
 		p.add("GUARDPIPE_K8S_SANDBOX_IMAGE is required when GUARDPIPE_SANDBOX_BACKEND is \"kubernetes\"")
@@ -394,4 +492,35 @@ func loadEngineTimeouts(p *problems) map[domain.EngineID]time.Duration {
 		timeouts[engine] = getDuration(key, def, p)
 	}
 	return timeouts
+}
+
+func validateMail(m Mail, p *problems) {
+	switch m.Backend {
+	case "off", "log", "smtp", "ses":
+	default:
+		p.add("GUARDPIPE_MAIL_BACKEND must be one of \"log\", \"smtp\", \"ses\", \"off\", got %q", m.Backend)
+		return
+	}
+	if !m.Enabled() {
+		return
+	}
+	if addr, err := mail.ParseAddress(m.From); err != nil || addr.Address == "" {
+		p.add("GUARDPIPE_MAIL_FROM must be a valid address like \"GuardPipe <reports@example.com>\", got %q", m.From)
+	}
+	if u, err := url.Parse(m.AppURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		p.add("GUARDPIPE_APP_URL must be an http(s) origin, got %q", m.AppURL)
+	}
+	if m.MaxAttachmentBytes < 1024*1024 {
+		p.add("GUARDPIPE_MAIL_MAX_ATTACHMENT_MB must be at least 1")
+	}
+	switch m.Backend {
+	case "smtp":
+		if _, _, err := net.SplitHostPort(m.SMTPAddr); err != nil {
+			p.add("GUARDPIPE_SMTP_ADDR must be host:port, got %q", m.SMTPAddr)
+		}
+	case "ses":
+		if m.SESRegion == "" {
+			p.add("GUARDPIPE_SES_REGION (or AWS_REGION) is required when GUARDPIPE_MAIL_BACKEND is \"ses\"")
+		}
+	}
 }

@@ -74,12 +74,14 @@ type fakeCloner struct {
 	mu       sync.Mutex
 	calls    int
 	destDirs []string
+	branches []string
 }
 
-func (c *fakeCloner) ShallowClone(ctx context.Context, _, _, destDir string) error {
+func (c *fakeCloner) ShallowClone(ctx context.Context, _, branch, _, destDir string) error {
 	c.mu.Lock()
 	c.calls++
 	c.destDirs = append(c.destDirs, destDir)
+	c.branches = append(c.branches, branch)
 	c.mu.Unlock()
 
 	if c.delay > 0 {
@@ -668,6 +670,56 @@ func TestPool_ProcessJob_LastJobFinalizes_ComputesAndPersistsRiskAssessment(t *t
 	require.Equal(t, "1.0", record.FormulaVersion)
 }
 
+type recordingNotifier struct {
+	mu    sync.Mutex
+	scans []uuid.UUID
+}
+
+func (n *recordingNotifier) ScanFinished(_ context.Context, scanID uuid.UUID) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.scans = append(n.scans, scanID)
+	return nil
+}
+
+func (n *recordingNotifier) calls() []uuid.UUID {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]uuid.UUID(nil), n.scans...)
+}
+
+// TestPool_ProcessJob_LastJobFinalizes_NotifiesOnce: the notifier hears
+// about a scan exactly once, when its last job finishes — never per job.
+func TestPool_ProcessJob_LastJobFinalizes_NotifiesOnce(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineCodeScan, applicable: true}
+	scans := newFakeScanRepo()
+	jobs := newFakeScanJobRepo()
+	findings := &fakeFindingRepo{}
+	registry := orchestrator.NewRegistry()
+	registry.Register(engine)
+	q := &fakeQueue{}
+	notifier := &recordingNotifier{}
+
+	pool := &orchestrator.Pool{
+		Size: 1, Queue: orchestrator.NewJobQueueClaimer(q.claim, q.ack),
+		Registry: registry, Scans: scans, Jobs: jobs,
+		JobResults:    &fakeJobResultRepo{scans: scans, jobs: jobs, findings: findings},
+		Projects:      &fakeCloneInfo{},
+		Cloner:        &fakeCloner{},
+		WorkspaceRoot: t.TempDir(), DefaultTimeout: 5 * time.Second,
+		Log:      discardLogger(),
+		Notifier: notifier,
+	}
+	scanID, jobID := seedScanAndJob(t, scans, jobs, domain.EngineCodeScan)
+	q.pending = []string{jobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	require.Equal(t, []uuid.UUID{scanID}, notifier.calls())
+}
+
 // TestPool_ProcessJob_ScanCancelled_DoesNotScore: a cancelled scan's last
 // job still finalizes it (to `cancelled`, not `completed`) — that must not
 // trigger scoring, which only makes sense for a scan that actually ran to
@@ -726,4 +778,30 @@ func TestPool_ProcessJob_ScoringNotWired_NeverPanics(t *testing.T) {
 	scan, err := scans.GetByID(context.Background(), scanID)
 	require.NoError(t, err)
 	require.Equal(t, domain.ScanStatusCompleted, scan.Status)
+}
+
+// A scan for a specific branch (a live-scanning push to feature/x) must
+// clone that branch, not the repository's default branch — otherwise the
+// scan silently reports on code nobody pushed.
+func TestPool_ProcessJob_ClonesTheScansBranch(t *testing.T) {
+	engine := &scriptedEngine{id: domain.EngineDepScan, applicable: true}
+	cloner := &fakeCloner{}
+	pool, scans, jobs, _, q := newTestPool(t, engine, cloner)
+
+	branch := "feature/x"
+	scan := &domain.Scan{ID: id.New(), ProjectID: id.New(), Type: domain.ScanTypePartial, Status: domain.ScanStatusRunning, Branch: &branch}
+	require.NoError(t, scans.Create(context.Background(), scan))
+	job := domain.ScanJob{ID: id.New(), ScanID: scan.ID, Engine: domain.EngineDepScan, Status: domain.JobStatusQueued}
+	require.NoError(t, jobs.CreateMany(context.Background(), []domain.ScanJob{job}))
+
+	_, defaultJobID := seedScanAndJob(t, scans, jobs, domain.EngineDepScan)
+	q.pending = []string{job.ID.String(), defaultJobID.String()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	cloner.mu.Lock()
+	defer cloner.mu.Unlock()
+	require.ElementsMatch(t, []string{"feature/x", ""}, cloner.branches, "a branch scan clones its branch; a scan with no branch clones the default")
 }

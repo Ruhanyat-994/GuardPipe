@@ -299,3 +299,22 @@ resource "aws_ssm_parameter" "sonarqube_token" {
     ignore_changes = [value]
   }
 }
+
+## ---------------------------------------------------------------------------
+## Amazon SES — sender identity for scan-report emails (modules/notification).
+## Persistent, not cluster/: verifying an identity (DNS records, or clicking
+## AWS's email link) is a one-time manual step that must survive the cluster
+## being torn down and rebuilt. Nothing is created unless ses_sender_identity
+## is set.
+##
+## Manual steps this config can't do for you (see DEPLOYMENT.md):
+##   * domain identity: add the three DKIM CNAMEs from the ses_dkim_records
+##     output to the domain's DNS;
+##   * address identity: click the link AWS emails to that address;
+##   * new SES accounts start in the sandbox (can only send TO verified
+##     addresses, 200/day) — request production access in the SES console.
+## ---------------------------------------------------------------------------
+resource "aws_sesv2_email_identity" "sender" {
+  count          = var.ses_sender_identity == "" ? 0 : 1
+  email_identity = var.ses_sender_identity
+}

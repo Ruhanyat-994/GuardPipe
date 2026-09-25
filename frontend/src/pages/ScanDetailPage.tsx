@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Ban, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Ban, Info, ShieldAlert } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, CardDescription } from '../components/ui/Card'
 import { EngineFindingsSection } from '../components/project/EngineFindingsSection'
 import { ExportScanButton } from '../components/project/ExportScanButton'
 import { PartialResultBanner } from '../components/project/PartialResultBanner'
+import { ScanOriginBadge } from '../components/project/ScanOriginBadge'
+import { ScanTokensChip } from '../components/billing/ScanTokensChip'
 import { SupplyChainPipeline } from '../components/project/SupplyChainPipeline'
 import { ApiError } from '../lib/apiClient'
 import { getProject, type Project } from '../lib/projectsApi'
@@ -96,7 +98,7 @@ export function ScanDetailPage() {
     if (
       !id ||
       !window.confirm(
-        'Cancel this scan? Engines already running will finish on their own; anything not yet started stops immediately.',
+        "Cancel this scan? Running engines are stopped within a few seconds (what they already found is kept). Engines that haven't started won't run, and their tokens are refunded.",
       )
     ) {
       return
@@ -147,6 +149,10 @@ export function ScanDetailPage() {
           <p className="text-body-sm text-text-secondary">
             {scan.type.replace(/_/g, ' ')} · queued {new Date(scan.queued_at).toLocaleString()}
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <ScanOriginBadge scan={scan} />
+            <ScanTokensChip scanId={scan.id} statusKey={scan.jobs.map((j) => j.status).join(',')} />
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {!TERMINAL_STATUSES.has(scan.status) && (
@@ -171,6 +177,16 @@ export function ScanDetailPage() {
         <p role="alert" className="mb-4 text-body-sm text-danger">
           {cancelError}
         </p>
+      )}
+
+      {!TERMINAL_STATUSES.has(scan.status) && (
+        <div className="mb-4 flex items-start gap-2.5 rounded-md border border-accent/30 bg-accent/5 px-4 py-3 text-body-sm text-text-secondary">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+          <p>
+            You don&rsquo;t need to stay on this page — the scan keeps running on the server. Its
+            progress stays visible in the top bar, and you&rsquo;ll be notified when it finishes.
+          </p>
+        </div>
       )}
 
       <PartialResultBanner jobs={scan.jobs} />

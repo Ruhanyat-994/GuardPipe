@@ -19,6 +19,15 @@ export interface ProblemDetails {
   code: string
   request_id?: string
   errors?: { field: string; message: string }[]
+  /** RFC 9457 extension members some errors add — billing's
+   * `billing.insufficient_tokens` carries required/available/shortfall,
+   * `billing.plan_required` carries required_plan/blocked_engines. */
+  required?: number
+  available?: number
+  shortfall?: number
+  required_plan?: string
+  blocked_engines?: string[]
+  period_end?: string
 }
 
 /** Thrown for any non-2xx response. `problem.code` is what calling code

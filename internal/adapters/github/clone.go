@@ -9,6 +9,7 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -44,7 +45,11 @@ var ErrCloneFailed = errors.New("github: clone failed")
 // once the cap is crossed, so an oversized repository never fully lands on
 // disk (documentation/05-module-specifications.md §5's "Size guard …
 // checked during clone, not after").
-func ShallowClone(ctx context.Context, cloneURL, token, destDir string, maxBytes int64) error {
+//
+// branch selects which branch to check out; empty means the remote's default
+// branch (HEAD). A live-scanning push to a non-default branch must scan that
+// branch, not whatever the default branch happens to contain.
+func ShallowClone(ctx context.Context, cloneURL, branch, token, destDir string, maxBytes int64) error {
 	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return fmt.Errorf("github: create workspace directory: %w", err)
 	}
@@ -63,13 +68,17 @@ func ShallowClone(ctx context.Context, cloneURL, token, destDir string, maxBytes
 		auth = &githttp.BasicAuth{Username: "x-access-token", Password: token}
 	}
 
-	_, err = git.CloneContext(ctx, storer, worktree, &git.CloneOptions{
+	opts := &git.CloneOptions{
 		URL:          cloneURL,
 		Auth:         auth,
 		Depth:        1,
 		SingleBranch: true,
 		Tags:         git.NoTags,
-	})
+	}
+	if branch != "" {
+		opts.ReferenceName = plumbing.NewBranchReferenceName(branch)
+	}
+	_, err = git.CloneContext(ctx, storer, worktree, opts)
 	if err != nil {
 		_ = os.RemoveAll(destDir)
 		if errors.Is(err, ErrRepoTooLarge) {

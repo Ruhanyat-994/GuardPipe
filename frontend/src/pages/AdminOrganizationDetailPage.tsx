@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AdminBillingCard } from '../components/admin/AdminBillingCard'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, ShieldOff, Users } from 'lucide-react'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
@@ -141,6 +142,8 @@ export function AdminOrganizationDetailPage() {
           </div>
         )}
       </Card>
+
+      <AdminBillingCard orgId={org.id} />
 
       <Card>
         <CardTitle className="flex items-center gap-2 text-h3">

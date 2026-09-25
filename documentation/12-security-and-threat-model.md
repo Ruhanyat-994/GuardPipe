@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Security Design and Threat Model |
 | **Project** | GuardPipe |
-| **Version** | 1.4 |
+| **Version** | 1.6 |
 | **Status** | Draft |
 | **Method** | STRIDE · OWASP ASVS 4.0 |
 | **Owner** | Member 6 (with all) |
-| **Last updated** | 2026-08-23 |
+| **Last updated** | 2026-09-25 |
 
 ### Revision history
 
@@ -19,6 +19,8 @@
 | 1.2 | 2026-08-16 | Team | §7.1 gained two new rows: a session idle timeout (30 min, `GUARDPIPE_REFRESH_TOKEN_TTL`) and a session absolute timeout (12 h from login, `GUARDPIPE_SESSION_ABSOLUTE_TTL`, checked against a new `refresh_tokens.family_issued_at` column) — closing the gap where a continuously-refreshed session never expired at all, per OWASP's Session Management Cheat Sheet and NIST SP 800-63B §4.1.3. BUILD_GUIDE.md Phase 14 |
 | 1.3 | 2026-08-23 | Team | §5.2 gained an explicit note on the pentest target denylist (`GUARDPIPE_PENTEST_DENYLIST`), which replaces the old allowlist model — a hosted product can't pre-enumerate every customer's target domain, so any public, non-blocked-range host is accepted by default and only explicitly denylisted hosts are refused. Matches `02-srs.md` rev 1.4's FR-PRJ-007/FR-PEN-002 |
 | 1.4 | 2026-08-23 | Team | §3.1 `S4` (forged webhook) control column extended with delivery-ID replay dedup; new `S6` added (webhook-triggered scan flooding / cost abuse) — both now point at the full "Live / continuous scanning" design added to `BUILD_GUIDE.md` Phase 15+ (post-graduation roadmap, still Stretch/not implemented this semester) |
+| 1.5 | 2026-09-24 | Team | `S4` and `S6` are now built controls, not Stretch (`BUILD_GUIDE.md` Phase 17 Part B, `internal/modules/livescan`). `S6`'s quota is a per-project hourly cap (`GUARDPIPE_LIVESCAN_MAX_PER_HOUR`) until billing's `entitlement.Check` exists; the circuit breaker pauses at 3× the cap. New `E7` added: a webhook-triggered pentest is refused by design at three layers |
+| 1.6 | 2026-09-25 | Team | New residual risk #8 and a report-email controls note (FR-NOT-001..006): verified-recipient-only rule, header-injection handling, IRSA-scoped SES sending |
 
 ---
 
@@ -108,9 +110,9 @@ flowchart TB
 | S1 | Credential stuffing against `/auth/login` | TB1 | High | High | Argon2id; 5/min/IP rate limit; account lock after repeated failures; identical error for unknown user and wrong password (no enumeration) |
 | S2 | Stolen JWT replayed | TB1 | Medium | High | 15-minute access token; token held in memory not `localStorage`; `jti` claim |
 | S3 | Refresh token theft | TB1 | Medium | High | `HttpOnly`+`Secure`+`SameSite=Strict` cookie; single-use rotation; **family invalidation on reuse detection** |
-| S4 | Forged GitHub webhook | TB1 | Medium | Medium | HMAC-SHA256 signature verification, constant-time compare, plus delivery-ID dedup against replayed/duplicated deliveries (Stretch, with the webhook feature — full design in `BUILD_GUIDE.md` Phase 15+'s "Live / continuous scanning" entry) |
+| S4 | Forged GitHub webhook | TB1 | Medium | Medium | **Built.** `POST /webhooks/github/{id}`: HMAC-SHA256 over the raw body with that hook's own per-repository secret (32 random bytes, stored AES-256-GCM encrypted), constant-time compare (`hmac.Equal`), checked before anything touches the queue; `X-GitHub-Delivery` dedup in Redis (24 h); the event's repository must match the project's current repository or it's dropped (`internal/adapters/github/webhook.go`, `internal/modules/livescan`) |
 | S5 | DNS rebinding — target resolves benignly at validation, internally at execution | TB5 | Low | **Critical** | IPs pinned at validation; **re-resolved and compared immediately before execution**; abort on mismatch (FR-PEN-002) |
-| S6 | Webhook-triggered scan flooding — a noisy or malicious repo push source drives unbounded backend compute with no human in the loop to rate-limit itself | TB1 | Medium | Medium | Per-org live-scan quota via `entitlement.Check`, per-project trigger-burst circuit breaker, debounce window collapsing rapid pushes into one scan (Stretch, with the webhook feature — same `BUILD_GUIDE.md` entry as S4) |
+| S6 | Webhook-triggered scan flooding — a noisy or malicious repo push source drives unbounded backend compute with no human in the loop to rate-limit itself | TB1 | Medium | Medium | **Built.** Per-project hourly cap (`GUARDPIPE_LIVESCAN_MAX_PER_HOUR`, default 10; to be replaced by billing's per-org `entitlement.Check`), over-cap triggers dropped and audited (`webhook.rate_limited`, never an error back to GitHub), circuit breaker pauses live scanning at 3× the cap until a user re-confirms, debounce window (`GUARDPIPE_LIVESCAN_DEBOUNCE`, default 30 s) collapsing rapid pushes into one scan, fork pull requests never scanned |
 
 S5 is subtle and worth stating: validating a hostname and then connecting by hostname later is a classic bypass. We validate, pin the resolved IP, and connect to the pinned IP.
 
@@ -174,6 +176,7 @@ D5 is a threat *we* pose to someone else. A tool that accidentally takes down th
 | E4 | Command injection when invoking `git` or Docker | TB3 | Medium | Critical | No shell invocation anywhere; `exec.Command` with an explicit argument slice; no user input in argument position without validation |
 | E5 | Prompt injection alters analysis outcomes | TB3 | **High** (attempts), Low (success) | Medium | Five-layer defence in [10 §5](10-ai-integration.md#5-prompt-injection-defence-fr-ai-010); crucially, **AI cannot change severity, score, or verdict** |
 | E6 | SSRF via a user-supplied URL reaching internal services | TB5/TB6 | **Medium** | Critical | Address validation + IP pinning; RFC 1918, loopback, link-local and `169.254.169.254` blocked by default |
+| E7 | A `git push` (by anyone with push access, with no GuardPipe login) launches a live penetration test against a target | TB1 | Low | High | Refused at three layers: `livescan.Service.Enable` rejects `pentest` in the engine list, the trigger worker strips it again right before `CreateScan` (`safeEngines`), and migration 00027's `project_webhooks_no_pentest` CHECK makes a stored row containing it impossible. Webhook scans are always `partial` scans with an explicit engine list, so `full_supply_chain`'s "include pentest when a target exists" rule can't apply either |
 
 E4 deserves a note: we never build a shell command string. `git clone` is invoked as `exec.Command("git", "clone", "--depth", "1", url, dir)` — an argument vector, not a shell line. This makes the entire class structurally impossible rather than defended against.
 
@@ -341,6 +344,14 @@ Permissions-Policy: geolocation=(), camera=(), microphone=()
 | 5 | An organisation can't yet gain a second member (no invite flow) — each account is its own single-member organisation | Out of scope | Invite flow + role assignment within an existing organisation |
 | 6 | HTTP in the local Compose deployment | Local only | TLS termination is required for any non-local deployment |
 | 7 | JWT secret is a single symmetric key | Adequate at this scale | Asymmetric signing with rotation |
+| 8 | Emailed PDF reports travel as ordinary email — findings leave GuardPipe's access control once delivered | Requested feature; users opt in per address and can turn it off | Email a sign-in link only, never the PDF |
+
+**Report emails (FR-NOT-001..006).** A scan report is a map of an organisation's weaknesses, so where it gets emailed is a security decision, not a preference:
+- **No unverified recipient, ever.** A new report address sits in `pending_email` until the single-use link sent *to that address* is clicked (24 h, only its SHA-256 stored). Without this, anyone who got into an account could quietly redirect every future report to an outside mailbox. Requesting and confirming are both written to `audit_log`.
+- **Recipient is the accountable user only** — `scans.triggered_by` (the same person the report's "Authorisation & responsibility" section names), never other org members or an arbitrary list.
+- **Header injection** — the mailer rejects CR/LF in every header value and Q-encodes the subject; user-controlled values in the HTML body go through `html/template`.
+- **No SES keys** — on AWS the backend sends through the `guardpipe-app` IRSA role, allowed only `ses:SendEmail`/`ses:SendRawEmail` on the one verified sender identity.
+- **Sending can't harm a scan** — the worker only writes an outbox row; delivery happens in a separate loop with retries.
 
 ---
 

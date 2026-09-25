@@ -48,6 +48,14 @@ AWS-VERIFICATION.md
 DEPLOYMENT-NEXT-STEPS.md
 DEPLOYMENT-ARCHITECTURE.md
 
+# All markdown is local-only except the documentation/ tree. .github/ templates
+# are read by GitHub itself; testdata/ keeps any future docreview fixtures working.
+*.md
+!documentation/**/*.md
+!.github/**/*.md
+!testdata/**/*.md
+WEBHOOK-FEATURE-PLAN.txt
+
 # Terraform
 **/.terraform/
 *.tfstate

@@ -413,6 +413,35 @@ resource "aws_iam_role_policy_attachment" "guardpipe_app_secrets" {
   policy_arn = aws_iam_policy.guardpipe_app_secrets.arn
 }
 
+## Scan-report emails (GUARDPIPE_MAIL_BACKEND=ses). Send-only, and only as the
+## one verified sender identity persistent/ created — this role can't read
+## mail, manage identities, or send as any other address. Created only once
+## persistent/ has an identity (ses_sender_identity set).
+locals {
+  ses_identity_arn = try(data.terraform_remote_state.persistent.outputs.ses_identity_arn, "")
+}
+
+data "aws_iam_policy_document" "guardpipe_app_ses" {
+  count = local.ses_identity_arn == "" ? 0 : 1
+  statement {
+    sid       = "SendScanReports"
+    actions   = ["ses:SendEmail", "ses:SendRawEmail"]
+    resources = [local.ses_identity_arn]
+  }
+}
+
+resource "aws_iam_policy" "guardpipe_app_ses" {
+  count  = local.ses_identity_arn == "" ? 0 : 1
+  name   = "${var.project}-app-ses"
+  policy = data.aws_iam_policy_document.guardpipe_app_ses[0].json
+}
+
+resource "aws_iam_role_policy_attachment" "guardpipe_app_ses" {
+  count      = local.ses_identity_arn == "" ? 0 : 1
+  role       = aws_iam_role.guardpipe_app.name
+  policy_arn = aws_iam_policy.guardpipe_app_ses[0].arn
+}
+
 ## ---------------------------------------------------------------------------
 ## Cost guardrail (DEPLOYMENT.md §3/§13.3) — alerts at 80% actual spend and
 ## 100% forecasted spend against the monthly limit, so a mistake left running

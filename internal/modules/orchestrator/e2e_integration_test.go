@@ -59,7 +59,7 @@ func (e2eNoOpAdvisory) Lookup(_ context.Context, deps []advisory.Dependency) ([]
 // without needing a real repository.
 type e2eFixtureCloner struct{ fixtureDir string }
 
-func (c e2eFixtureCloner) ShallowClone(_ context.Context, _, _, destDir string) error {
+func (c e2eFixtureCloner) ShallowClone(_ context.Context, _, _, _, destDir string) error {
 	return filepath.WalkDir(c.fixtureDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err

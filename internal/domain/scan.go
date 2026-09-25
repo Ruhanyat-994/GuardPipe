@@ -46,6 +46,20 @@ func (s ScanStatus) Valid() bool {
 	}
 }
 
+// TriggerSource records what started a scan — the `scans.trigger_source`
+// column (migration 00027). Empty means "unknown", i.e. a scan created
+// before that column existed.
+type TriggerSource string
+
+const (
+	TriggerManual             TriggerSource = "manual"
+	TriggerScheduled          TriggerSource = "scheduled"
+	TriggerWebhookPush        TriggerSource = "webhook_push"
+	TriggerWebhookPullRequest TriggerSource = "webhook_pull_request"
+	// TriggerCLIWatch is reserved for the CLI git hook (not built yet).
+	TriggerCLIWatch TriggerSource = "cli_watch"
+)
+
 // Scan is one run of one or more engines against one project. Field shapes
 // mirror the `scans` table (documentation/06-database-design.md §4.9).
 type Scan struct {
@@ -86,4 +100,12 @@ type Scan struct {
 	// left nil-meaning-Stealth) — see BUILD_GUIDE.md Phase 12's "default-to-
 	// Stealth is literal, not just a UI default" rule.
 	PentestConfig *PentestScanConfig
+	// TriggerSource/TriggerRef/TriggerActor say where this scan came from:
+	// TriggerRef is the branch or refs/pull/{n}/head a webhook named, and
+	// TriggerActor the GitHub login that pushed. TriggeredBy (above) is still
+	// the GuardPipe user accountable for the scan — for a webhook scan, the
+	// person who turned live scanning on.
+	TriggerSource TriggerSource
+	TriggerRef    *string
+	TriggerActor  *string
 }

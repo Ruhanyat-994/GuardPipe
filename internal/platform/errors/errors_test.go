@@ -1,6 +1,7 @@
 package errors_test
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -142,5 +143,36 @@ func TestToProblemDetails_BareErrorIsTreatedAsInternal(t *testing.T) {
 	}
 	if strings.Contains(pd.Detail, "10.0.0.5") {
 		t.Fatalf("Detail leaked the bare error's message: %q", pd.Detail)
+	}
+}
+
+func TestPaymentRequired_MapsTo402WithExtensions(t *testing.T) {
+	e := apperrors.PaymentRequired("billing.insufficient_tokens", "not enough tokens").
+		WithExtensions(map[string]any{"required": 20500, "available": 100, "code": "must-not-override"})
+	if apperrors.StatusFor(e.Kind) != 402 {
+		t.Fatalf("status = %d, want 402", apperrors.StatusFor(e.Kind))
+	}
+	body, err := json.Marshal(e.ToProblemDetails("/x", "req-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["required"] != float64(20500) || got["available"] != float64(100) {
+		t.Errorf("extensions missing from body: %s", body)
+	}
+	if got["code"] != "billing.insufficient_tokens" {
+		t.Errorf("an extension overrode a standard member: %s", body)
+	}
+}
+
+func TestProblemDetails_NoExtensionsUnchanged(t *testing.T) {
+	body, _ := json.Marshal(apperrors.NotFound("x.not_found", "nope").ToProblemDetails("/x", ""))
+	var got map[string]any
+	_ = json.Unmarshal(body, &got)
+	if _, ok := got["Extensions"]; ok {
+		t.Errorf("Extensions leaked as a member: %s", body)
 	}
 }

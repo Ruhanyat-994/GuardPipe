@@ -235,6 +235,7 @@ func TestTriggerSchedule_FiresAScanAndAdvancesNextRun(t *testing.T) {
 	detail, err := svc.TriggerSchedule(context.Background(), sched.ID)
 	require.NoError(t, err)
 	require.NotNil(t, detail)
+	require.Equal(t, domain.TriggerScheduled, detail.TriggerSource)
 
 	got, err := schedules.GetByID(context.Background(), sched.ID)
 	require.NoError(t, err)

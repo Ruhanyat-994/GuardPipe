@@ -9,6 +9,7 @@
 package orchestrator
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,47 @@ type CreateScanInput struct {
 	// reporting.Assembler as the exported report's accountability watermark
 	// (who ran this scan, and from where).
 	SourceIP string
+	// TriggerSource/TriggerRef/TriggerActor record where the scan came from
+	// (domain.Scan's fields of the same names). An empty TriggerSource means
+	// manual — the HTTP handler never sets it, only the scheduler and the
+	// live-scanning webhook worker do.
+	TriggerSource domain.TriggerSource
+	TriggerRef    string
+	TriggerActor  string
+}
+
+// TokenCharger is billing's side of scan creation, defined here (the
+// consumer) so orchestrator never imports modules/billing. Every scan —
+// manual, scheduled, webhook, CLI — goes through CreateScan, so this is
+// the one place a scan can't avoid being paid for. nil disables billing
+// (GUARDPIPE_BILLING_MODE=off, and every existing test).
+type TokenCharger interface {
+	// Charge pays for all of a scan's jobs, or none. The price is computed
+	// by billing from the engines, preset and trigger. Returns
+	// billing.plan_required (403) or billing.insufficient_tokens (402).
+	Charge(ctx context.Context, orgID uuid.UUID, req ChargeRequest) error
+	// RefundJob returns what one job was charged; a no-op if it never was.
+	RefundJob(ctx context.Context, jobID uuid.UUID, reason string) error
+	// AllowedEngines filters engines to what the org's plan may run, so an
+	// "everything available" scan quietly leaves out what the plan lacks.
+	AllowedEngines(ctx context.Context, orgID uuid.UUID, engines []domain.EngineID) ([]domain.EngineID, error)
+	// RequireFeature returns billing.plan_required if the org's plan lacks
+	// feature ("schedules").
+	RequireFeature(ctx context.Context, orgID uuid.UUID, feature string) error
+}
+
+// ChargeRequest is one scan's charge. Lines are the jobs about to be created.
+type ChargeRequest struct {
+	ScanID  uuid.UUID
+	Lines   []ChargeLine
+	Preset  domain.PentestPreset
+	Trigger domain.TriggerSource
+	ActorID uuid.UUID
+}
+
+type ChargeLine struct {
+	JobID  uuid.UUID
+	Engine domain.EngineID
 }
 
 // ScanDetail is a Scan plus its jobs — documentation/07-api-specification.md

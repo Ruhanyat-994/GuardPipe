@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeftCircle,
+  Bell,
   BookOpen,
   Crosshair,
   FolderKanban,
@@ -14,13 +15,18 @@ import {
   Settings,
   ShieldAlert,
   Users,
+  Wallet,
 } from 'lucide-react'
 import { cn } from '../lib/cn'
+import { ActiveScansIndicator } from './ActiveScansIndicator'
+import { AssistantDock } from './assistant/AssistantDock'
 import { GlobalSearch } from './GlobalSearch'
 import { Logo } from './Logo'
 import { NotificationPanel } from './NotificationPanel'
+import { TokenBar } from './billing/TokenBar'
 import { UserMenu } from './UserMenu'
 import { Button } from './ui/Button'
+import { Toaster } from './ui/Toaster'
 import { getProject } from '../lib/projectsApi'
 import { useAuthStore } from '../stores/authStore'
 import { useIdleLogout } from '../hooks/useIdleLogout'
@@ -164,6 +170,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Button>
           )}
 
+          <ActiveScansIndicator />
+
+          <TokenBar />
+
           <NotificationPanel />
 
           <Link
@@ -213,6 +223,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
             <NavLink
               to="/settings"
+              end
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-3 rounded-md px-3 py-2 text-body-sm font-medium transition-colors',
@@ -227,11 +238,47 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Settings className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
               <span className={collapsed ? 'sr-only' : undefined}>Settings</span>
             </NavLink>
+            <NavLink
+              to="/settings/notifications"
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-3 rounded-md px-3 py-2 text-body-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-accent/10 text-accent'
+                    : 'text-text-secondary hover:bg-bg-subtle hover:text-text-primary',
+                )
+              }
+              style={{ transitionDuration: 'var(--duration-fast)' }}
+              title={collapsed ? 'Notifications' : undefined}
+            >
+              <Bell className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
+              <span className={collapsed ? 'sr-only' : undefined}>Notifications</span>
+            </NavLink>
+            {!scopedProjectId && (
+              <NavLink
+                to="/settings/billing"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-3 rounded-md px-3 py-2 text-body-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-accent/10 text-accent'
+                      : 'text-text-secondary hover:bg-bg-subtle hover:text-text-primary',
+                  )
+                }
+                style={{ transitionDuration: 'var(--duration-fast)' }}
+                title={collapsed ? 'Billing' : undefined}
+              >
+                <Wallet className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
+                <span className={collapsed ? 'sr-only' : undefined}>Billing</span>
+              </NavLink>
+            )}
           </nav>
         </aside>
 
         <div className="min-w-0 flex-1 overflow-y-auto">{children}</div>
       </div>
+      <Toaster />
+      <AssistantDock />
     </div>
   )
 }

@@ -48,6 +48,15 @@ var terminalJobStatuses = map[domain.JobStatus]bool{
 func (r *JobResultRepo) PersistJobResult(ctx context.Context, result orchestrator.JobResult) (bool, error) {
 	var finalized bool
 	err := tx.WithTx(ctx, r.db, func(pgxTx pgx.Tx) error {
+		// Serialise every job result of one scan on the scan row. Without
+		// this, jobs finishing at the same moment (a scan whose engines all
+		// fail fast) each checked "are the others done?" before the others
+		// had committed, each saw a sibling still running, and nobody
+		// finalised the scan — it stayed queued/running forever with every
+		// job terminal. With the lock, whichever commits last sees them all.
+		if err := lockScan(ctx, pgxTx, result.ScanID); err != nil {
+			return err
+		}
 		if err := updateJobStatus(ctx, pgxTx, result); err != nil {
 			return err
 		}
@@ -59,6 +68,66 @@ func (r *JobResultRepo) PersistJobResult(ctx context.Context, result orchestrato
 		return err
 	})
 	return finalized, err
+}
+
+func lockScan(ctx context.Context, pgxTx pgx.Tx, scanID uuid.UUID) error {
+	var id uuid.UUID
+	if err := pgxTx.QueryRow(ctx, `SELECT id FROM scans WHERE id = $1 FOR UPDATE`, scanID).Scan(&id); err != nil {
+		return fmt.Errorf("repo: lock scan: %w", err)
+	}
+	return nil
+}
+
+// FinalizeStuckScans repairs scans left non-terminal although every job is
+// terminal (the pre-lock race above, or a crash between a job's write and
+// its scan's). Returns the IDs it finalised, so the caller can score and
+// notify exactly as if the last job had just finished.
+func (r *JobResultRepo) FinalizeStuckScans(ctx context.Context) ([]uuid.UUID, error) {
+	// The repo holds only a tx.Beginner, so even this read runs in a (short)
+	// transaction.
+	var candidates []uuid.UUID
+	err := tx.WithTx(ctx, r.db, func(pgxTx pgx.Tx) error {
+		rows, err := pgxTx.Query(ctx, `
+			SELECT s.id FROM scans s
+			WHERE s.status IN ('queued', 'running')
+			  AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.scan_id = s.id)
+			  AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.scan_id = s.id AND j.status IN ('queued', 'running'))`)
+		if err != nil {
+			return fmt.Errorf("repo: list stuck scans: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("repo: scan stuck scan id: %w", err)
+			}
+			candidates = append(candidates, id)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var finalized []uuid.UUID
+	for _, scanID := range candidates {
+		var done bool
+		err := tx.WithTx(ctx, r.db, func(pgxTx pgx.Tx) error {
+			if err := lockScan(ctx, pgxTx, scanID); err != nil {
+				return err
+			}
+			var err error
+			done, err = finalizeScanIfComplete(ctx, pgxTx, scanID)
+			return err
+		})
+		if err != nil {
+			return finalized, err
+		}
+		if done {
+			finalized = append(finalized, scanID)
+		}
+	}
+	return finalized, nil
 }
 
 func updateJobStatus(ctx context.Context, pgxTx pgx.Tx, result orchestrator.JobResult) error {
@@ -195,12 +264,16 @@ func finalizeScanIfComplete(ctx context.Context, pgxTx pgx.Tx, scanID uuid.UUID)
 	if cancelRequested {
 		finalStatus = domain.ScanStatusCancelled
 	}
-	_, err = pgxTx.Exec(ctx, `UPDATE scans SET status = $2, finished_at = now(), finding_counts = $3 WHERE id = $1`,
+	// Only the first finaliser wins: a scan already terminal (finalised by an
+	// earlier job, or by FinalizeStuckScans) is left alone and reports false,
+	// so scoring and notifications run exactly once per scan.
+	tag, err := pgxTx.Exec(ctx, `UPDATE scans SET status = $2, finished_at = now(), finding_counts = $3
+		WHERE id = $1 AND status IN ('queued', 'running')`,
 		scanID, string(finalStatus), countsJSON)
 	if err != nil {
 		return false, fmt.Errorf("repo: finalise scan: %w", err)
 	}
-	return true, nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // nonNilStrings defaults a nil slice to empty — the TEXT[] columns this

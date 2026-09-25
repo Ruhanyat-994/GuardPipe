@@ -4,11 +4,11 @@
 |---|---|
 | **Document** | Software Requirements Specification |
 | **Project** | GuardPipe |
-| **Version** | 1.4 |
+| **Version** | 1.6 |
 | **Status** | Draft |
 | **Standard** | ISO/IEC/IEEE 29148:2018 |
 | **Authors** | GuardPipe Team |
-| **Last updated** | 2026-08-23 |
+| **Last updated** | 2026-09-25 |
 
 ### Revision history
 
@@ -19,6 +19,8 @@
 | 1.2 | 2026-08-14 | Team | FR-CNT-004..008 reversed: `containerscan` now wraps Trivy for image vulnerability/misconfiguration/secret scanning instead of implementing its own layer-walking and package-database matching. See [ADR-0012](17-adr/0012-containerscan-wraps-trivy.md) for rationale; supersedes the containerscan-specific portion of [ADR-0010](17-adr/0010-own-scanners.md) |
 | 1.3 | 2026-08-16 | Team | FR-K8S-014 promoted Stretch → Core, ahead of Phase 9 starting: Helm chart rendering (offline only, vendored dependencies only, no cluster/network access) is now required before `k8sscan`'s policy engine runs, not deferred. `k8sscan` itself stays GuardPipe's own rule engine either way — this does **not** invoke ADR-0010/0011/0012 (no external tool is being wrapped; Helm's own template renderer is used as a library the same way `go-git` already is elsewhere, purely to turn chart+values into plain manifests). Kustomize overlay rendering (also named in the old FR-K8S-014) is split out and remains Stretch — only Helm was requested. **Needs its second reviewer** per this doc's own change-control status, since only one person made this edit |
 | 1.4 | 2026-08-23 | Team | FR-PRJ-007 and FR-PEN-002 flip from an allowlist to a denylist model for pentest targets: a hosted product can't ask an operator to pre-enumerate every customer's target domain before they can register it, so any public, non-blocked-range host is now accepted by default and only explicitly denylisted hosts are rejected. The authorisation attestation (FR-PEN-001), the RFC1918/loopback/metadata range block, and DNS-rebinding re-validation are unchanged and remain the actual safety boundary alongside the denylist. See [05-module-specifications.md](05-module-specifications.md) §4 for the updated flowchart. **Needs its second reviewer** per this doc's own change-control status |
+| 1.5 | 2026-09-24 | Team | FR-ORC-013 promoted Stretch → Core (GitHub webhook live scanning, `BUILD_GUIDE.md` Phase 17 Part B). New FR-ORC-015..018 pin down the rules that make it safe to run with no human in the loop: the user chooses the scans explicitly and confirms, pentest never runs automatically, scans are attributed to the confirming user, and automatic scans are rate-limited per project. **Needs its second reviewer** per this doc's own change-control status |
+| 1.6 | 2026-09-25 | Team | New FR-UI-010 (scans keep running while the user navigates away, with an app-wide running-scans indicator and completion alert) and new §3.15 FR-NOT-001..006 (scan-completion notifications: in-app feed plus emailed PDF report, with verified custom report addresses and live-scan emails off by default). **Needs its second reviewer** per this doc's change-control rule |
 
 > **Change control:** this document is a shared contract. Any modification requires **two approvals** (see [14 — GitHub Workflow](14-github-workflow.md)).
 
@@ -216,8 +218,12 @@ flowchart TB
 | FR-ORC-010 | The system **shall** clean up all temporary checkouts and sandbox containers when a scan reaches a terminal state, including on failure. | Core |
 | FR-ORC-011 | The system **shall** shallow-clone the target repository (`--depth 1`) into an ephemeral working directory. | Core |
 | FR-ORC-012 | The system **shall** reject repositories exceeding a configurable size limit (default 500 MB) before cloning completes. | Core |
-| FR-ORC-013 | The system **should** trigger a scan automatically from a GitHub webhook on push or pull request. | Stretch |
+| FR-ORC-013 | The system **shall** trigger a scan automatically from a GitHub webhook on a push to, or a pull request (opened / synchronized / reopened) into, a branch the project watches. Pull requests from forks are not scanned. | Core |
 | FR-ORC-014 | The system **should** support scheduled recurring scans. | Stretch |
+| FR-ORC-015 | Webhook-triggered scans **shall** run only the engines the user selected when turning live scanning on, and turning it on (or changing its settings) **shall** require an explicit confirmation from the user. | Core |
+| FR-ORC-016 | The `pentest` engine **shall never** run from a webhook trigger, regardless of stored settings. | Core |
+| FR-ORC-017 | A webhook-triggered scan **shall** be attributed to the user who confirmed live scanning, and **shall** record its origin (trigger source, branch or pull-request ref, GitHub actor). | Core |
+| FR-ORC-018 | The system **shall** cap webhook-triggered scans per project per hour, collapse rapid pushes to one branch into one scan, ignore duplicate deliveries, and pause live scanning automatically when triggers exceed a multiple of the cap. | Core |
 
 ### 3.4 Document review — `docreview`
 
@@ -405,6 +411,18 @@ flowchart TB
 | FR-UI-007 | The interface **shall** be usable at viewport widths from 1280 px upward, and **should** remain functional down to 768 px. | Core |
 | FR-UI-008 | The interface **shall** meet WCAG 2.1 Level AA for colour contrast and keyboard navigation, and **shall not** convey severity by colour alone. | Core |
 | FR-UI-009 | The interface **should** support a dark theme. | Stretch |
+| FR-UI-010 | A running scan **shall** keep running when the user leaves its page; every authenticated page **shall** show the user's organisation's in-flight scans with live progress, and **shall** tell the user when one finishes. | Core |
+
+### 3.15 Scan notifications — `notification`
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-NOT-001 | When a scan reaches a terminal status, the system **shall** add an entry to the in-app notification feed of the user the scan is attributed to (`scans.triggered_by`: who started it, who created its schedule, or who turned live scanning on). | Core |
+| FR-NOT-002 | When a scan completes or fails, the system **shall** email that user the scan's PDF report, unless they have turned report emails off. Cancelled scans send no email. | Core |
+| FR-NOT-003 | Report emails for live (webhook-triggered) scans **shall** be off by default and separately switchable. | Core |
+| FR-NOT-004 | A user **shall** be able to send reports to an address other than their account email, and the system **shall not** send any report to that address until it has been confirmed through a single-use link sent to it (expires after 24 h). | Core |
+| FR-NOT-005 | Sending an email **shall never** delay, fail, or change the outcome of a scan; undelivered emails **shall** be retried with backoff and then given up on. | Core |
+| FR-NOT-006 | A PDF too large to attach **shall** be replaced by a link to the scan page. | Core |
 
 ---
 

@@ -30,6 +30,9 @@ const (
 	PromptReviewDocument PromptID = "review_document"
 	PromptReviewWorkflow PromptID = "review_workflow"
 	PromptSummariseScan  PromptID = "summarise_scan"
+	// PromptRemediateFinding is the finding assistant's "Remediation"
+	// command (modules/assist): a step-by-step fix plan for one finding.
+	PromptRemediateFinding PromptID = "remediate_finding"
 )
 
 // ModelTier is a prompt's declared model class, resolved to a concrete model

@@ -37,7 +37,7 @@ type GitHubClient interface {
 // CloneFunc matches adapters/github.ShallowClone's signature. It's a func
 // type rather than a one-method interface because the real implementation
 // is already a free function, not something worth wrapping in a struct.
-type CloneFunc func(ctx context.Context, cloneURL, token, destDir string, maxBytes int64) error
+type CloneFunc func(ctx context.Context, cloneURL, branch, token, destDir string, maxBytes int64) error
 
 // Service validates repository URLs/credentials and clones repositories to
 // local disk.
@@ -52,7 +52,8 @@ type Service interface {
 	// (documentation/05-module-specifications.md §5, "Workspace
 	// preparation"). Not exercised end-to-end until the orchestrator lands
 	// in Phase 6; built now so that phase has nothing left to design here.
-	ShallowClone(ctx context.Context, rawURL, token, destDir string) error
+	// branch empty means the repository's default branch.
+	ShallowClone(ctx context.Context, rawURL, branch, token, destDir string) error
 }
 
 type service struct {
@@ -88,13 +89,13 @@ func (s *service) ValidateRepository(ctx context.Context, rawURL, token string) 
 	}, nil
 }
 
-func (s *service) ShallowClone(ctx context.Context, rawURL, token, destDir string) error {
+func (s *service) ShallowClone(ctx context.Context, rawURL, branch, token, destDir string) error {
 	ref, err := github.ParseRepoURL(rawURL)
 	if err != nil {
 		return err
 	}
 	maxBytes := int64(s.maxRepoMB) * 1024 * 1024
-	if err := s.clone(ctx, ref.CloneURL, token, destDir, maxBytes); err != nil {
+	if err := s.clone(ctx, ref.CloneURL, branch, token, destDir, maxBytes); err != nil {
 		return fmt.Errorf("vcs: clone %s: %w", ref.NormalizedURL, err)
 	}
 	return nil

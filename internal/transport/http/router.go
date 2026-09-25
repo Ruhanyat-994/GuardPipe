@@ -12,7 +12,11 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/admin"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/advisory"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/assist"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/billing"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/identity"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/livescan"
+	"github.com/Ruhanyat-994/GuardPipe/internal/modules/notification"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/orchestrator"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/organization"
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/pentest"
@@ -54,6 +58,22 @@ type RouterConfig struct {
 	// attack surface, evidence, reports, authorization) — never nil in
 	// production (cmd/guardpipe/main.go always wires it).
 	PentestSvc *pentest.Service
+	// LiveScanSvc is BUILD_GUIDE.md Phase 17 Part B's GitHub webhook live
+	// scanning. nil (a test router that doesn't need it) leaves its routes
+	// unregistered.
+	LiveScanSvc livescan.Service
+	// NotificationSvc is the scan-completion feed and each user's report-
+	// email settings. nil (a test router that doesn't need it) leaves its
+	// routes unregistered.
+	NotificationSvc *notification.Service
+	// AssistSvc is the finding assistant (AI explain / remediate / fix).
+	// nil leaves its route unregistered.
+	AssistSvc *assist.Service
+	// BillingSvc is token billing (TOKENIZATION-ARCHITECTURE.md). nil
+	// (GUARDPIPE_BILLING_MODE=off, or a test router) leaves /billing/*
+	// unregistered. ScanPreviewer backs the cost estimate.
+	BillingSvc    *billing.Service
+	ScanPreviewer orchestrator.ScanPreviewer
 	// Users backs the export report's accountability watermark (who
 	// requested this scan) — reporting.UserReader, satisfied directly by
 	// *store/repo.UserRepo.
@@ -251,11 +271,78 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	scans := api.Group("/scans", requireAuth, requireNotSuspended)
 	{
 		scans.GET("", middleware.RBAC(viewerAndAbove...), scanH.ListForOrg)
+		scans.GET("/active", middleware.RBAC(viewerAndAbove...), scanH.ListActive)
 		scans.GET("/:id", middleware.RBAC(viewerAndAbove...), scanH.Get)
 		scans.GET("/:id/progress", middleware.RBAC(viewerAndAbove...), scanH.Progress)
 		scans.POST("/:id/cancel", middleware.RBAC(memberAndAbove...), scanH.Cancel)
 		scans.GET("/:id/findings", middleware.RBAC(viewerAndAbove...), scanH.ListFindings)
 		scans.GET("/:id/export", middleware.RBAC(viewerAndAbove...), scanH.Export)
+	}
+
+	// GitHub webhook live scanning (BUILD_GUIDE.md Phase 17 Part B).
+	// Changing it is adminOnly: it registers a hook on the customer's GitHub
+	// repository and makes scans run under the confirming user's name.
+	//
+	// /webhooks/github/:id is the one route deliberately outside the
+	// JWT/RBAC chain — GitHub calls it, not a user. It's authenticated by
+	// the X-Hub-Signature-256 HMAC against that webhook's own secret
+	// (documentation/12-security-and-threat-model.md S4). The :id (an
+	// unguessable UUID) picks which secret to verify with.
+	if cfg.LiveScanSvc != nil {
+		liveScanH := handler.NewLiveScanHandler(cfg.LiveScanSvc, cfg.Users, v)
+		projects.GET("/:id/live-scanning", middleware.RBAC(viewerAndAbove...), liveScanH.Get)
+		projects.PUT("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Enable)
+		projects.DELETE("/:id/live-scanning", middleware.RBAC(adminOnly...), liveScanH.Disable)
+		api.POST("/webhooks/github/:id", liveScanH.Receive)
+	}
+
+	// The finding assistant. member+ (like starting a scan): every command
+	// can spend the org's tokens.
+	if cfg.AssistSvc != nil {
+		assistH := handler.NewAssistHandler(cfg.AssistSvc, v)
+		api.POST("/findings/:id/assist", requireAuth, requireNotSuspended, middleware.RBAC(memberAndAbove...), assistH.Run)
+	}
+
+	// Scan-completion notifications: the bell's feed, and each user's own
+	// report-email settings. /notification-settings/verify is public (the
+	// emailed token is the credential) and rate-limited like login, as are
+	// the two routes that send an email.
+	if cfg.NotificationSvc != nil {
+		notifH := handler.NewNotificationHandler(cfg.NotificationSvc, v)
+		api.POST("/notification-settings/verify", authLimiter, notifH.VerifyReportEmail)
+		mySettings := api.Group("/me/notification-settings", requireAuth, requireNotSuspended)
+		{
+			mySettings.GET("", notifH.GetSettings)
+			mySettings.PUT("", authLimiter, notifH.UpdateSettings)
+			mySettings.POST("/resend-verification", authLimiter, notifH.ResendVerification)
+			mySettings.POST("/test", authLimiter, notifH.SendTest)
+		}
+		notifications := api.Group("/notifications", requireAuth, requireNotSuspended)
+		{
+			notifications.GET("", notifH.List)
+			notifications.POST("/read-all", notifH.MarkAllRead)
+			notifications.POST("/:id/read", notifH.MarkRead)
+		}
+	}
+
+	// Token billing. The catalog is public (the pricing page shows it to
+	// logged-out visitors); buying and cancelling are admin-only; the
+	// demo-checkout confirm answers 404 unless GUARDPIPE_BILLING_MODE=demo.
+	if cfg.BillingSvc != nil {
+		billingH := handler.NewBillingHandler(cfg.BillingSvc, cfg.ScanPreviewer, cfg.AdminSvc, v)
+		api.GET("/billing/catalog", billingH.Catalog)
+		billingGroup := api.Group("/billing", requireAuth, requireNotSuspended)
+		{
+			billingGroup.GET("/summary", middleware.RBAC(viewerAndAbove...), billingH.Summary)
+			billingGroup.GET("/ledger", middleware.RBAC(viewerAndAbove...), billingH.Ledger)
+			billingGroup.GET("/scans/:id", middleware.RBAC(viewerAndAbove...), billingH.ScanTokens)
+			billingGroup.POST("/estimate", middleware.RBAC(memberAndAbove...), billingH.Estimate)
+			billingGroup.POST("/checkout", middleware.RBAC(adminOnly...), billingH.StartCheckout)
+			billingGroup.GET("/checkout/:id", middleware.RBAC(adminOnly...), billingH.GetCheckout)
+			billingGroup.POST("/checkout/:id/confirm", middleware.RBAC(adminOnly...), billingH.ConfirmCheckout)
+			billingGroup.POST("/subscription/cancel", middleware.RBAC(adminOnly...), billingH.CancelSubscription)
+			billingGroup.POST("/subscription/resume", middleware.RBAC(adminOnly...), billingH.ResumeSubscription)
+		}
 	}
 
 	// Pentest v2's own read-only API surface (architecture dossier §08) —
@@ -314,6 +401,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		adminGroup.PATCH("/pentest-flags/:id", requireOperator, adminH.ResolveFlag)
 		adminGroup.GET("/audit-log", requireOperator, adminH.ListAuditLog)
 		adminGroup.GET("/system-health", requireOperator, adminH.SystemHealth)
+		if cfg.BillingSvc != nil {
+			billingAdminH := handler.NewBillingHandler(cfg.BillingSvc, cfg.ScanPreviewer, cfg.AdminSvc, v)
+			adminGroup.GET("/billing/orgs/:id", requireOperator, billingAdminH.AdminGet)
+			adminGroup.POST("/billing/orgs/:id/adjust", requireOperator, billingAdminH.AdminAdjust)
+			adminGroup.POST("/billing/orgs/:id/advance-cycle", requireOperator, billingAdminH.AdminAdvanceCycle)
+		}
 	}
 
 	return r

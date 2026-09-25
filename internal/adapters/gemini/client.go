@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Ruhanyat-994/GuardPipe/internal/modules/ai"
@@ -188,8 +189,22 @@ type generationConfig struct {
 // of GuardPipe's prompts need chain-of-thought for a structured
 // classification/generation task, so this is set unconditionally rather than
 // left at the provider default.
+//
+// The two model generations take different knobs, and each rejects the
+// other's with 400 INVALID_ARGUMENT (reproduced live): Gemini 2.x turns
+// thinking off with thinkingBudget 0, Gemini 3.x and later with
+// thinkingLevel "minimal" (it has no budget of 0).
 type thinkingConfig struct {
-	ThinkingBudget int `json:"thinkingBudget"`
+	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
+}
+
+func minimalThinking(model string) *thinkingConfig {
+	if strings.HasPrefix(strings.TrimPrefix(model, "models/"), "gemini-2") {
+		zero := 0
+		return &thinkingConfig{ThinkingBudget: &zero}
+	}
+	return &thinkingConfig{ThinkingLevel: "minimal"}
 }
 
 func buildRequestBody(req ai.LLMRequest) generateContentRequest {
@@ -200,7 +215,7 @@ func buildRequestBody(req ai.LLMRequest) generateContentRequest {
 			TopP:             defaultTopP,
 			MaxOutputTokens:  req.MaxTokens,
 			ResponseMimeType: "application/json",
-			ThinkingConfig:   &thinkingConfig{ThinkingBudget: 0},
+			ThinkingConfig:   minimalThinking(req.Model),
 		},
 	}
 	if req.System != "" {

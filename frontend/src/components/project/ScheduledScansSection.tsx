@@ -24,6 +24,14 @@ const PRESET_CRON: Record<Exclude<Preset, 'custom'>, string> = {
   weekly: '0 9 * * 1',
 }
 
+/** Plain words for last_run_status. */
+const SCHEDULE_STATUS: Record<string, string> = {
+  triggered: 'started',
+  failed: 'failed',
+  skipped_insufficient_tokens: 'skipped — not enough tokens',
+  skipped_plan_required: 'skipped — needs the Pro plan',
+}
+
 /**
  * Scheduled Scans section on ProjectSettingsPage (BUILD_GUIDE.md Phase 15)
  * — a cron builder in the same plain-language-plus-technical shape Phase
@@ -153,7 +161,19 @@ export function ScheduledScansSection({ projectId }: { projectId: string }) {
               </span>
               <span className="ml-auto text-caption text-text-tertiary">
                 Next: {formatDate(s.next_run_at)}
-                {s.last_run_status && <> · Last: {s.last_run_status}</>}
+                {s.last_run_status && (
+                  <>
+                    {' '}
+                    · Last:{' '}
+                    <span
+                      className={
+                        s.last_run_status.startsWith('skipped') ? 'text-warning' : undefined
+                      }
+                    >
+                      {SCHEDULE_STATUS[s.last_run_status] ?? s.last_run_status}
+                    </span>
+                  </>
+                )}
               </span>
               <Button
                 variant="secondary"
