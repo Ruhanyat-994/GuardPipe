@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,13 +27,16 @@ const workerLost = "worker_lost"
 
 // cancelPollInterval is how often a running job checks its scan's cancel
 // flag — the longest a user waits between clicking Cancel and the engine
-// being told to stop.
-var cancelPollInterval = 3 * time.Second
+// being told to stop. Atomic (nanoseconds) because tests shorten it while
+// watchers started by earlier tests' pools may still be reading it.
+var cancelPollInterval atomic.Int64
+
+func init() { cancelPollInterval.Store(int64(3 * time.Second)) }
 
 // watchForCancel cancels a running job's context once its scan's cancel
 // flag is set. Returns when ctx ends (the engine finished or was stopped).
 func (p *Pool) watchForCancel(ctx context.Context, scanID uuid.UUID, cancel context.CancelCauseFunc) {
-	ticker := time.NewTicker(cancelPollInterval)
+	ticker := time.NewTicker(time.Duration(cancelPollInterval.Load()))
 	defer ticker.Stop()
 	for {
 		select {
