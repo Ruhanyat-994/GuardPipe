@@ -44,7 +44,9 @@ type RuleRegistrar interface {
 	UpsertRule(ctx context.Context, rm domain.RuleMeta) error
 }
 
-// Engine implements domain.Engine by wrapping Trivy.
+// Engine implements domain.Engine by wrapping Trivy. A nil builder means no
+// Docker daemon is available (GUARDPIPE_SANDBOX_BACKEND=kubernetes): the
+// Dockerfile's base image is scanned instead of a locally built image.
 type Engine struct {
 	scanner Scanner
 	builder ImageBuilder
@@ -142,16 +144,41 @@ func (e *Engine) Run(ctx context.Context, in domain.ScanInput, emit func(domain.
 		}
 	}
 
-	imageRef := "guardpipe-containerscan-" + in.ScanID.String() + ":latest"
-	if err := e.buildImage(ctx, in.WorkspaceDir, dockerfilePath, imageRef); err != nil {
-		return domain.EngineResult{}, fmt.Errorf("containerscan: build image: %w", err)
+	// With a Docker daemon (builder != nil) the repository's own image is
+	// built and scanned. Without one (the Kubernetes backend) nothing can
+	// be built, so the Dockerfile's base image is scanned instead, pulled by
+	// Trivy straight from its registry.
+	imageRef, imageSource := "", "built"
+	if e.builder == nil {
+		imageSource = "base_image"
+		content, readErr := os.ReadFile(filepath.Join(in.WorkspaceDir, filepath.FromSlash(dockerfilePath)))
+		if readErr == nil {
+			imageRef = finalBaseImage(string(content))
+		}
+		if imageRef == "" {
+			return domain.EngineResult{
+				RulesEvaluated: len(registered),
+				FilesScanned:   filesScanned,
+				Stats: map[string]any{
+					"misconfigurations_found": len(registered),
+					"vulnerabilities_found":   0,
+					"secrets_found":           0,
+					"image_scan":              "skipped: the base image can't be resolved without building (scratch or an ARG-based FROM)",
+				},
+			}, nil
+		}
+	} else {
+		imageRef = "guardpipe-containerscan-" + in.ScanID.String() + ":latest"
+		if err := e.buildImage(ctx, in.WorkspaceDir, dockerfilePath, imageRef); err != nil {
+			return domain.EngineResult{}, fmt.Errorf("containerscan: build image: %w", err)
+		}
+		defer func() {
+			// Background context, same reasoning as the sibling-container
+			// cleanup in adapters/trivy/scanner.go: a cancelled/timed-out ctx
+			// must not also cancel cleanup, or the built image leaks.
+			_ = e.builder.RemoveImage(context.Background(), imageRef)
+		}()
 	}
-	defer func() {
-		// Background context, same reasoning as the sibling-container
-		// cleanup in adapters/trivy/scanner.go: a cancelled/timed-out ctx
-		// must not also cancel cleanup, or the built image leaks.
-		_ = e.builder.RemoveImage(context.Background(), imageRef)
-	}()
 
 	imageReport, err := e.scanner.ScanImage(ctx, imageRef)
 	if err != nil {
@@ -189,6 +216,8 @@ func (e *Engine) Run(ctx context.Context, in domain.ScanInput, emit func(domain.
 			"misconfigurations_found": len(registered) - vulnCount - secretCount,
 			"vulnerabilities_found":   vulnCount,
 			"secrets_found":           secretCount,
+			"image_scanned":           imageRef,
+			"image_source":            imageSource,
 		},
 	}, nil
 }

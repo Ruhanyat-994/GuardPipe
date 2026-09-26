@@ -187,6 +187,31 @@ spec:
         - protocol: TCP
           port: 9000
 ---
+# adapters/k8strivyscanner's own Job pods (engines/containerscan on the
+# Kubernetes backend) — same Exists-selector shape as the codescan Job policy
+# above. Trivy needs HTTPS to download its vulnerability database and check
+# bundle, and to pull the base image it scans straight from its registry
+# (Docker Hub, ghcr.io, public ECR, ...). No other egress: its input
+# Dockerfiles arrive in a ConfigMap, never over the network.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-containerscan-job-egress
+  namespace: guardpipe
+spec:
+  podSelector:
+    matchExpressions:
+      - key: guardpipe.io/containerscan-run
+        operator: Exists
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+---
 # adapters/sonarqube.Client's own HTTP calls (GetTask/SearchIssues/
 # SearchHotspots/GetRule) are made directly from engines/codescan.Engine,
 # which runs inside guardpipe-worker's own process — not from a Job pod — so

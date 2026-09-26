@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | DevOps, Environments, and Operations |
 | **Project** | GuardPipe |
-| **Version** | 1.13 |
+| **Version** | 1.14 |
 | **Status** | Draft |
 | **Owner** | Member 6 |
 | **Last updated** | 2026-09-26 |
@@ -27,6 +27,7 @@
 | 1.11 | 2026-09-24 | Team | New §5.9 (GitHub webhook live scanning, `BUILD_GUIDE.md` Phase 17 Part B): `GUARDPIPE_WEBHOOK_PUBLIC_URL`, `GUARDPIPE_LIVESCAN_MAX_PER_HOUR`, `GUARDPIPE_LIVESCAN_DEBOUNCE`. Built, `internal/platform/config`. |
 | 1.12 | 2026-09-25 | Team | New §5.10 scan report email variables (`GUARDPIPE_MAIL_*`, `GUARDPIPE_SMTP_*`, `GUARDPIPE_SES_*`, `GUARDPIPE_APP_URL`), the `mailpit` Compose service, and the SES-on-AWS rollout steps |
 | 1.13 | 2026-09-26 | Team | §5 `GUARDPIPE_GEMINI_MODEL_FAST`/`_SMART` defaults moved to `gemini-3.5-flash-lite`: `gemini-2.5-flash`'s free tier is 20 requests a day per Google project, and `gemini-2.5-pro` 404s on a free-tier key |
+| 1.14 | 2026-09-26 | Team | §5 `GUARDPIPE_SANDBOX_BACKEND=kubernetes` now also covers `containerscan`: Trivy runs as one-shot Jobs (`internal/adapters/k8strivyscanner`, Dockerfiles shipped in a Job-owned ConfigMap, egress via `allow-containerscan-job-egress`). With no Docker to build with, the Dockerfile's final base image is scanned instead of the repository's own built image |
 
 ---
 
@@ -164,7 +165,7 @@ All configuration is environment variables (NFR-PRT-002). No config files, no ru
 | `GUARDPIPE_MAX_REPO_MB` | `500` | no | Clone size cap |
 | `GUARDPIPE_SANDBOX_MAX` | `2` | no | Concurrent sandbox containers/Job pods — enforced by both backends now (previously loaded but unused) |
 | `GUARDPIPE_SANDBOX_IMAGE` | pinned digest | no | Sandbox runner image — the `"docker"` backend's own, via `adapters/sandbox`/`adapters/pentestsandbox` |
-| `GUARDPIPE_SANDBOX_BACKEND` | `docker` | no | `docker` (a real Docker socket, local dev/Compose) or `kubernetes` (one-shot Jobs via the in-cluster API, `adapters/k8spentestsandbox` — the EKS deployment, which has no Docker socket at all) |
+| `GUARDPIPE_SANDBOX_BACKEND` | `docker` | no | `docker` (a real Docker socket, local dev/Compose) or `kubernetes` (one-shot Jobs via the in-cluster API — `adapters/k8spentestsandbox`, `adapters/k8scodescanscanner`, `adapters/k8strivyscanner` — the EKS deployment, which has no Docker socket at all; there `containerscan` scans the Dockerfile's base image, since nothing can be built) |
 | `GUARDPIPE_K8S_SANDBOX_IMAGE` | — | only if backend is `kubernetes` | The `guardpipe-pentest-sandbox` ECR image `deploy.yml` builds/pushes — a separate build from `GUARDPIPE_SANDBOX_IMAGE` (`internal/scripts/pentest/Dockerfile` bakes scripts/wordlists in at build time for this backend, since Job pods have no shared filesystem with `guardpipe-worker` to mount them from) |
 | `GUARDPIPE_K8S_SANDBOX_NAMESPACE` | `guardpipe` | no | Namespace the `kubernetes` backend creates its Jobs/ConfigMaps/NetworkPolicies in |
 | `GUARDPIPE_DOCKER_HOST` | `unix:///var/run/docker.sock` | no | |
