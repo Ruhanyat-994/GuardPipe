@@ -25,6 +25,7 @@ import (
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/github"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8scodescanscanner"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8spentestsandbox"
+	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/k8strivyscanner"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/mailer"
 	"github.com/Ruhanyat-994/GuardPipe/internal/adapters/osv"
 	paymentdemo "github.com/Ruhanyat-994/GuardPipe/internal/adapters/payment/demo"
@@ -327,7 +328,31 @@ func run() error {
 	// has a static ruleRegistry.Register(...) call above; both register each
 	// rule at runtime instead (their own engine.go).
 	registry.Register(codescan.New(sonarqubeClient, codescanScanner, advisorySvc, cfg.External.SonarQubeAnalysisTimeout))
-	registry.Register(containerscan.New(trivyScanner, dockerClient, advisorySvc))
+	// containerscan — same backend switch. "kubernetes": EKS nodes have no
+	// Docker socket, so adapters/k8strivyscanner runs Trivy as one-shot Jobs
+	// and, with no image builder, the engine scans the Dockerfile's base
+	// image instead of building the repository's own.
+	var containerScanner containerscan.Scanner = trivyScanner
+	var imageBuilder containerscan.ImageBuilder = dockerClient
+	if cfg.Scanning.SandboxBackend == "kubernetes" {
+		restConfig, err := k8srest.InClusterConfig()
+		if err != nil {
+			return fmt.Errorf("containerscan scanner: load in-cluster kubernetes config: %w", err)
+		}
+		clientset, err := k8sclient.NewForConfig(restConfig)
+		if err != nil {
+			return fmt.Errorf("containerscan scanner: build kubernetes client: %w", err)
+		}
+		k8sTrivy := k8strivyscanner.New(clientset, cfg.Scanning.K8sSandboxNS,
+			k8strivyscanner.Config{Image: cfg.Scanning.TrivyImage}, cfg.Scanning.SandboxMax)
+		if n, sweepErr := k8sTrivy.SweepOrphans(context.Background()); sweepErr != nil {
+			log.Error("containerscan scanner: sweep orphaned jobs at startup", "error", sweepErr)
+		} else if n > 0 {
+			log.Info("containerscan scanner: removed orphaned jobs from a previous run", "count", n)
+		}
+		containerScanner, imageBuilder = k8sTrivy, nil
+	}
+	registry.Register(containerscan.New(containerScanner, imageBuilder, advisorySvc))
 	// k8sscan (Phase 9) needs no dependencies — every rule is a pure
 	// function of the manifests/Helm charts found in the workspace, unlike
 	// depscan (advisory lookups) or codescan/containerscan (a wrapped tool).

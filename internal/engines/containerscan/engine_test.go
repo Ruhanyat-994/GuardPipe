@@ -240,3 +240,39 @@ func TestEngine_ID(t *testing.T) {
 	e := containerscan.New(&fakeScanner{}, &fakeImageBuilder{}, &fakeRuleRegistrar{})
 	require.Equal(t, domain.EngineContainerScan, e.ID())
 }
+
+// With no image builder (the Kubernetes backend has no Docker daemon), the
+// engine must scan the Dockerfile's base image instead of building one.
+func TestEngine_Run_NoBuilder_ScansTheBaseImage(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"),
+		[]byte("FROM golang:1.26 AS build\nRUN go build\nFROM debian:12-slim\nCOPY --from=build /app /app\n"), 0o644))
+	scanner := &fakeScanner{imageReport: trivy.Report{Results: []trivy.Result{{
+		Vulnerabilities: []trivy.Vulnerability{{VulnerabilityID: "CVE-2024-0001", PkgName: "openssl", Severity: "HIGH"}},
+	}}}}
+	e := containerscan.New(scanner, nil, &fakeRuleRegistrar{})
+
+	var findings []domain.Finding
+	res, err := e.Run(context.Background(), domain.ScanInput{ScanID: uuid.New(), WorkspaceDir: dir}, func(f domain.Finding) { findings = append(findings, f) })
+	require.NoError(t, err)
+	require.Equal(t, 1, scanner.imageCalls)
+	require.Equal(t, "debian:12-slim", scanner.scannedRef)
+	require.Len(t, findings, 1)
+	require.Equal(t, "base_image", res.Stats["image_source"])
+	require.Equal(t, "debian:12-slim", res.Stats["image_scanned"])
+}
+
+// Near miss: a scratch-based image has no pullable base — no image scan is
+// attempted, and the job still succeeds with its config findings.
+func TestEngine_Run_NoBuilder_ScratchSkipsTheImageScan(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"),
+		[]byte("FROM golang:1.26 AS build\nFROM scratch\nCOPY --from=build /app /app\n"), 0o644))
+	scanner := &fakeScanner{}
+	e := containerscan.New(scanner, nil, &fakeRuleRegistrar{})
+
+	res, err := e.Run(context.Background(), domain.ScanInput{ScanID: uuid.New(), WorkspaceDir: dir}, func(domain.Finding) {})
+	require.NoError(t, err)
+	require.Zero(t, scanner.imageCalls)
+	require.Contains(t, res.Stats["image_scan"], "skipped")
+}
