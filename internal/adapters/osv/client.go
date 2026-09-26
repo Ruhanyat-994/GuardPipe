@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	apperrors "github.com/Ruhanyat-994/GuardPipe/internal/platform/errors"
@@ -61,6 +62,32 @@ type PackageQuery struct {
 	Version   string
 }
 
+// osvEcosystems maps GuardPipe's lowercase ecosystem IDs (engines/depscan's
+// parsers) to OSV.dev's names, which are case-sensitive: one unknown name
+// fails the whole batch with 400 "invalid ecosystem", and every dependency
+// in it is then reported as unavailable instead of checked.
+var osvEcosystems = map[string]string{
+	"npm":       "npm",
+	"pypi":      "PyPI",
+	"go":        "Go",
+	"maven":     "Maven",
+	"composer":  "Packagist",
+	"packagist": "Packagist",
+	"cargo":     "crates.io",
+	"crates.io": "crates.io",
+	"rubygems":  "RubyGems",
+	"nuget":     "NuGet",
+}
+
+// ecosystemName returns OSV.dev's name for ecosystem, or ecosystem itself
+// when it is already an OSV name (or one this map doesn't know).
+func ecosystemName(ecosystem string) string {
+	if name, ok := osvEcosystems[strings.ToLower(ecosystem)]; ok {
+		return name
+	}
+	return ecosystem
+}
+
 // QueryBatch looks up advisories for every query in one request and returns
 // the matching vulnerability IDs in the same order as queries — result[i]
 // is the ID list for queries[i]. OSV.dev's batch endpoint intentionally
@@ -78,7 +105,7 @@ func (c *Client) QueryBatch(ctx context.Context, queries []PackageQuery) ([][]st
 	reqBody := queryBatchRequest{Queries: make([]queryBatchQuery, len(queries))}
 	for i, q := range queries {
 		reqBody.Queries[i] = queryBatchQuery{
-			Package: queryPackage{Name: q.Name, Ecosystem: q.Ecosystem},
+			Package: queryPackage{Name: q.Name, Ecosystem: ecosystemName(q.Ecosystem)},
 			Version: q.Version,
 		}
 	}

@@ -52,6 +52,11 @@ type RepositoryRef struct {
 	// guardpipe-worker to read that checkout from). Never assume this is
 	// set — it wasn't, anywhere, before that adapter needed it.
 	CloneURL string
+	// CloneToken is the project's decrypted GitHub token, "" for a public
+	// repository with none attached. Set alongside CloneURL for the same
+	// reason: a scanner Job that clones on its own needs it for a private
+	// repository. Never log it, persist it, or put it in a pod spec.
+	CloneToken string
 }
 
 // PentestTarget identifies the authorised, already-validated network target

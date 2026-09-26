@@ -113,7 +113,7 @@ func (s *service) Enable(ctx context.Context, actor domain.Actor, projectID uuid
 		return nil, err
 	}
 	if token == "" {
-		return nil, apperrors.Unprocessable("livescan.credential_required", "live scanning needs a GitHub token attached to this project that can manage webhooks (admin:repo_hook scope, or Webhooks: read & write)")
+		return nil, apperrors.Unprocessable("livescan.credential_required", "live scanning needs a GitHub token that can manage webhooks (admin:repo_hook scope, or Webhooks: read & write), public repositories included: add one under Settings → Credential")
 	}
 	branches, err := normalizeBranches(in.WatchedBranches, defaultBranch)
 	if err != nil {

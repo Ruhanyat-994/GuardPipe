@@ -17,21 +17,16 @@
 // shallow (--depth 1), the same strategy adapters/github already uses for
 // the original clone.
 //
-// Public repositories only, for now: no decrypted credential reaches an
-// engine today (domain.ScanInput carries no PAT), and plumbing one through
-// from modules/project's credential store would be a materially bigger,
-// separate change — a real, accepted limitation, not a silent gap. A
-// private repository's RepositoryRef.CloneURL is populated the same way a
-// public one's is (orchestrator.Pool's own worker.go, straight from
-// modules/project.Service.GetCloneInfo — the same URL the orchestrator's
-// own clone into ScanInput.WorkspaceDir already used); the Job's clone
-// simply fails with a normal git-auth error, surfaced as this engine's own
-// job error like any other codescan failure.
+// Private repositories: the project's GitHub token (RepositoryRef.CloneToken)
+// goes into a per-run Secret owned by the Job, and reaches git only as an
+// environment variable (GIT_CONFIG_* → http.extraHeader). It is never in
+// the pod spec, the clone URL, or a process argument.
 package k8scodescanscanner
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"time"
@@ -140,11 +135,35 @@ func (s *Scanner) Analyze(ctx context.Context, in domain.ScanInput, projectKey s
 		ref = in.Repository.Branch
 	}
 
-	jobName, err := s.createJob(runCtx, runID, labels, in.Repository.CloneURL, ref, projectKey)
+	token := in.Repository.CloneToken
+	job, err := s.createJob(runCtx, runID, labels, in.Repository.CloneURL, ref, projectKey, token != "")
 	if err != nil {
 		return "", fmt.Errorf("k8scodescanscanner: create job: %w", err)
 	}
+	jobName := job.Name
 	defer s.deleteJob(jobName)
+
+	// Same order as adapters/k8strivyscanner's ConfigMap: the Job first, so
+	// the Secret can name it as owner and is garbage-collected with it even
+	// if this worker dies mid-scan. Until the Secret exists the pod waits.
+	if token != "" {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: runID, Namespace: s.namespace, Labels: labels,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "batch/v1", Kind: "Job", Name: job.Name, UID: job.UID,
+				}},
+			},
+			Type:       corev1.SecretTypeOpaque,
+			StringData: map[string]string{gitAuthKey: gitAuthHeader(token)},
+		}
+		if _, err := s.client.CoreV1().Secrets(s.namespace).Create(runCtx, secret, metav1.CreateOptions{}); err != nil {
+			return "", fmt.Errorf("k8scodescanscanner: create clone credential secret: %w", err)
+		}
+		defer func() {
+			_ = s.client.CoreV1().Secrets(s.namespace).Delete(context.Background(), runID, metav1.DeleteOptions{})
+		}()
+	}
 
 	pod, waitErr := s.waitForPodCompletion(runCtx, runID)
 	if waitErr != nil {
@@ -152,6 +171,16 @@ func (s *Scanner) Analyze(ctx context.Context, in domain.ScanInput, projectKey s
 	}
 	if pod == nil {
 		return "", fmt.Errorf("k8scodescanscanner: job %s never scheduled a pod before the deadline", jobName)
+	}
+
+	// A failed clone (bad token, deleted branch) means the scanner container
+	// never started; report the clone's own output instead of a confusing
+	// "waiting to start: PodInitializing" from reading the scanner's logs.
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.Name == "clone" && cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			cloneLogs, _ := s.podLogs(context.Background(), pod.Name, "clone")
+			return "", fmt.Errorf("k8scodescanscanner: clone failed (exit %d): %s", cs.State.Terminated.ExitCode, lastLines(cloneLogs))
+		}
 	}
 
 	logs, err := s.podLogs(context.Background(), pod.Name, "scanner")
@@ -176,7 +205,16 @@ func (s *Scanner) Analyze(ctx context.Context, in domain.ScanInput, projectKey s
 	return string(match[1]), nil
 }
 
-func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string]string, cloneURL, ref, projectKey string) (string, error) {
+// gitAuthKey is the Secret key holding the clone's Authorization header.
+const gitAuthKey = "git-auth-header"
+
+// gitAuthHeader is the same x-access-token basic auth adapters/github's own
+// clone uses, as an http.extraHeader value.
+func gitAuthHeader(token string) string {
+	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+}
+
+func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string]string, cloneURL, ref, projectKey string, withToken bool) (*batchv1.Job, error) {
 	trueVal, falseVal := true, false
 	uid := runAsNobody
 	activeDeadline := int64(s.cfg.Timeout.Seconds())
@@ -221,7 +259,7 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 						// containers (adapters/pentestsandbox.Runner.Run's
 						// own HOME entry) — applied here proactively rather
 						// than waiting to rediscover it live.
-						Env: []corev1.EnvVar{{Name: "HOME", Value: "/tmp"}},
+						Env: cloneEnv(runID, withToken),
 						Command: []string{
 							"git", "clone", "--depth", "1", "--branch", ref, cloneURL, "/usr/src",
 						},
@@ -321,11 +359,31 @@ func (s *Scanner) createJob(ctx context.Context, runID string, labels map[string
 		},
 	}
 
-	created, err := s.client.BatchV1().Jobs(s.namespace).Create(ctx, job, metav1.CreateOptions{})
-	if err != nil {
-		return "", err
+	return s.client.BatchV1().Jobs(s.namespace).Create(ctx, job, metav1.CreateOptions{})
+}
+
+// cloneEnv is the clone container's environment. With a token, git reads
+// http.extraHeader from GIT_CONFIG_* (git 2.31+), its value taken from the
+// run's Secret, so the token never appears in argv or the pod spec.
+func cloneEnv(secretName string, withToken bool) []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		{Name: "HOME", Value: "/tmp"},
+		// Fail instead of waiting for a username prompt nobody can answer.
+		{Name: "GIT_TERMINAL_PROMPT", Value: "0"},
 	}
-	return created.Name, nil
+	if !withToken {
+		return env
+	}
+	return append(env,
+		corev1.EnvVar{Name: "GIT_CONFIG_COUNT", Value: "1"},
+		corev1.EnvVar{Name: "GIT_CONFIG_KEY_0", Value: "http.extraHeader"},
+		corev1.EnvVar{Name: "GIT_CONFIG_VALUE_0", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  gitAuthKey,
+			},
+		}},
+	)
 }
 
 func (s *Scanner) waitForPodCompletion(ctx context.Context, runID string) (*corev1.Pod, error) {

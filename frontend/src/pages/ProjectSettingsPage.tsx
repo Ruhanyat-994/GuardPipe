@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, KeyRound } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, CardDescription, CardTitle } from '../components/ui/Card'
 import { Input } from '../components/ui/Input'
@@ -12,7 +12,7 @@ import { ProjectAssignmentsSection } from '../components/project/ProjectAssignme
 import { ProjectCollaboratorsSection } from '../components/project/ProjectCollaboratorsSection'
 import { useProjectContext } from '../components/project/ProjectContext'
 import { ApiError } from '../lib/apiClient'
-import { archiveProject, updateProject } from '../lib/projectsApi'
+import { archiveProject, setCredential, updateProject } from '../lib/projectsApi'
 
 /** Real project editing + the Archive danger zone — the same
  * `project.Service.Update`/`Archive` endpoints `ContextMenu`'s "Archive
@@ -138,21 +138,12 @@ export function ProjectSettingsPage() {
         defaultBranch={project.repository?.default_branch ?? null}
       />
 
-      <Card className={project.repository?.credential_invalid ? 'mb-4 border-danger/30' : 'mb-4'}>
-        <CardTitle className="text-h3">Credential</CardTitle>
-        <CardDescription className="mt-1">
-          {project.repository?.credential_invalid ? (
-            <span className="text-danger">
-              This token was rejected on the last scan attempt and needs to be replaced — use the
-              Repository form above to reattach one.
-            </span>
-          ) : project.has_credential ? (
-            'A GitHub personal access token is attached to this project.'
-          ) : (
-            'No credential attached. Required only for private repositories.'
-          )}
-        </CardDescription>
-      </Card>
+      <CredentialCard
+        projectId={project.id}
+        hasCredential={project.has_credential}
+        credentialInvalid={project.repository?.credential_invalid ?? false}
+        onSaved={refetch}
+      />
 
       <Card className="border-danger/30">
         <div className="flex items-center gap-2">
@@ -178,5 +169,108 @@ export function ProjectSettingsPage() {
         </Button>
       </Card>
     </main>
+  )
+}
+
+/** Attach or replace the project's GitHub token. Private repositories need
+ * one to be cloned; public repositories need one only for live scanning,
+ * which creates a webhook on the repository — and the repository form only
+ * asks for a token when a repository turns out to be private, so without
+ * this card a public repository could never get one. */
+function CredentialCard({
+  projectId,
+  hasCredential,
+  credentialInvalid,
+  onSaved,
+}: {
+  projectId: string
+  hasCredential: boolean
+  credentialInvalid: boolean
+  onSaved: () => void
+}) {
+  const [token, setToken] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setSaved(false)
+    setSaving(true)
+    try {
+      // Written straight to the credential endpoint and never rendered back.
+      await setCredential(projectId, token.trim())
+      setToken('')
+      setSaved(true)
+      onSaved()
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.problem.detail : 'Something went wrong. Please try again.',
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card className={credentialInvalid ? 'mb-4 border-danger/30' : 'mb-4'}>
+      <CardTitle className="text-h3">Credential</CardTitle>
+      <CardDescription className="mt-1">
+        {credentialInvalid ? (
+          <span className="text-danger">
+            This token was rejected on the last scan attempt and needs to be replaced.
+          </span>
+        ) : hasCredential ? (
+          'A GitHub personal access token is attached to this project.'
+        ) : (
+          'No token attached. Needed for private repositories, and for live scanning on any repository.'
+        )}
+      </CardDescription>
+
+      <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-3">
+        <div>
+          <label
+            htmlFor="settings-token"
+            className="mb-1 flex items-center gap-1.5 text-body-sm text-text-secondary"
+          >
+            <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+            {hasCredential ? 'Replace GitHub token' : 'GitHub personal access token'}
+          </label>
+          <Input
+            id="settings-token"
+            type="password"
+            autoComplete="off"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="ghp_…"
+          />
+          <p className="mt-1 text-caption text-text-tertiary">
+            Classic token: <code>repo</code> scope, plus <code>admin:repo_hook</code> for live
+            scanning. Stored encrypted, never shown again.
+          </p>
+        </div>
+        {error && (
+          <p role="alert" className="text-body-sm text-danger">
+            {error}
+          </p>
+        )}
+        {saved && (
+          <p className="flex items-center gap-1.5 text-body-sm text-success">
+            <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Token saved.
+          </p>
+        )}
+        <Button
+          type="submit"
+          variant="secondary"
+          loading={saving}
+          disabled={!token.trim()}
+          className="self-start"
+        >
+          Save token
+        </Button>
+      </form>
+    </Card>
   )
 }

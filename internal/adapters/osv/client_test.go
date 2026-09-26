@@ -119,3 +119,34 @@ func TestClient_QueryBatch_UpstreamError(t *testing.T) {
 	require.ErrorAs(t, err, &appErr)
 	require.Equal(t, apperrors.KindExternal, appErr.Kind)
 }
+
+// OSV.dev's ecosystem names are case-sensitive and one unknown name fails
+// the whole batch — depscan's lowercase IDs must be translated.
+func TestClient_QueryBatch_TranslatesEcosystemNames(t *testing.T) {
+	var got struct {
+		Queries []struct {
+			Package struct {
+				Ecosystem string `json:"ecosystem"`
+			} `json:"package"`
+		} `json:"queries"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		writeJSON(t, w, http.StatusOK, map[string]any{"results": make([]map[string]any, len(got.Queries))})
+	}))
+	defer srv.Close()
+
+	in := []string{"npm", "go", "pypi", "maven", "composer", "PyPI"}
+	queries := make([]osv.PackageQuery, len(in))
+	for i, e := range in {
+		queries[i] = osv.PackageQuery{Ecosystem: e, Name: "pkg", Version: "1.0.0"}
+	}
+	_, err := osv.NewClient(srv.URL, nil).QueryBatch(context.Background(), queries)
+	require.NoError(t, err)
+
+	var sent []string
+	for _, q := range got.Queries {
+		sent = append(sent, q.Package.Ecosystem)
+	}
+	require.Equal(t, []string{"npm", "Go", "PyPI", "Maven", "Packagist", "PyPI"}, sent)
+}

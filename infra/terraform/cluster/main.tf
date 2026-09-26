@@ -413,12 +413,19 @@ resource "aws_iam_role_policy_attachment" "guardpipe_app_secrets" {
   policy_arn = aws_iam_policy.guardpipe_app_secrets.arn
 }
 
-## Scan-report emails (GUARDPIPE_MAIL_BACKEND=ses). Send-only, and only as the
-## one verified sender identity persistent/ created — this role can't read
-## mail, manage identities, or send as any other address. Created only once
+## Scan-report emails (GUARDPIPE_MAIL_BACKEND=ses). Send-only, and only From
+## the one sender identity persistent/ created (the ses:FromAddress
+## condition) — this role can't read mail, manage identities, or send as any
+## other address. The resource is every identity in the account/region, not
+## just the sender's: while the account is in the SES sandbox, SES also
+## authorizes the send against each *recipient's* verified identity, so a
+## sender-only resource fails every send with AccessDenied. Created only once
 ## persistent/ has an identity (ses_sender_identity set).
 locals {
   ses_identity_arn = try(data.terraform_remote_state.persistent.outputs.ses_identity_arn, "")
+  ses_identity     = local.ses_identity_arn == "" ? "" : element(split("/", local.ses_identity_arn), 1)
+  # An email identity sends as itself; a domain identity as any address at it.
+  ses_from_address = strcontains(local.ses_identity, "@") ? local.ses_identity : "*@${local.ses_identity}"
 }
 
 data "aws_iam_policy_document" "guardpipe_app_ses" {
@@ -426,7 +433,12 @@ data "aws_iam_policy_document" "guardpipe_app_ses" {
   statement {
     sid       = "SendScanReports"
     actions   = ["ses:SendEmail", "ses:SendRawEmail"]
-    resources = [local.ses_identity_arn]
+    resources = ["arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/*"]
+    condition {
+      test     = "StringLike"
+      variable = "ses:FromAddress"
+      values   = [local.ses_from_address]
+    }
   }
 }
 
