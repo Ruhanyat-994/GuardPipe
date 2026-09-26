@@ -344,11 +344,11 @@ func (p *Pool) processJob(ctx context.Context, jobIDStr string) {
 		// clone into WorkspaceDir already succeeded, so it's worth every
 		// other engine still getting to run even if this second, redundant
 		// lookup somehow fails.
-		if repoURL, branch, _, err := p.Projects.GetCloneInfo(ctx, scan.ProjectID); err == nil {
+		if repoURL, branch, token, err := p.Projects.GetCloneInfo(ctx, scan.ProjectID); err == nil {
 			if b := scanBranch(scan); b != "" {
 				branch = b
 			}
-			scanInput.Repository = &domain.RepositoryRef{CloneURL: repoURL, Branch: branch}
+			scanInput.Repository = &domain.RepositoryRef{CloneURL: repoURL, Branch: branch, CloneToken: token}
 		}
 
 		// Uploaded documents are project-scoped data, not part of the git

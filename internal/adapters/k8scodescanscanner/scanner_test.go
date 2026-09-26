@@ -2,6 +2,9 @@ package k8scodescanscanner_test
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,5 +141,117 @@ func TestAnalyze_TimeoutStillCleansUpTheJob(t *testing.T) {
 	jobs, _ := client.BatchV1().Jobs(namespace).List(context.Background(), metav1.ListOptions{})
 	if len(jobs.Items) != 0 {
 		t.Errorf("Jobs remaining after a timed-out Analyze() = %d, want 0 (cleanup must run even on timeout)", len(jobs.Items))
+	}
+}
+
+// captureJobs records every Job the scanner creates, and seeds a pod that
+// ends in phase with the given clone (init container) exit code.
+func captureJobs(t *testing.T, client *fake.Clientset, phase corev1.PodPhase, cloneExit int32) *[]*batchv1.Job {
+	t.Helper()
+	var jobs []*batchv1.Job
+	client.PrependReactor("create", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		job := action.(k8stesting.CreateAction).GetObject().(*batchv1.Job)
+		jobs = append(jobs, job.DeepCopy())
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-pod", Namespace: namespace, Labels: job.Spec.Template.Labels},
+			Status: corev1.PodStatus{
+				Phase: phase,
+				InitContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "clone",
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: cloneExit}},
+				}},
+			},
+		}
+		if err := client.Tracker().Add(pod); err != nil {
+			t.Fatalf("seed pod: %v", err)
+		}
+		return false, nil, nil
+	})
+	return &jobs
+}
+
+func TestAnalyze_PrivateRepository_TokenOnlyInOwnedSecret(t *testing.T) {
+	const token = "ghp_privateRepoTokenForTest"
+	client := fake.NewSimpleClientset()
+	jobs := captureJobs(t, client, corev1.PodFailed, 0)
+
+	var secret *corev1.Secret
+	client.PrependReactor("create", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		secret = action.(k8stesting.CreateAction).GetObject().(*corev1.Secret).DeepCopy()
+		return false, nil, nil
+	})
+
+	s := k8scodescanscanner.New(client, namespace, k8scodescanscanner.Config{Timeout: 5 * time.Second}, 1)
+	in := scanInput()
+	in.Repository.CloneToken = token
+	_, _ = s.Analyze(context.Background(), in, "guardpipe-test")
+
+	if len(*jobs) != 1 {
+		t.Fatalf("jobs created = %d, want 1", len(*jobs))
+	}
+	job := (*jobs)[0]
+	if spec := fmt.Sprintf("%+v", job.Spec); strings.Contains(spec, token) {
+		t.Error("the token appears in the Job spec; it must only be in the Secret")
+	}
+
+	if secret == nil {
+		t.Fatal("no Secret created for a private repository")
+	}
+	if len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Kind != "Job" || secret.OwnerReferences[0].Name != job.Name {
+		t.Errorf("Secret owner = %+v, want the Job %s", secret.OwnerReferences, job.Name)
+	}
+	header := secret.StringData["git-auth-header"]
+	want := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+	if header != want {
+		t.Errorf("Secret header = %q, want %q", header, want)
+	}
+
+	var fromSecret bool
+	for _, e := range job.Spec.Template.Spec.InitContainers[0].Env {
+		if e.Name == "GIT_CONFIG_VALUE_0" && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil &&
+			e.ValueFrom.SecretKeyRef.Name == secret.Name {
+			fromSecret = true
+		}
+	}
+	if !fromSecret {
+		t.Error("clone container does not read the auth header from the run's Secret")
+	}
+
+	left, _ := client.CoreV1().Secrets(namespace).List(context.Background(), metav1.ListOptions{})
+	if len(left.Items) != 0 {
+		t.Errorf("Secrets remaining after Analyze() = %d, want 0", len(left.Items))
+	}
+}
+
+func TestAnalyze_PublicRepository_CreatesNoSecret(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	jobs := captureJobs(t, client, corev1.PodFailed, 0)
+	created := 0
+	client.PrependReactor("create", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		created++
+		return false, nil, nil
+	})
+
+	s := k8scodescanscanner.New(client, namespace, k8scodescanscanner.Config{Timeout: 5 * time.Second}, 1)
+	_, _ = s.Analyze(context.Background(), scanInput(), "guardpipe-test")
+
+	if created != 0 {
+		t.Errorf("Secrets created for a public repository = %d, want 0", created)
+	}
+	for _, e := range (*jobs)[0].Spec.Template.Spec.InitContainers[0].Env {
+		if strings.HasPrefix(e.Name, "GIT_CONFIG_") {
+			t.Errorf("public clone has %s set, want no auth config", e.Name)
+		}
+	}
+}
+
+func TestAnalyze_CloneFailureIsReportedAsCloneError(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	captureJobs(t, client, corev1.PodFailed, 128)
+
+	s := k8scodescanscanner.New(client, namespace, k8scodescanscanner.Config{Timeout: 5 * time.Second}, 1)
+	_, err := s.Analyze(context.Background(), scanInput(), "guardpipe-test")
+	if err == nil || !strings.Contains(err.Error(), "clone failed (exit 128)") {
+		t.Errorf("Analyze() error = %v, want a clone failure", err)
 	}
 }

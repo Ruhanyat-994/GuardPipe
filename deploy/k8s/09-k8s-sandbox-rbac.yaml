@@ -21,11 +21,10 @@
 # 08-networkpolicy.yaml, instead of creating its own per-job one).
 # Namespace-scoped (guardpipe only) — never cluster-wide.
 #
-# No `secrets` verb: codescan's K8s backend supports public repos only for
-# now (no decrypted credential reaches an engine today — a materially
-# bigger, separate change to plumb one through from modules/project's
-# credential store). Add create/delete on secrets here when that's built,
-# for the short-lived per-job clone-credential Secret it would need.
+# `secrets` create/delete only (no get/list/watch): codescan's Job clones a
+# private repository with the project's GitHub token from a short-lived,
+# Job-owned Secret. The worker writes that Secret and deletes it; it never
+# needs to read any Secret back.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -43,6 +42,9 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["configmaps"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
     verbs: ["create", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
