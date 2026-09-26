@@ -14,7 +14,6 @@ import '@xyflow/react/dist/style.css'
 import {
   CheckCircle2,
   Circle,
-  FileText,
   GitBranch,
   Loader2,
   MinusCircle,
@@ -44,8 +43,8 @@ import {
  * The live scan execution graph (documentation/09-ui-ux-design-system.md
  * §4.8) — the orchestrator's own execution DAG (workspace prep fans out to
  * six parallel engines; pentest branches independently straight off scan
- * start since it needs no workspace; all seven converge into ai enrichment
- * -> scoring), rendered as a draggable, pannable, zoomable canvas
+ * start since it needs no workspace; all seven converge into scoring),
+ * rendered as a draggable, pannable, zoomable canvas
  * (@xyflow/react — already the project's chosen graph library for this,
  * nothing else in `package.json` overlaps it) instead of a fixed flexbox
  * row. Every node keeps the exact same status/click wiring it always had —
@@ -184,7 +183,7 @@ const LEGEND: { status: NodeStatus; label: string }[] = [
 /* ---- Canvas layout (initial positions only — the user is free to drag
    every node anywhere afterward; nothing here is re-applied once mounted).
    Roughly mirrors the original flexbox shape: scan start -> workspace prep
-   -> a 2-column scanner grid -> ai enrichment -> scoring, left to right,
+   -> a 2-column scanner grid -> scoring, left to right,
    with pentest branching independently below scan start. */
 
 const NODE_W = 116
@@ -202,7 +201,7 @@ const GROUP_SIZE = {
 const STAGE_CENTER_Y = GROUP_SIZE.height / 2 - NODE_H / 2
 
 const STAGE_POSITIONS: Record<
-  'scanStart' | 'workspacePrep' | 'aiEnrichment' | 'scoring',
+  'scanStart' | 'workspacePrep' | 'scoring',
   {
     x: number
     y: number
@@ -210,11 +209,7 @@ const STAGE_POSITIONS: Record<
 > = {
   scanStart: { x: 0, y: STAGE_CENTER_Y },
   workspacePrep: { x: NODE_W + GAP_X, y: STAGE_CENTER_Y },
-  aiEnrichment: { x: GROUP_POS.x + GROUP_SIZE.width + GAP_X, y: STAGE_CENTER_Y },
-  scoring: {
-    x: GROUP_POS.x + GROUP_SIZE.width + GAP_X * 2 + NODE_W,
-    y: STAGE_CENTER_Y,
-  },
+  scoring: { x: GROUP_POS.x + GROUP_SIZE.width + GAP_X, y: STAGE_CENTER_Y },
 }
 
 const PENTEST_POS = { x: 0, y: STAGE_CENTER_Y + NODE_H + 60 }
@@ -255,7 +250,6 @@ function buildInitialNodes(data: Record<string, PipelineNodeData>): FlowNode[] {
     stageNode('scan-start', STAGE_POSITIONS.scanStart),
     stageNode('workspace-prep', STAGE_POSITIONS.workspacePrep),
     ...PARALLEL_ENGINES.map((engine) => stageNode(engine, ENGINE_POSITIONS[engine])),
-    stageNode('ai-enrichment', STAGE_POSITIONS.aiEnrichment),
     stageNode('scoring', STAGE_POSITIONS.scoring),
     stageNode('pentest', PENTEST_POS),
   ]
@@ -271,11 +265,10 @@ const EDGES: Edge[] = [
   { id: 'e-start-workspace', source: 'scan-start', target: 'workspace-prep' },
   ...PARALLEL_ENGINES.flatMap((engine) => [
     { id: `e-workspace-${engine}`, source: 'workspace-prep', target: engine },
-    { id: `e-${engine}-ai`, source: engine, target: 'ai-enrichment' },
+    { id: `e-${engine}-scoring`, source: engine, target: 'scoring' },
   ]),
   { id: 'e-start-pentest', source: 'scan-start', target: 'pentest', data: { dashed: true } },
-  { id: 'e-pentest-ai', source: 'pentest', target: 'ai-enrichment', data: { dashed: true } },
-  { id: 'e-ai-scoring', source: 'ai-enrichment', target: 'scoring' },
+  { id: 'e-pentest-scoring', source: 'pentest', target: 'scoring', data: { dashed: true } },
 ].map((e) => ({ ...e, type: 'floating', markerEnd: arrow }))
 
 export function SupplyChainPipeline({
@@ -303,6 +296,10 @@ export function SupplyChainPipeline({
 
   const pentestState = resolveEngineState('pentest', progress, jobs)
   const status = overallStatus(scanStarted, progress, jobs)
+  // The orchestrator scores a scan once, when it completes
+  // (Pool.finalizeScoring); a failed or cancelled scan is never scored.
+  const scoringStatus: NodeStatus =
+    status === 'succeeded' || status === 'running' || status === 'not_run' ? status : 'skipped'
 
   // Only nodes with a real per-engine job to drill into are clickable —
   // "Scan start"/"Workspace prep"/"AI enrichment"/"Scoring" have no job of
@@ -354,19 +351,17 @@ export function SupplyChainPipeline({
         selected: selectedEngine === engine,
       }
     }
-    data['ai-enrichment'] = {
-      label: 'AI enrichment',
-      icon: FileText,
-      status: 'not_run',
-      statusIcon: STATUS_ICON.not_run,
-      tooltip: 'Lands in Phase 10/11',
-    }
     data['scoring'] = {
       label: 'Scoring',
       icon: ShieldAlert,
-      status: 'not_run',
-      statusIcon: STATUS_ICON.not_run,
-      tooltip: 'Lands in Phase 13',
+      status: scoringStatus,
+      statusIcon: STATUS_ICON[scoringStatus],
+      tooltip:
+        scoringStatus === 'skipped'
+          ? 'Only a completed scan is scored'
+          : scoringStatus === 'running'
+            ? 'Scored as soon as every engine finishes'
+            : null,
     }
     data['pentest'] = {
       label: 'Pentest',
@@ -385,6 +380,7 @@ export function SupplyChainPipeline({
   }, [
     scanStarted,
     workspaceStatus,
+    scoringStatus,
     progress,
     jobs,
     project,
